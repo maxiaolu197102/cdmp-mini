@@ -1,0 +1,295 @@
+{
+  "dashboard": {
+    "id": null,
+    "title": "业务监控仪表板",
+    "tags": ["business", "metrics", "monitoring"],
+    "timezone": "browser",
+    "panels": [
+      {
+        "id": 1,
+        "title": "总业务QPS",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "sum(rate(business_operations_total[1m]))",
+            "legendFormat": "总QPS",
+            "refId": "A"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+        "fieldConfig": {
+          "defaults": {
+            "unit": "ops",
+            "color": {"mode": "palette-classic"},
+            "thresholds": {
+              "steps": [
+                {"color": "green", "value": null},
+                {"color": "red", "value": 80}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 2,
+        "title": "业务成功率",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "sum(rate(business_success_total[1m])) / sum(rate(business_operations_total[1m]))",
+            "legendFormat": "成功率",
+            "refId": "A"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percentunit",
+            "decimals": 2,
+            "color": {"mode": "palette-classic"},
+            "thresholds": {
+              "steps": [
+                {"color": "red", "value": null},
+                {"color": "yellow", "value": 0.95},
+                {"color": "green", "value": 0.99}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 3,
+        "title": "平均处理延迟",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "rate(business_processing_seconds_sum[1m]) / rate(business_processing_seconds_count[1m])",
+            "legendFormat": "平均延迟",
+            "refId": "A"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s",
+            "decimals": 3,
+            "color": {"mode": "palette-classic"},
+            "thresholds": {
+              "steps": [
+                {"color": "green", "value": null},
+                {"color": "yellow", "value": 1},
+                {"color": "red", "value": 2}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 4,
+        "title": "当前并发处理数",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "sum(business_operations_in_progress)",
+            "legendFormat": "并发数",
+            "refId": "A"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "color": {"mode": "palette-classic"},
+            "thresholds": {
+              "steps": [
+                {"color": "green", "value": null},
+                {"color": "yellow", "value": 50},
+                {"color": "red", "value": 100}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 5,
+        "title": "业务QPS趋势",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "sum(rate(business_operations_total[1m]))",
+            "legendFormat": "总QPS",
+            "refId": "A"
+          },
+          {
+            "expr": "sum by (service) (rate(business_operations_total[1m]))",
+            "legendFormat": "{{service}}",
+            "refId": "B"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 24, "x": 0, "y": 16},
+        "fieldConfig": {
+          "defaults": {
+            "unit": "ops",
+            "color": {"mode": "palette-classic"}
+          }
+        }
+      },
+      {
+        "id": 6,
+        "title": "延迟分布(P50/P90/P95/P99)",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.50, sum(rate(business_processing_seconds_bucket[1m])) by (le))",
+            "legendFormat": "P50",
+            "refId": "A"
+          },
+          {
+            "expr": "histogram_quantile(0.90, sum(rate(business_processing_seconds_bucket[1m])) by (le))",
+            "legendFormat": "P90",
+            "refId": "B"
+          },
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(business_processing_seconds_bucket[1m])) by (le))",
+            "legendFormat": "P95",
+            "refId": "C"
+          },
+          {
+            "expr": "histogram_quantile(0.99, sum(rate(business_processing_seconds_bucket[1m])) by (le))",
+            "legendFormat": "P99",
+            "refId": "D"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 24, "x": 0, "y": 24},
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s",
+            "decimals": 3
+          }
+        }
+      },
+      {
+        "id": 7,
+        "title": "错误率趋势",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "sum(rate(business_failures_total[1m])) / sum(rate(business_operations_total[1m]))",
+            "legendFormat": "总错误率",
+            "refId": "A"
+          },
+          {
+            "expr": "sum by (error_type) (rate(business_failures_total[1m])) / sum(rate(business_operations_total[1m]))",
+            "legendFormat": "{{error_type}}",
+            "refId": "B"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 32},
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percentunit",
+            "decimals": 4
+          }
+        }
+      },
+      {
+        "id": 8,
+        "title": "并发处理数趋势",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "sum(business_operations_in_progress)",
+            "legendFormat": "总并发数",
+            "refId": "A"
+          },
+          {
+            "expr": "sum by (service) (business_operations_in_progress)",
+            "legendFormat": "{{service}}",
+            "refId": "B"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 32},
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short"
+          }
+        }
+      },
+      {
+        "id": 9,
+        "title": "各服务QPS对比",
+        "type": "bargauge",
+        "targets": [
+          {
+            "expr": "sum by (service) (rate(business_operations_total[1m]))",
+            "legendFormat": "{{service}}",
+            "refId": "A"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 40},
+        "fieldConfig": {
+          "defaults": {
+            "unit": "ops",
+            "color": {"mode": "palette-classic"}
+          }
+        }
+      },
+      {
+        "id": 10,
+        "title": "错误类型分布",
+        "type": "piechart",
+        "targets": [
+          {
+            "expr": "sum by (error_type) (rate(business_failures_total[5m]))",
+            "legendFormat": "{{error_type}}",
+            "refId": "A"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 40},
+        "fieldConfig": {
+          "defaults": {
+            "color": {"mode": "palette-classic"}
+          }
+        }
+      }
+    ],
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    },
+    "timepicker": {},
+    "templating": {
+      "list": [
+        {
+          "name": "datasource",
+          "type": "datasource",
+          "query": "prometheus",
+          "current": {
+            "text": "Prometheus",
+            "value": "Prometheus"
+          }
+        },
+        {
+          "name": "service",
+          "type": "query",
+          "query": "label_values(business_operations_total, service)",
+          "refresh": 1,
+          "includeAll": true,
+          "allValue": ".*"
+        },
+        {
+          "name": "operation",
+          "type": "query", 
+          "query": "label_values(business_operations_total, operation)",
+          "refresh": 1,
+          "includeAll": true,
+          "allValue": ".*"
+        }
+      ]
+    },
+    "refresh": "10s"
+  },
+  "folderId": 0,
+  "message": "业务监控仪表板",
+  "overwrite": true
+}

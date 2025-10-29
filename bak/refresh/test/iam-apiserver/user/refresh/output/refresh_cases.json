@@ -1,0 +1,49 @@
+[
+  {
+    "name": "refresh_success",
+    "description": "登录后使用刷新令牌应返回新的访问令牌",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 1758,
+    "checks": {
+      "login_success": true,
+      "refresh_issued": true,
+      "tokens_returned": false
+    },
+    "notes": [
+      "登录后使用刷新令牌应返回新的访问令牌"
+    ]
+  },
+  {
+    "name": "refresh_with_invalid_token",
+    "description": "使用无效令牌刷新应失败",
+    "success": true,
+    "http_status": 401,
+    "code": 100208,
+    "message": "[code: 100208] RT解析失败",
+    "duration_ms": 1108,
+    "checks": {
+      "invalid_refresh_handled": true
+    },
+    "notes": [
+      "使用无效令牌刷新应失败"
+    ]
+  },
+  {
+    "name": "refresh_missing_token",
+    "description": "缺少刷新令牌应返回参数错误",
+    "success": true,
+    "http_status": 400,
+    "code": 110004,
+    "message": "[code: 110004] refresh token为空",
+    "duration_ms": 888,
+    "checks": {
+      "login_success": true
+    },
+    "notes": [
+      "缺少刷新令牌应返回参数错误"
+    ]
+  }
+]

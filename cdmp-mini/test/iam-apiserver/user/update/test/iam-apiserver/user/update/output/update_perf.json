@@ -1,0 +1,20 @@
+[
+  {
+    "scenario": "update_parallel",
+    "requests": 12,
+    "success_rate": 1,
+    "error_rate": 0,
+    "duration_ms": 10,
+    "qps": 1153.210557412011,
+    "error_count": 0,
+    "latency": {
+      "min_ms": 0,
+      "max_ms": 0,
+      "avg_ms": 0,
+      "p50_ms": 0,
+      "p90_ms": 0,
+      "p95_ms": 0,
+      "p99_ms": 0
+    }
+  }
+]

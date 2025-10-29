@@ -1,0 +1,368 @@
+[
+  {
+    "name": "admin_exact_fetch",
+    "description": "管理员精确查询存在的用户",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 2,
+    "checks": {
+      "payload_present": true,
+      "username_match": true
+    },
+    "notes": [
+      "管理员精确查询存在的用户",
+      "响应耗时=2.890519ms"
+    ]
+  },
+  {
+    "name": "user_get_self",
+    "description": "普通用户查询自身信息",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 2,
+    "checks": {
+      "username_match": true
+    },
+    "notes": [
+      "普通用户查询自身信息"
+    ]
+  },
+  {
+    "name": "field_selector_multi",
+    "description": "多字段联合查询返回唯一用户",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 4,
+    "checks": {
+      "email_match": true,
+      "single_result": true,
+      "username_match": true
+    },
+    "notes": [
+      "多字段联合查询返回唯一用户"
+    ]
+  },
+  {
+    "name": "sorting_parameter_resilience",
+    "description": "附带排序参数时的兼容性验证",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 3,
+    "checks": {
+      "ignored_sort_param": true
+    },
+    "notes": [
+      "附带排序参数时的兼容性验证"
+    ]
+  },
+  {
+    "name": "pagination_validation",
+    "description": "分页参数越界时返回校验错误",
+    "success": true,
+    "http_status": 400,
+    "code": 110004,
+    "message": "[code: 110004] 参数错误:map[ListOptions.Limit:Invalid value: -1: 必须在0到10000之间（包含边界）]",
+    "duration_ms": 2,
+    "checks": {
+      "limit_rejected": true
+    },
+    "notes": [
+      "分页参数越界时返回校验错误"
+    ]
+  },
+  {
+    "name": "max_limit_boundary",
+    "description": "最大分页尺寸仍可成功响应",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 2,
+    "checks": {
+      "max_limit_success": true
+    },
+    "notes": [
+      "最大分页尺寸仍可成功响应"
+    ]
+  },
+  {
+    "name": "empty_result_handling",
+    "description": "空结果集返回200 + 空数组",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 12,
+    "checks": {
+      "empty_result": true
+    },
+    "notes": [
+      "空结果集返回200 + 空数组"
+    ]
+  },
+  {
+    "name": "special_character_handling",
+    "description": "特殊字符昵称的用户可正常查询",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 4,
+    "checks": {
+      "nickname_preserved": true
+    },
+    "notes": [
+      "特殊字符昵称的用户可正常查询"
+    ]
+  },
+  {
+    "name": "username_length_boundary",
+    "description": "用户名达到长度上限仍可查询",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 2,
+    "checks": {
+      "length": true,
+      "username_match": true
+    },
+    "notes": [
+      "用户名达到长度上限仍可查询"
+    ]
+  },
+  {
+    "name": "read_after_create",
+    "description": "数据创建后立即查询",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 1,
+    "checks": {
+      "immediate_visible": true
+    },
+    "notes": [
+      "数据创建后立即查询"
+    ]
+  },
+  {
+    "name": "read_after_update",
+    "description": "更新后查询同步校验",
+    "success": false,
+    "http_status": 400,
+    "code": 110004,
+    "message": "[code: 110004] 缺少版本号version",
+    "duration_ms": 3,
+    "notes": [
+      "更新后查询同步校验"
+    ]
+  },
+  {
+    "name": "read_after_delete",
+    "description": "删除后查询返回未找到",
+    "success": false,
+    "http_status": 200,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 4429,
+    "checks": {
+      "not_found_code": false
+    },
+    "notes": [
+      "删除后查询返回未找到"
+    ]
+  },
+  {
+    "name": "list_after_delete",
+    "description": "删除后列表结果不包含该用户",
+    "success": true,
+    "http_status": 500,
+    "code": 110005,
+    "message": "[code: 110005] query raw users failed: [code: 100101] 扫描用户记录失败: sql: Scan error on column index 10, name \"loginedAt\": unsupported Scan, storing driver.Value type \u003cnil\u003e into type *time.Time",
+    "duration_ms": 126,
+    "checks": {
+      "deleted_not_listed": true
+    },
+    "notes": [
+      "删除后列表结果不包含该用户"
+    ]
+  },
+  {
+    "name": "history_timestamp_order",
+    "description": "历史数据更新时间大于创建时间",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 0,
+    "checks": {
+      "timestamp_order": true
+    },
+    "notes": [
+      "历史数据更新时间大于创建时间"
+    ]
+  },
+  {
+    "name": "status_toggle_persistence",
+    "description": "状态字段切换后的持久化校验",
+    "success": false,
+    "http_status": 400,
+    "code": 110004,
+    "message": "[code: 110004] 缺少版本号version",
+    "duration_ms": 168,
+    "checks": {
+      "status_update_success": false
+    },
+    "notes": [
+      "状态字段切换后的持久化校验"
+    ]
+  },
+  {
+    "name": "invalid_identifier_format",
+    "description": "非法ID格式被拒绝",
+    "success": true,
+    "http_status": 404,
+    "code": 100005,
+    "message": "[code: 100005] 业务不存在",
+    "duration_ms": 3,
+    "checks": {
+      "rejected": true
+    },
+    "notes": [
+      "非法ID格式被拒绝"
+    ]
+  },
+  {
+    "name": "sql_injection_payload",
+    "description": "SQL注入载荷不会泄露数据",
+    "success": true,
+    "http_status": 400,
+    "code": 100004,
+    "message": "[code: 100004] 用户名不合法:名称部分必须由字母、数字、'-'、'_'或'.'组成，且首尾必须为字母或数字（例如：'MyName'，或'my.name'，或'123-abc'，用于验证的正则表达式：'([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]'）",
+    "duration_ms": 9,
+    "checks": {
+      "no_data_leak": true
+    },
+    "notes": [
+      "SQL注入载荷不会泄露数据"
+    ]
+  },
+  {
+    "name": "overlong_identifier",
+    "description": "超长参数被安全处理",
+    "success": true,
+    "http_status": 400,
+    "code": 100004,
+    "message": "[code: 100004] 用户名不合法:名称部分长度不能超过63个字符",
+    "duration_ms": 210,
+    "checks": {
+      "handled": true
+    },
+    "notes": [
+      "超长参数被安全处理"
+    ]
+  },
+  {
+    "name": "missing_token",
+    "description": "缺失授权头拦截",
+    "success": true,
+    "http_status": 401,
+    "code": 100205,
+    "message": "[code: 100205] 缺少Authorization头，支持格式：\n1. Basic认证：Authorization: Basic {base64(username:password)}\n2. JWT认证：Authorization: Bearer {jwt-token}",
+    "duration_ms": 2,
+    "checks": {
+      "missing_header": true
+    },
+    "notes": [
+      "缺失授权头拦截"
+    ]
+  },
+  {
+    "name": "invalid_token",
+    "description": "非法token拦截",
+    "success": true,
+    "http_status": 401,
+    "code": 100208,
+    "message": "[code: 100208] invalid character '\\u008a' looking for beginning of value",
+    "duration_ms": 0,
+    "checks": {
+      "token_invalid": true
+    },
+    "notes": [
+      "非法token拦截"
+    ]
+  },
+  {
+    "name": "cross_user_access_control",
+    "description": "越权访问受限",
+    "success": true,
+    "http_status": 403,
+    "code": 100207,
+    "message": "[code: 100207] 非管理员仅允许操作自己的账号，不允许修改他人信息",
+    "duration_ms": 18,
+    "checks": {
+      "access_blocked": true
+    },
+    "notes": [
+      "越权访问受限"
+    ]
+  },
+  {
+    "name": "sensitive_data_masking",
+    "description": "响应体不包含敏感字段",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 48,
+    "checks": {
+      "no_password": true,
+      "no_token_field": true
+    },
+    "notes": [
+      "响应体不包含敏感字段"
+    ]
+  },
+  {
+    "name": "observability_snapshot",
+    "description": "记录查询延迟与业务码",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 30,
+    "checks": {
+      "business_code": true,
+      "duration_recorded": true,
+      "message_present": true
+    },
+    "notes": [
+      "记录查询延迟与业务码",
+      "duration=30.700249ms"
+    ]
+  },
+  {
+    "name": "dataset_overview",
+    "description": "批量测试数据分布验证",
+    "success": true,
+    "duration_ms": 0,
+    "checks": {
+      "bulk_generated": true,
+      "unique_names": true
+    },
+    "notes": [
+      "批量测试数据分布验证",
+      "bulk_count=12",
+      "hot_users=[get_bulk_00_1761724409363251128_80619 get_bulk_01_1761724409841328062_90811 get_bulk_02_1761724410019615797_92749]"
+    ]
+  }
+]

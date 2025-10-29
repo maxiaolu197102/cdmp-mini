@@ -1,0 +1,48 @@
+[
+  {
+    "name": "logout_success",
+    "description": "登录后注销应返回成功并撤销刷新令牌",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 2113,
+    "checks": {
+      "logout_success": true
+    },
+    "notes": [
+      "登录后注销应返回成功并撤销刷新令牌"
+    ]
+  },
+  {
+    "name": "refresh_success",
+    "description": "登录后使用刷新令牌应获得新的访问令牌",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 1058,
+    "checks": {
+      "login_success": true,
+      "refresh_token_issued": true
+    },
+    "notes": [
+      "登录后使用刷新令牌应获得新的访问令牌"
+    ]
+  },
+  {
+    "name": "refresh_missing_token",
+    "description": "缺少刷新令牌字段应返回参数错误",
+    "success": true,
+    "http_status": 400,
+    "code": 110004,
+    "message": "[code: 110004] refresh token为空",
+    "duration_ms": 1296,
+    "checks": {
+      "login_success": true
+    },
+    "notes": [
+      "缺少刷新令牌字段应返回参数错误"
+    ]
+  }
+]

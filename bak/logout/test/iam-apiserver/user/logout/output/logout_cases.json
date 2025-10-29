@@ -1,0 +1,19 @@
+[
+  {
+    "name": "logout_success",
+    "description": "登录后注销应立即失效刷新令牌",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 1922,
+    "checks": {
+      "login_success": true,
+      "logout_success": true,
+      "refresh_token_block": false
+    },
+    "notes": [
+      "登录后注销应立即失效刷新令牌"
+    ]
+  }
+]

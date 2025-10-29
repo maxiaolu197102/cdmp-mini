@@ -1,0 +1,231 @@
+[
+  {
+    "name": "success_basic_flow",
+    "description": "正确用户名密码应返回访问令牌并可访问用户信息",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "登录成功",
+    "duration_ms": 30,
+    "checks": {
+      "access_token_issued": true,
+      "operator_matches": true,
+      "refresh_token_issued": true,
+      "session_persistent": true,
+      "token_authorized": true
+    },
+    "notes": [
+      "验证 access/refresh token 发放",
+      "使用 access token 调用 /v1/users/{name}"
+    ]
+  },
+  {
+    "name": "wrong_password",
+    "description": "错误密码返回未授权",
+    "success": true,
+    "http_status": 401,
+    "code": 100206,
+    "message": "[code: 100206] 密码校验失败：用户名【login_wrong_1761724407354685471_17894】的密码不正确",
+    "duration_ms": 24,
+    "checks": {
+      "invalid_credentials_rejected": true
+    }
+  },
+  {
+    "name": "nonexistent_user",
+    "description": "不存在的用户登录失败",
+    "success": true,
+    "http_status": 404,
+    "code": 110001,
+    "message": "[code: 110001] 用户不存在",
+    "duration_ms": 4,
+    "checks": {
+      "user_not_found": true
+    }
+  },
+  {
+    "name": "disabled_user",
+    "description": "禁用用户无法登录",
+    "success": true,
+    "http_status": 403,
+    "code": 110009,
+    "message": "[code: 110009] 用户已经失效",
+    "duration_ms": 2,
+    "checks": {
+      "disabled_blocked": true
+    }
+  },
+  {
+    "name": "empty_username",
+    "description": "用户名为空被拒绝",
+    "success": true,
+    "http_status": 400,
+    "code": 110004,
+    "message": "[code: 110004] 参数错误：username和password不能为空",
+    "duration_ms": 1,
+    "checks": {
+      "input_validation": true
+    }
+  },
+  {
+    "name": "empty_password",
+    "description": "空密码被拒绝",
+    "success": true,
+    "http_status": 400,
+    "code": 110004,
+    "message": "[code: 110004] 参数错误：username和password不能为空",
+    "duration_ms": 0,
+    "checks": {
+      "password_empty_rejected": true
+    }
+  },
+  {
+    "name": "oversize_username",
+    "description": "超长用户名触发输入校验",
+    "success": true,
+    "http_status": 400,
+    "code": 110004,
+    "message": "[code: 110004] 名称部分长度不能超过63个字符",
+    "duration_ms": 1,
+    "checks": {
+      "length_validation": true
+    }
+  },
+  {
+    "name": "sql_injection_payload",
+    "description": "SQL 注入 payload 被拦截",
+    "success": true,
+    "http_status": 400,
+    "code": 110004,
+    "message": "[code: 110004] 名称部分必须由字母、数字、'-'、'_'或'.'组成，且首尾必须为字母或数字（例如：'MyName'，或'my.name'，或'123-abc'，用于验证的正则表达式：'([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]'）",
+    "duration_ms": 1,
+    "checks": {
+      "sql_injection_blocked": true
+    }
+  },
+  {
+    "name": "xss_payload",
+    "description": "XSS payload 被拦截",
+    "success": true,
+    "http_status": 400,
+    "code": 110004,
+    "message": "[code: 110004] 前缀部分DNS-1123子域名必须由小写字母、数字、'-'或'.'组成，且首尾必须为字母或数字（例如：'example.com'，用于验证的正则表达式：'[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*'）:名称部分必须由字母、数字、'-'、'_'或'.'组成，且首尾必须为字母或数字（例如：'MyName'，或'my.name'，或'123-abc'，用于验证的正则表达式：'([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]'）",
+    "duration_ms": 1,
+    "checks": {
+      "xss_blocked": true
+    }
+  },
+  {
+    "name": "special_character_password",
+    "description": "含特殊字符密码成功登录",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "登录成功",
+    "duration_ms": 39,
+    "checks": {
+      "tokens_issued": true
+    }
+  },
+  {
+    "name": "consecutive_failures_lockout",
+    "description": "连续失败超过阈值提示锁定",
+    "success": true,
+    "http_status": 429,
+    "code": 100213,
+    "message": "[code: 100213] 登录失败次数太多,15分钟后重试",
+    "duration_ms": 63,
+    "checks": {
+      "lockout_triggered": true
+    }
+  },
+  {
+    "name": "weak_password_complexity",
+    "description": "弱密码复杂度被拒",
+    "success": true,
+    "http_status": 400,
+    "code": 110004,
+    "message": "[code: 110004] 密码不合法：缺少大写字母，至少需要一个数字，缺少特殊字符，密码长度必须在8到200个字符之间",
+    "duration_ms": 3,
+    "checks": {
+      "password_policy_enforced": true
+    }
+  },
+  {
+    "name": "multi_session_tokens",
+    "description": "多设备登录产生独立会话",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "登录成功",
+    "duration_ms": 41,
+    "checks": {
+      "distinct_tokens": true,
+      "multi_session_access": true
+    }
+  },
+  {
+    "name": "logout_revokes_token",
+    "description": "注销后 access token 失效",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 56,
+    "checks": {
+      "token_revoked": true
+    }
+  },
+  {
+    "name": "token_expiry_short_ttl",
+    "description": "通过调试 TTL 获取短期令牌并验证过期行为",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "登录成功",
+    "duration_ms": 2053,
+    "checks": {
+      "expired_rejected": true,
+      "pre_expiry_access": true,
+      "short_ttl_override": true
+    },
+    "notes": [
+      "登录时使用 X-Debug-Token-Timeout=1s",
+      "初始 TTL ≈ 0.32s"
+    ]
+  },
+  {
+    "name": "audit_login_events",
+    "description": "登录接口审计事件包含失败与成功记录",
+    "success": false,
+    "http_status": 200,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 3879,
+    "checks": {
+      "audit_enabled": true,
+      "login_fail_audited": false,
+      "login_success_audited": false,
+      "route_recorded": false
+    },
+    "notes": [
+      "校验 /admin/audit/events 中的 auth.login 成功与失败事件",
+      "成功事件=false, 失败事件=false, 启用=true"
+    ]
+  },
+  {
+    "name": "login_rate_limit_enforced",
+    "description": "超过登录限流阈值返回429",
+    "success": false,
+    "http_status": 200,
+    "code": 100001,
+    "message": "登录限流未启用，跳过校验",
+    "duration_ms": 0,
+    "checks": {
+      "rate_limiter_enabled": false
+    },
+    "notes": [
+      "Env.LoginRateLimiterEnabled() 返回 false"
+    ]
+  }
+]

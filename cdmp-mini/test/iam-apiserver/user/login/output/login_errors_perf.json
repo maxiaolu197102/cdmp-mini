@@ -1,0 +1,31 @@
+[
+  {
+    "scenario": "login_error_pressure",
+    "requests": 1000,
+    "success_rate": 1,
+    "error_rate": 0,
+    "duration_ms": 51,
+    "qps": 19551.81300833736,
+    "error_count": 0,
+    "success_count": 1000,
+    "latency": {
+      "min_ms": 0.166253,
+      "max_ms": 19.147326,
+      "avg_ms": 4.77395848,
+      "p50_ms": 4.145474,
+      "p90_ms": 9.197108,
+      "p95_ms": 11.467102,
+      "p99_ms": 16.684773
+    },
+    "counters": {
+      "expected_error_path": 1000,
+      "limit_triggered": 1000,
+      "login_attempt": 1000
+    },
+    "notes": [
+      "expected_error_path=1000",
+      "limit_triggered=1000",
+      "login_attempt=1000"
+    ]
+  }
+]

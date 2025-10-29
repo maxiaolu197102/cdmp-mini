@@ -1,0 +1,148 @@
+{
+  // =============================================
+  // SQLTools 数据库连接配置
+  // =============================================
+  "sqltools.connections": [
+    {
+      "mysqlOptions": {
+        "authProtocol": "default",
+        "enableSsl": "Disabled"
+      },
+      "ssh": "Disabled",
+      "previewLimit": 50,
+      "server": "localhost",
+      "port": 3306,
+      "driver": "MariaDB",
+      "name": "IAM Database",
+      "database": "iam",
+      "username": "iam",
+      "askForPassword": true
+    }
+  ],
+  // =============================================
+  // 环境变量配置 - 用于测试和调试
+  // =============================================
+  "terminal.integrated.env.linux": {
+    "IAM_APISERVER_E2E": "1",
+    "SERVER_BIND_ADDRESS": "0.0.0.0",
+    "DEBUG_MODE": "true"
+  },
+  "terminal.integrated.env.windows": {
+    "IAM_APISERVER_E2E": "1",
+    "SERVER_BIND_ADDRESS": "0.0.0.0",
+    "DEBUG_MODE": "true"
+  },
+  "terminal.integrated.env.osx": {
+    "IAM_APISERVER_E2E": "1",
+    "SERVER_BIND_ADDRESS": "0.0.0.0",
+    "DEBUG_MODE": "true"
+  },
+  // =============================================
+  // 代码折叠配置 - 新增内容
+  // =============================================
+  "editor.folding": true,
+  "editor.foldingHighlight": true,
+  "editor.foldingImportsByDefault": true,
+  "editor.foldingStrategy": "auto",
+  "editor.showFoldingControls": "always",
+  // Go 语言特定的折叠配置
+  "[go]": {
+    "editor.foldingStrategy": "indentation",
+    "editor.defaultFoldingRangeProvider": "ms-vscode.Go",
+    "editor.foldingImportsByDefault": true
+  },
+  // 其他语言的折叠配置
+  "[javascript]": {
+    "editor.foldingImportsByDefault": true
+  },
+  "[typescript]": {
+    "editor.foldingImportsByDefault": true
+  },
+  "[python]": {
+    "editor.foldingImportsByDefault": true
+  },
+  "[java]": {
+    "editor.foldingImportsByDefault": true
+  },
+  // =============================================
+  // 通用开发配置
+  // =============================================
+  // 文件排除
+  "files.exclude": {
+    "**/node_modules": true,
+    "**/tmp": true,
+    "**/vendor": true,
+    "**/.git": true,
+    "**/.DS_Store": true
+  },
+  // 搜索排除
+  "search.exclude": {
+    "**/node_modules": true,
+    "**/tmp": true,
+    "**/vendor": true
+  },
+  // 自动保存
+  "files.autoSave": "onFocusChange",
+  // 格式化配置
+  "editor.formatOnSave": true,
+  "editor.formatOnPaste": true,
+  // 括号配对
+  "editor.matchBrackets": "always",
+  "editor.bracketPairColorization.enabled": true,
+  // 代码镜头 (显示引用计数等)
+  "editor.codeLens": true,
+  // =============================================
+  // Go 语言特定配置
+  // =============================================
+  "go.useLanguageServer": true,
+  "go.lintOnSave": "file",
+  "go.formatTool": "gofmt",
+  "go.testFlags": [
+    "-v"
+  ],
+  "go.coverOnSave": false,
+  "go.autocompleteUnimportedPackages": true,
+  // =============================================
+  // 终端配置
+  // =============================================
+  "terminal.integrated.shell.linux": "/bin/bash",
+  "terminal.integrated.fontSize": 14,
+  // =============================================
+  // 扩展特定配置
+  // =============================================
+  // Error Lens - 在代码行内显示错误
+  //"errorLens.enabled": true,
+  "errorLens.fontSize": "12px",
+  // Todo Tree - 高亮 TODO 注释
+  "todo-tree.general.tags": [
+    "TODO",
+    "FIXME",
+    "HACK",
+    "BUG",
+    "NOTE"
+  ],
+  "todo-tree.highlights.defaultHighlight": {
+    "foreground": "#ff0000",
+    "background": "#ffffff",
+    "icon": "checklist",
+    "iconColour": "#ff0000"
+  },
+  // =============================================
+  // 自定义快捷键 - 可选添加
+  // =============================================
+  // 如果需要自定义折叠快捷键，可以取消注释下面的配置
+  /*
+  "keybindings": [
+    {
+      "key": "ctrl+alt+[",
+      "command": "editor.foldAll",
+      "when": "editorTextFocus"
+    },
+    {
+      "key": "ctrl+alt+]",
+      "command": "editor.unfoldAll", 
+      "when": "editorTextFocus"
+    }
+  ]
+  */
+}

@@ -1,0 +1,62 @@
+[
+  {
+    "name": "exact_match_condition",
+    "description": "name in 条件命中指定用户",
+    "success": true,
+    "http_status": 202,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 1,
+    "checks": {
+      "response": true
+    },
+    "notes": [
+      "name in 条件命中指定用户"
+    ]
+  },
+  {
+    "name": "no_match_condition",
+    "description": "条件无匹配时应安全返回",
+    "success": true,
+    "http_status": 202,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 2,
+    "checks": {
+      "response": true
+    },
+    "notes": [
+      "条件无匹配时应安全返回"
+    ]
+  },
+  {
+    "name": "range_condition_isadmin",
+    "description": "范围条件 isAdmin.gte 命中已提升的管理员",
+    "success": true,
+    "http_status": 202,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 2,
+    "checks": {
+      "response": true
+    },
+    "notes": [
+      "范围条件 isAdmin.gte 命中已提升的管理员"
+    ]
+  },
+  {
+    "name": "complex_multi_field_condition",
+    "description": "组合 name.in 与 isAdmin.eq 仅更新符合的普通用户",
+    "success": true,
+    "http_status": 202,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 1,
+    "checks": {
+      "response": true
+    },
+    "notes": [
+      "组合 name.in 与 isAdmin.eq 仅更新符合的普通用户"
+    ]
+  }
+]

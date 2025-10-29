@@ -1,0 +1,62 @@
+[
+  {
+    "name": "single_field_patch",
+    "description": "PATCH 仅更新昵称",
+    "success": true,
+    "http_status": 202,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 3,
+    "checks": {
+      "response": true
+    },
+    "notes": [
+      "PATCH 仅更新昵称"
+    ]
+  },
+  {
+    "name": "clear_phone_to_null",
+    "description": "PATCH 清空手机号应落盘为 NULL",
+    "success": true,
+    "http_status": 202,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 4,
+    "checks": {
+      "response": true
+    },
+    "notes": [
+      "PATCH 清空手机号应落盘为 NULL"
+    ]
+  },
+  {
+    "name": "multi_field_patch",
+    "description": "PATCH 同时更新昵称与邮箱确保原子性",
+    "success": true,
+    "http_status": 202,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 3,
+    "checks": {
+      "response": true
+    },
+    "notes": [
+      "PATCH 同时更新昵称与邮箱确保原子性"
+    ]
+  },
+  {
+    "name": "optimistic_lock_conflict",
+    "description": "携带错误版本号的 PATCH 不应覆盖现有数据",
+    "success": true,
+    "http_status": 202,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 2,
+    "checks": {
+      "response": true
+    },
+    "notes": [
+      "携带错误版本号的 PATCH 不应覆盖现有数据"
+    ]
+  }
+]

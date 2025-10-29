@@ -1,0 +1,56 @@
+[
+  {
+    "scenario": "jwt_login_refresh_parallel",
+    "requests": 25,
+    "success_rate": 1,
+    "error_rate": 0,
+    "duration_ms": 10467,
+    "qps": 2.3882523150255612,
+    "error_count": 0,
+    "latency": {
+      "min_ms": 0,
+      "max_ms": 0,
+      "avg_ms": 0,
+      "p50_ms": 0,
+      "p90_ms": 0,
+      "p95_ms": 0,
+      "p99_ms": 0
+    }
+  },
+  {
+    "scenario": "jwt_logout_parallel",
+    "requests": 25,
+    "success_rate": 1,
+    "error_rate": 0,
+    "duration_ms": 10467,
+    "qps": 2.3882523150255612,
+    "error_count": 0,
+    "latency": {
+      "min_ms": 0,
+      "max_ms": 0,
+      "avg_ms": 0,
+      "p50_ms": 0,
+      "p90_ms": 0,
+      "p95_ms": 0,
+      "p99_ms": 0
+    }
+  },
+  {
+    "scenario": "jwt_full_flow",
+    "requests": 25,
+    "success_rate": 1,
+    "error_rate": 0,
+    "duration_ms": 10467,
+    "qps": 2.3882523150255612,
+    "error_count": 0,
+    "latency": {
+      "min_ms": 0,
+      "max_ms": 0,
+      "avg_ms": 0,
+      "p50_ms": 0,
+      "p90_ms": 0,
+      "p95_ms": 0,
+      "p99_ms": 0
+    }
+  }
+]

@@ -1,0 +1,32 @@
+[
+  {
+    "name": "row_level_forbidden",
+    "description": "非管理员无法更新他人账号",
+    "success": true,
+    "http_status": 403,
+    "code": 100207,
+    "message": "[code: 100207] 非管理员仅允许操作自己的账号，不允许修改他人信息",
+    "duration_ms": 0,
+    "checks": {
+      "permission_denied": true
+    },
+    "notes": [
+      "row level permission enforced"
+    ]
+  },
+  {
+    "name": "field_level_forbidden",
+    "description": "普通用户无权提升自身为管理员",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "用户更新成功",
+    "duration_ms": 0,
+    "checks": {
+      "permission_denied": true
+    },
+    "notes": [
+      "field level permission enforced"
+    ]
+  }
+]

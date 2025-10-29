@@ -1,0 +1,15 @@
+=== 程序版本信息 ===
+  gitVersion: v0.0.0-master+$Format:%h$
+   gitCommit: $Format:%H$              
+gitTreeState:                          
+   buildDate: 1970-01-01T00:00:00Z     
+   goVersion: go1.24.5                 
+    compiler: gc                       
+    platform: linux/amd64              
+
+=== JSON格式版本信息 ===
+{"gitVersion":"v0.0.0-master+$Format:%h$","gitCommit":"$Format:%H$","gitTreeState":"","buildDate":"1970-01-01T00:00:00Z","goVersion":"go1.24.5","compiler":"gc","platform":"linux/amd64"}\
+新增
+撒旦发生发sdf
+更新
+测试同步

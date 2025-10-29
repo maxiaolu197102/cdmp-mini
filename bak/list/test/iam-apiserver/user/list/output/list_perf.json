@@ -1,0 +1,20 @@
+[
+  {
+    "scenario": "list_parallel",
+    "requests": 36,
+    "success_rate": 1,
+    "error_rate": 0,
+    "duration_ms": 20,
+    "qps": 1795.0842515313939,
+    "error_count": 0,
+    "latency": {
+      "min_ms": 0,
+      "max_ms": 0,
+      "avg_ms": 0,
+      "p50_ms": 0,
+      "p90_ms": 0,
+      "p95_ms": 0,
+      "p99_ms": 0
+    }
+  }
+]
