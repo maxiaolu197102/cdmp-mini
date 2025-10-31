@@ -2,20 +2,20 @@
   {
     "scenario": "login_mixed_traffic",
     "requests": 1000,
-    "success_rate": 0.978,
-    "error_rate": 0.022,
-    "duration_ms": 816,
-    "qps": 1225.0815473081802,
-    "error_count": 22,
-    "success_count": 978,
+    "success_rate": 0.98,
+    "error_rate": 0.02,
+    "duration_ms": 553,
+    "qps": 1807.150495128966,
+    "error_count": 20,
+    "success_count": 980,
     "latency": {
-      "min_ms": 0.000772,
-      "max_ms": 774.917384,
-      "avg_ms": 78.032215003,
-      "p50_ms": 32.399299,
-      "p90_ms": 225.381686,
-      "p95_ms": 347.413749,
-      "p99_ms": 614.485173
+      "min_ms": 0.000836,
+      "max_ms": 381.47856,
+      "avg_ms": 49.095715085,
+      "p50_ms": 21.056616,
+      "p90_ms": 137.215116,
+      "p95_ms": 190.210177,
+      "p99_ms": 295.322828
     },
     "counters": {
       "expected_error_path": 100,
@@ -24,11 +24,11 @@
       "logout_attempt": 100,
       "logout_failure": 13,
       "logout_success": 87,
-      "missing_tokens": 22,
+      "missing_tokens": 20,
       "password_incorrect": 100,
       "refresh_attempt": 100,
-      "refresh_failure": 9,
-      "refresh_success": 91
+      "refresh_failure": 7,
+      "refresh_success": 93
     },
     "notes": [
       "expected_error_path=100",
@@ -37,11 +37,11 @@
       "logout_attempt=100",
       "logout_failure=13",
       "logout_success=87",
-      "missing_tokens=22",
+      "missing_tokens=20",
       "password_incorrect=100",
       "refresh_attempt=100",
-      "refresh_failure=9",
-      "refresh_success=91"
+      "refresh_failure=7",
+      "refresh_success=93"
     ]
   }
 ]

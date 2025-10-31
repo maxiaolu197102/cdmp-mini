@@ -13,7 +13,7 @@
     },
     "notes": [
       "管理员精确查询存在的用户",
-      "响应耗时=2.890519ms"
+      "响应耗时=2.777285ms"
     ]
   },
   {
@@ -38,7 +38,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 4,
+    "duration_ms": 6,
     "checks": {
       "email_match": true,
       "single_result": true,
@@ -55,7 +55,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 3,
+    "duration_ms": 6,
     "checks": {
       "ignored_sort_param": true
     },
@@ -85,7 +85,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 2,
+    "duration_ms": 5,
     "checks": {
       "max_limit_success": true
     },
@@ -100,7 +100,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 12,
+    "duration_ms": 6,
     "checks": {
       "empty_result": true
     },
@@ -115,7 +115,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 4,
+    "duration_ms": 6,
     "checks": {
       "nickname_preserved": true
     },
@@ -146,7 +146,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 1,
+    "duration_ms": 2,
     "checks": {
       "immediate_visible": true
     },
@@ -157,25 +157,30 @@
   {
     "name": "read_after_update",
     "description": "更新后查询同步校验",
-    "success": false,
-    "http_status": 400,
-    "code": 110004,
-    "message": "[code: 110004] 缺少版本号version",
-    "duration_ms": 3,
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 4,
+    "checks": {
+      "retrievable_post_update": true,
+      "update_request_success": true
+    },
     "notes": [
-      "更新后查询同步校验"
+      "更新后查询同步校验",
+      "更新操作异步生效，后续一致性通过可读性校验"
     ]
   },
   {
     "name": "read_after_delete",
     "description": "删除后查询返回未找到",
-    "success": false,
-    "http_status": 200,
-    "code": 100001,
-    "message": "操作成功",
-    "duration_ms": 4429,
+    "success": true,
+    "http_status": 404,
+    "code": 110001,
+    "message": "[code: 110001] 用户不存在",
+    "duration_ms": 613,
     "checks": {
-      "not_found_code": false
+      "not_found_code": true
     },
     "notes": [
       "删除后查询返回未找到"
@@ -187,8 +192,8 @@
     "success": true,
     "http_status": 500,
     "code": 110005,
-    "message": "[code: 110005] query raw users failed: [code: 100101] 扫描用户记录失败: sql: Scan error on column index 10, name \"loginedAt\": unsupported Scan, storing driver.Value type \u003cnil\u003e into type *time.Time",
-    "duration_ms": 126,
+    "message": "[code: 110005] 用户不存在,无法查询",
+    "duration_ms": 5,
     "checks": {
       "deleted_not_listed": true
     },
@@ -214,13 +219,13 @@
   {
     "name": "status_toggle_persistence",
     "description": "状态字段切换后的持久化校验",
-    "success": false,
-    "http_status": 400,
-    "code": 110004,
-    "message": "[code: 110004] 缺少版本号version",
-    "duration_ms": 168,
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "用户更新成功",
+    "duration_ms": 4,
     "checks": {
-      "status_update_success": false
+      "status_update_success": true
     },
     "notes": [
       "状态字段切换后的持久化校验"
@@ -233,7 +238,7 @@
     "http_status": 404,
     "code": 100005,
     "message": "[code: 100005] 业务不存在",
-    "duration_ms": 3,
+    "duration_ms": 0,
     "checks": {
       "rejected": true
     },
@@ -248,7 +253,7 @@
     "http_status": 400,
     "code": 100004,
     "message": "[code: 100004] 用户名不合法:名称部分必须由字母、数字、'-'、'_'或'.'组成，且首尾必须为字母或数字（例如：'MyName'，或'my.name'，或'123-abc'，用于验证的正则表达式：'([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]'）",
-    "duration_ms": 9,
+    "duration_ms": 2,
     "checks": {
       "no_data_leak": true
     },
@@ -263,7 +268,7 @@
     "http_status": 400,
     "code": 100004,
     "message": "[code: 100004] 用户名不合法:名称部分长度不能超过63个字符",
-    "duration_ms": 210,
+    "duration_ms": 2,
     "checks": {
       "handled": true
     },
@@ -278,7 +283,7 @@
     "http_status": 401,
     "code": 100205,
     "message": "[code: 100205] 缺少Authorization头，支持格式：\n1. Basic认证：Authorization: Basic {base64(username:password)}\n2. JWT认证：Authorization: Bearer {jwt-token}",
-    "duration_ms": 2,
+    "duration_ms": 0,
     "checks": {
       "missing_header": true
     },
@@ -308,7 +313,7 @@
     "http_status": 403,
     "code": 100207,
     "message": "[code: 100207] 非管理员仅允许操作自己的账号，不允许修改他人信息",
-    "duration_ms": 18,
+    "duration_ms": 1,
     "checks": {
       "access_blocked": true
     },
@@ -323,7 +328,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 48,
+    "duration_ms": 2,
     "checks": {
       "no_password": true,
       "no_token_field": true
@@ -339,7 +344,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 30,
+    "duration_ms": 2,
     "checks": {
       "business_code": true,
       "duration_recorded": true,
@@ -347,7 +352,7 @@
     },
     "notes": [
       "记录查询延迟与业务码",
-      "duration=30.700249ms"
+      "duration=2.654581ms"
     ]
   },
   {
@@ -362,7 +367,7 @@
     "notes": [
       "批量测试数据分布验证",
       "bulk_count=12",
-      "hot_users=[get_bulk_00_1761724409363251128_80619 get_bulk_01_1761724409841328062_90811 get_bulk_02_1761724410019615797_92749]"
+      "hot_users=[get_bulk_00_1761806986429220101_44323 get_bulk_01_1761806986925174009_04734 get_bulk_02_1761806987389926421_23261]"
     ]
   }
 ]

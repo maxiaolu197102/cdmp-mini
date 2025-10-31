@@ -75,10 +75,10 @@ type perfDataset struct {
 
 func TestGetPerformance(t *testing.T) {
 	env := framework.NewEnv(t)
+	env.DisableClientRateLimiter()
 	outputDir := env.EnsureOutputDir(t, performanceOutputDir)
 	recorder := framework.NewRecorder(t, outputDir, "get_performance")
 	defer recorder.Flush(t)
-
 	dataset := preparePerfDataset(t, env)
 	t.Cleanup(func() { dataset.cleanupAll(env) })
 

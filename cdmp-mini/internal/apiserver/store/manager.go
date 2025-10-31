@@ -98,9 +98,9 @@ func (c *ClusterAwareUserStore) DeleteCollection(ctx context.Context, usernames 
 	return c.writeStore.DeleteCollection(ctx, usernames, opts, opt) // 写操作用写库
 }
 
-func (c *ClusterAwareUserStore) List(ctx context.Context, username string, opts metav1.ListOptions, opt *options.Options) (*v1.UserList, error) {
+func (c *ClusterAwareUserStore) List(ctx context.Context, opts metav1.ListOptions, opt *options.Options) (*v1.UserList, error) {
 
-	return c.readStore.List(ctx, username, opts, opt) // 读操作用读库
+	return c.readStore.List(ctx, opts, opt) // 读操作用读库
 }
 
 func (c *ClusterAwareUserStore) ListAllUsernames(ctx context.Context) ([]string, error) {

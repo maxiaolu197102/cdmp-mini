@@ -45,6 +45,7 @@ func extractUserVersion(resp *framework.APIResponse) (uint64, error) {
 
 func TestUpdatePerformance(t *testing.T) {
 	env := framework.NewEnv(t)
+	env.DisableClientRateLimiter()
 	outputDir := env.EnsureOutputDir(t, perfTestDir)
 	recorder := framework.NewRecorder(t, outputDir, "update")
 	defer recorder.Flush(t)

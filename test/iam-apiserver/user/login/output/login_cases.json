@@ -6,7 +6,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "登录成功",
-    "duration_ms": 30,
+    "duration_ms": 38,
     "checks": {
       "access_token_issued": true,
       "operator_matches": true,
@@ -25,8 +25,8 @@
     "success": true,
     "http_status": 401,
     "code": 100206,
-    "message": "[code: 100206] 密码校验失败：用户名【login_wrong_1761724407354685471_17894】的密码不正确",
-    "duration_ms": 24,
+    "message": "[code: 100206] 密码校验失败：用户名【login_wrong_1761802995576238095_63607】的密码不正确",
+    "duration_ms": 50,
     "checks": {
       "invalid_credentials_rejected": true
     }
@@ -50,7 +50,7 @@
     "http_status": 403,
     "code": 110009,
     "message": "[code: 110009] 用户已经失效",
-    "duration_ms": 2,
+    "duration_ms": 3,
     "checks": {
       "disabled_blocked": true
     }
@@ -74,7 +74,7 @@
     "http_status": 400,
     "code": 110004,
     "message": "[code: 110004] 参数错误：username和password不能为空",
-    "duration_ms": 0,
+    "duration_ms": 1,
     "checks": {
       "password_empty_rejected": true
     }
@@ -86,7 +86,7 @@
     "http_status": 400,
     "code": 110004,
     "message": "[code: 110004] 名称部分长度不能超过63个字符",
-    "duration_ms": 1,
+    "duration_ms": 2,
     "checks": {
       "length_validation": true
     }
@@ -98,7 +98,7 @@
     "http_status": 400,
     "code": 110004,
     "message": "[code: 110004] 名称部分必须由字母、数字、'-'、'_'或'.'组成，且首尾必须为字母或数字（例如：'MyName'，或'my.name'，或'123-abc'，用于验证的正则表达式：'([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]'）",
-    "duration_ms": 1,
+    "duration_ms": 2,
     "checks": {
       "sql_injection_blocked": true
     }
@@ -110,7 +110,7 @@
     "http_status": 400,
     "code": 110004,
     "message": "[code: 110004] 前缀部分DNS-1123子域名必须由小写字母、数字、'-'或'.'组成，且首尾必须为字母或数字（例如：'example.com'，用于验证的正则表达式：'[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*'）:名称部分必须由字母、数字、'-'、'_'或'.'组成，且首尾必须为字母或数字（例如：'MyName'，或'my.name'，或'123-abc'，用于验证的正则表达式：'([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]'）",
-    "duration_ms": 1,
+    "duration_ms": 2,
     "checks": {
       "xss_blocked": true
     }
@@ -122,7 +122,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "登录成功",
-    "duration_ms": 39,
+    "duration_ms": 47,
     "checks": {
       "tokens_issued": true
     }
@@ -134,7 +134,7 @@
     "http_status": 429,
     "code": 100213,
     "message": "[code: 100213] 登录失败次数太多,15分钟后重试",
-    "duration_ms": 63,
+    "duration_ms": 50,
     "checks": {
       "lockout_triggered": true
     }
@@ -146,7 +146,7 @@
     "http_status": 400,
     "code": 110004,
     "message": "[code: 110004] 密码不合法：缺少大写字母，至少需要一个数字，缺少特殊字符，密码长度必须在8到200个字符之间",
-    "duration_ms": 3,
+    "duration_ms": 2,
     "checks": {
       "password_policy_enforced": true
     }
@@ -158,10 +158,22 @@
     "http_status": 200,
     "code": 100001,
     "message": "登录成功",
-    "duration_ms": 41,
+    "duration_ms": 59,
     "checks": {
       "distinct_tokens": true,
       "multi_session_access": true
+    }
+  },
+  {
+    "name": "refresh_token_flow",
+    "description": "刷新令牌成功获取新令牌",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 24,
+    "checks": {
+      "refresh_success": true
     }
   },
   {
@@ -171,7 +183,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 56,
+    "duration_ms": 24,
     "checks": {
       "token_revoked": true
     }
@@ -183,7 +195,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "登录成功",
-    "duration_ms": 2053,
+    "duration_ms": 2024,
     "checks": {
       "expired_rejected": true,
       "pre_expiry_access": true,
@@ -191,26 +203,26 @@
     },
     "notes": [
       "登录时使用 X-Debug-Token-Timeout=1s",
-      "初始 TTL ≈ 0.32s"
+      "初始 TTL ≈ 0.58s"
     ]
   },
   {
     "name": "audit_login_events",
     "description": "登录接口审计事件包含失败与成功记录",
-    "success": false,
+    "success": true,
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 3879,
+    "duration_ms": 259,
     "checks": {
       "audit_enabled": true,
-      "login_fail_audited": false,
-      "login_success_audited": false,
-      "route_recorded": false
+      "login_fail_audited": true,
+      "login_success_audited": true,
+      "route_recorded": true
     },
     "notes": [
       "校验 /admin/audit/events 中的 auth.login 成功与失败事件",
-      "成功事件=false, 失败事件=false, 启用=true"
+      "成功事件=true, 失败事件=true, 启用=true"
     ]
   },
   {

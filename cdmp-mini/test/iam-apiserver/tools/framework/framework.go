@@ -66,25 +66,27 @@ type AuditEvent struct {
 	OccurredAt   time.Time      `json:"OccurredAt"`
 }
 
+// Env 存储E2E测试环境的核心配置与状态信息，包含服务地址、认证信息、客户端实例及限流控制等
 type Env struct {
-	BaseURL             string
-	AdminUsername       string
-	AdminPassword       string
-	AdminToken          string
-	Client              *http.Client
-	OutputRoot          string
-	random              *rand.Rand
-	adminTokenMu        sync.Mutex
-	adminTokenTTL       time.Duration
-	adminTokenFetchedAt time.Time
-	limiters            map[string]*rate.Limiter
-	defaultLimiter      *rate.Limiter
-	producerLimiter     *ratelimiter.RateLimiterController
-	rateLimiterInfo     rateLimiterSnapshot
-	rateLimiterOnce     sync.Once
-	lazyAdminLogin      bool
-	userVersionMu       sync.RWMutex
-	userVersionMissing  bool
+	BaseURL                   string                             // 被测服务的基础URL（如"http://api.iam.com"）
+	AdminUsername             string                             // 管理员账号用户名（用于测试中获取管理员权限）
+	AdminPassword             string                             // 管理员账号密码（配合用户名登录获取令牌）
+	AdminToken                string                             // 管理员访问令牌（缓存的有效令牌，避免重复登录）
+	Client                    *http.Client                       // HTTP客户端实例（用于发送测试请求）
+	OutputRoot                string                             // 测试输出目录根路径（用于存储测试报告、日志等）
+	random                    *rand.Rand                         // 随机数生成器（用于生成唯一测试数据，如随机用户名）
+	adminTokenMu              sync.Mutex                         // 管理员令牌的互斥锁（保证多协程下令牌读写安全）
+	adminTokenTTL             time.Duration                      // 管理员令牌的有效期（用于判断令牌是否过期）
+	adminTokenFetchedAt       time.Time                          // 管理员令牌的获取时间（用于计算是否过期）
+	limiters                  map[string]*rate.Limiter           // 按接口/场景划分的限流控制器映射（key为场景标识，value为对应限流器）
+	defaultLimiter            *rate.Limiter                      // 默认限流控制器（未指定场景时使用的通用限流规则）
+	producerLimiter           *ratelimiter.RateLimiterController // 生产者专用限流控制器（可能用于消息队列等组件的限流）
+	rateLimiterInfo           rateLimiterSnapshot                // 限流控制器的快照信息（记录当前限流配置与状态，用于测试验证）
+	rateLimiterOnce           sync.Once                          // 限流控制器的初始化同步器（确保限流器只初始化一次）
+	lazyAdminLogin            bool                               // 是否启用管理员令牌懒加载（true表示首次需要时才登录获取令牌）
+	userVersionMu             sync.RWMutex                       // 用户版本信息的读写锁（多协程下安全读写用户版本数据）
+	userVersionMissing        bool                               // 用户版本信息是否缺失（标记是否需要重新获取用户版本）
+	clientRateLimiterDisabled atomic.Bool                        // 客户端限流开关（原子布尔值，并发安全地控制是否禁用客户端限流）
 }
 
 var (
@@ -102,9 +104,9 @@ const (
 func NewEnv(t *testing.T) *Env {
 	t.Helper() // 标记此函数为辅助函数
 
-	// if os.Getenv("IAM_APISERVER_E2E") == "" {
-	// 	t.Fatalf("login before change failed: %v", errors.New("IAM_APISERVER_E2E not set"))
-	// }
+	if os.Getenv("IAM_APISERVER_E2E") == "" {
+		t.Fatalf("login before change failed: %v", errors.New("IAM_APISERVER_E2E not set"))
+	}
 
 	baseURL := os.Getenv("IAM_APISERVER_BASEURL")
 	if baseURL == "" {
@@ -141,6 +143,12 @@ func NewEnv(t *testing.T) *Env {
 		env.lazyAdminLogin = true
 	}
 
+	if flag := strings.TrimSpace(os.Getenv("IAM_APISERVER_DISABLE_CLIENT_RATE_LIMITER")); flag != "" {
+		if parsed, err := strconv.ParseBool(flag); err == nil {
+			env.clientRateLimiterDisabled.Store(parsed)
+		}
+	}
+
 	opts := options.NewServerRunOptions()
 	opts.Complete()
 	if flag := strings.TrimSpace(os.Getenv("IAM_APISERVER_ENABLE_RATE_LIMITER")); flag != "" {
@@ -156,11 +164,12 @@ func NewEnv(t *testing.T) *Env {
 	kafkaOpts.Complete()
 	applyKafkaOverrides(kafkaOpts)
 	env.rateLimiterInfo = rateLimiterSnapshot{
-		Enabled:      opts.EnableRateLimiter,
-		StartingRate: float64(kafkaOpts.StartingRate),
-		MinRate:      float64(kafkaOpts.MinRate),
-		MaxRate:      float64(kafkaOpts.MaxRate),
-		AdjustPeriod: kafkaOpts.AdjustPeriod.String(),
+		Enabled:              opts.EnableRateLimiter,
+		ClientLimiterEnabled: !env.clientRateLimiterDisabled.Load(),
+		StartingRate:         float64(kafkaOpts.StartingRate),
+		MinRate:              float64(kafkaOpts.MinRate),
+		MaxRate:              float64(kafkaOpts.MaxRate),
+		AdjustPeriod:         kafkaOpts.AdjustPeriod.String(),
 	}
 	if opts.EnableRateLimiter {
 		env.limiters = make(map[string]*rate.Limiter)
@@ -684,6 +693,9 @@ func containsVersionColumnError(msg string) bool {
 }
 
 func (e *Env) waitRateLimit(method, path string) {
+	if e.clientRateLimiterDisabled.Load() {
+		return
+	}
 	var limiter *rate.Limiter
 	if strings.EqualFold(path, "/login") {
 		limiter = e.limiters["login"]
@@ -705,6 +717,21 @@ producerLimiter:
 	_ = e.producerLimiter.Wait(context.Background())
 }
 
+// DisableClientRateLimiter stops client-side pacing so performance tests can drive full load.
+func (e *Env) DisableClientRateLimiter() {
+	e.clientRateLimiterDisabled.Store(true)
+}
+
+// EnableClientRateLimiter restores client-side pacing for scenarios that expect it.
+func (e *Env) EnableClientRateLimiter() {
+	e.clientRateLimiterDisabled.Store(false)
+}
+
+// ClientRateLimiterDisabled reports whether client-side pacing is currently disabled.
+func (e *Env) ClientRateLimiterDisabled() bool {
+	return e.clientRateLimiterDisabled.Load()
+}
+
 func newRateLimiter(limit int, window time.Duration) *rate.Limiter {
 	if limit <= 0 {
 		return nil
@@ -724,12 +751,13 @@ func newRateLimiter(limit int, window time.Duration) *rate.Limiter {
 }
 
 type rateLimiterSnapshot struct {
-	Enabled      bool    `json:"enabled"`
-	StartingRate float64 `json:"starting_rate"`
-	MinRate      float64 `json:"min_rate"`
-	MaxRate      float64 `json:"max_rate"`
-	AdjustPeriod string  `json:"adjust_period"`
-	StatsSource  string  `json:"stats_source,omitempty"`
+	Enabled              bool    `json:"enabled"`
+	ClientLimiterEnabled bool    `json:"client_limiter_enabled"`
+	StartingRate         float64 `json:"starting_rate"`
+	MinRate              float64 `json:"min_rate"`
+	MaxRate              float64 `json:"max_rate"`
+	AdjustPeriod         string  `json:"adjust_period"`
+	StatsSource          string  `json:"stats_source,omitempty"`
 }
 
 func (e *Env) initProducerLimiter(t *testing.T, kafkaOpts *options.KafkaOptions) {
@@ -748,6 +776,7 @@ func (e *Env) initProducerLimiter(t *testing.T, kafkaOpts *options.KafkaOptions)
 func (e *Env) writeRateLimiterSnapshot(t *testing.T, outputDir string) {
 	e.rateLimiterOnce.Do(func() {
 		snapshot := e.rateLimiterInfo
+		snapshot.ClientLimiterEnabled = !e.clientRateLimiterDisabled.Load()
 		if !snapshot.Enabled {
 			snapshot.StatsSource = ""
 		}

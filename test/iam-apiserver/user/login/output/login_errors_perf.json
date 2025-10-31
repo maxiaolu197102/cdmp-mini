@@ -4,18 +4,18 @@
     "requests": 1000,
     "success_rate": 1,
     "error_rate": 0,
-    "duration_ms": 58,
-    "qps": 17181.806432586545,
+    "duration_ms": 47,
+    "qps": 20898.772178325627,
     "error_count": 0,
     "success_count": 1000,
     "latency": {
-      "min_ms": 0.176052,
-      "max_ms": 31.073423,
-      "avg_ms": 5.232531922000001,
-      "p50_ms": 3.179168,
-      "p90_ms": 12.636797,
-      "p95_ms": 22.568659,
-      "p99_ms": 26.820033
+      "min_ms": 0.185602,
+      "max_ms": 21.272042,
+      "avg_ms": 4.45457068,
+      "p50_ms": 3.598728,
+      "p90_ms": 9.643117,
+      "p95_ms": 11.393937,
+      "p99_ms": 16.082625
     },
     "counters": {
       "expected_error_path": 1000,

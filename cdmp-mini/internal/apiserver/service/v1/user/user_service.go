@@ -1247,7 +1247,7 @@ func (u *UserService) warmContactCache() error {
 		}
 
 		result, err := util.RetryWithBackoff(3, isRetryableError, func() (interface{}, error) {
-			return u.Store.Users().List(ctx, "", opts, u.Options)
+			return u.Store.Users().List(ctx, opts, u.Options)
 		})
 		if err != nil {
 			return err

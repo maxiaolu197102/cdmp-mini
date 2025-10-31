@@ -130,6 +130,7 @@ func TestDeleteForcePerformanceSuite(t *testing.T) {
 	}
 
 	env := framework.NewEnv(t)
+	env.DisableClientRateLimiter()
 	outputDir := env.EnsureOutputDir(t, performanceOutputDir)
 	recorder := framework.NewRecorder(t, outputDir, "delete_force_perf")
 	defer recorder.Flush(t)

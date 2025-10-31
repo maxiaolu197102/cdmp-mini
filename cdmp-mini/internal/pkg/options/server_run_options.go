@@ -17,7 +17,7 @@ const (
 	DefaultContactLookupTimeout           = 2 * time.Second
 	DefaultContactRefreshTimeout          = 3 * time.Second
 	DefaultContactPreflightMaxConcurrency = 64
-	// MinUserPendingCreateTTL guarantees pending markers survive slow consumer restarts and large Kafka backlogs.
+	//MinUserPendingCreateTTL guarantees pending markers survive slow consumer restarts and large Kafka backlogs.
 	MinUserPendingCreateTTL = 10 * time.Minute
 )
 
@@ -75,53 +75,54 @@ type ServerRunOptions struct {
 	UserPendingCreateTTL  time.Duration `json:"userPendingCreateTTL" mapstructure:"userPendingCreateTTL"`
 }
 
+// NewServerRunOptions 初始化并返回服务器运行的默认配置选项
 func NewServerRunOptions() *ServerRunOptions {
 	return &ServerRunOptions{
-		Mode:                           gin.ReleaseMode,
-		Healthz:                        true,
-		Middlewares:                    []string{},
-		EnableProfiling:                true,
-		EnableMetrics:                  true,
-		FastDebugStartup:               false,
-		CookieDomain:                   "",
-		CookieSecure:                   false,
-		CtxTimeout:                     50 * time.Second,
-		Env:                            "development",
-		LoginRateLimit:                 500000, // 5万/分钟
-		WriteRateLimit:                 500000, // 写操作默认限流（每 window）
-		LoginWindow:                    2 * time.Minute,
-		MaxLoginFailures:               5,
-		LoginFailReset:                 15 * time.Minute,
-		LoginFastFailThreshold:         0,
-		LoginFastFailMessage:           "系统繁忙，请稍后再试",
-		LoginUpdateBuffer:              1024,
-		LoginUpdateBatchSize:           64,
-		LoginUpdateFlushInterval:       200 * time.Millisecond,
-		LoginUpdateTimeout:             2 * time.Second,
-		LoginCredentialCacheTTL:        30 * time.Second, //凭证缓存有效期
-		LoginCredentialCacheSize:       1024,             //凭证缓存最大条目数
-		AdminToken:                     "",
-		EnableRateLimiter:              false,             // 默认启用生产端限流器
-		MaxGoroutines:                  100,               // 默认最大并发处理数
-		MaxQueueSize:                   100,               // 默认任务队列大小
-		TimeoutThreshold:               100 * time.Second, // 默认单个请求超时阈值
-		EnableContactWarmup:            false,             //联系人预热
-		EnableUserTraceLogging:         true,              //跟踪日志
-		UserTraceLogSampleRate:         0.1,
-		UserTraceForceLogErrors:        true,
-		UserTraceDisableLogging:        false,
-		ContactLookupTimeout:           DefaultContactLookupTimeout,
-		ContactRefreshTimeout:          DefaultContactRefreshTimeout,
-		ContactPreflightMaxConcurrency: DefaultContactPreflightMaxConcurrency,
-		ProducerFallbackDir:            "/var/log/iam/producer",
-		PasswordHashCost:               6,
-		PasswordHashAlgorithm:          auth.AlgorithmArgon2id,
-		Argon2Time:                     1,
-		Argon2MemoryKB:                 32 * 1024,
-		Argon2Parallelism:              2,
-		Argon2KeyLength:                32,
-		Argon2SaltLength:               16,
-		UserPendingCreateTTL:           MinUserPendingCreateTTL,
+		Mode:                           gin.ReleaseMode,         // Gin框架运行模式：默认生产模式（ReleaseMode），关闭调试日志
+		Healthz:                        true,                    // 是否启用健康检查接口（如/healthz），默认开启
+		Middlewares:                    []string{},              // 全局启用的中间件列表，默认为空（可动态添加）
+		EnableProfiling:                true,                    // 是否启用性能分析（如pprof），默认开启
+		EnableMetrics:                  true,                    // 是否启用监控指标采集（如Prometheus），默认开启
+		FastDebugStartup:               false,                   // 是否启用快速调试启动模式（跳过部分初始化步骤），默认关闭
+		CookieDomain:                   "",                      // Cookie绑定的域名，默认为空（适用于当前域名）
+		CookieSecure:                   false,                   // Cookie是否仅通过HTTPS传输，默认关闭（开发环境常用）
+		CtxTimeout:                     60 * time.Second,        // 上下文超时时间：请求处理的最大超时，默认60秒
+		TimeoutThreshold:               100 * time.Second,       // 单个请求超时阈值：超过该时间强制终止处理
+		Env:                            "development",           // 运行环境标识：默认开发环境（development）
+		LoginRateLimit:                 500000,                  // 登录接口限流阈值：50万次/分钟（结合LoginWindow生效）
+		LoginWindow:                    2 * time.Minute,         // 登录限流时间窗口：2分钟（与LoginRateLimit配合限制单位时间请求数）
+		WriteRateLimit:                 500000,                  // 写操作默认限流阈值：每时间窗口内的最大请求数
+		MaxLoginFailures:               5,                       // 最大登录失败次数：超过该次数可能触发临时锁定
+		LoginFailReset:                 15 * time.Minute,        // 登录失败计数重置时间：15分钟后失败次数清零
+		LoginFastFailThreshold:         0,                       // 登录快速失败阈值：超过该值直接返回失败（0表示不启用）
+		LoginFastFailMessage:           "系统繁忙，请稍后再试",            // 登录快速失败时返回的提示信息
+		LoginUpdateBuffer:              1024,                    // 登录状态更新缓冲区大小：批量处理登录记录的缓冲区容量
+		LoginUpdateBatchSize:           64,                      // 登录状态批量更新大小：每次批量写入的最大记录数
+		LoginUpdateFlushInterval:       200 * time.Millisecond,  // 登录状态刷新间隔：缓冲区数据定时写入的间隔（200毫秒）
+		LoginUpdateTimeout:             2 * time.Second,         // 登录状态更新超时时间：批量写入操作的最大超时
+		LoginCredentialCacheTTL:        30 * time.Second,        // 登录凭证缓存有效期：30秒（减少重复校验开销）
+		LoginCredentialCacheSize:       1024,                    // 登录凭证缓存最大条目数：最多缓存1024条凭证
+		AdminToken:                     "",                      // 管理员令牌：用于绕过部分权限校验的特殊令牌（默认空）
+		EnableRateLimiter:              false,                   // 是否启用生产端限流器：默认关闭（按需开启）
+		MaxGoroutines:                  100,                     // 默认最大并发处理协程数：控制同时处理请求的协程上限
+		MaxQueueSize:                   100,                     // 默认任务队列大小：请求排队等待的最大数量
+		EnableUserTraceLogging:         true,                    // 是否启用用户操作跟踪日志：默认开启
+		UserTraceLogSampleRate:         0.1,                     // 用户跟踪日志采样率：10%的请求会记录详细日志
+		UserTraceForceLogErrors:        true,                    // 错误时是否强制记录跟踪日志：默认开启（即使未命中采样）
+		UserTraceDisableLogging:        false,                   // 是否禁用用户跟踪日志：默认关闭（与EnableUserTraceLogging配合）
+		EnableContactWarmup:            false,                   // 是否启用联系人预热：提前加载联系人数据（默认关闭）
+		ContactLookupTimeout:           2 * time.Second,         // 联系人查询超时时间：使用默认值
+		ContactRefreshTimeout:          3 * time.Second,         // 联系人刷新超时时间：使用默认值
+		ContactPreflightMaxConcurrency: 64,                      // 联系人预检查最大并发数：使用默认值
+		ProducerFallbackDir:            "/var/log/iam/producer", // 生产者降级日志目录：无法正常发送时的日志存储路径
+		PasswordHashCost:               6,                       // 密码哈希计算成本：数值越高越安全但耗时越长（适用于Argon2等算法）
+		PasswordHashAlgorithm:          auth.AlgorithmArgon2id,  // 密码哈希算法：默认使用Argon2id（高安全性算法）
+		Argon2Time:                     1,                       // Argon2算法的时间成本参数：迭代次数
+		Argon2MemoryKB:                 8 * 1024,                // Argon2算法的内存成本参数：8MB（8*1024 KB）
+		Argon2Parallelism:              1,                       // Argon2算法的并行度参数：单线程降低 GC/CPU 压力
+		Argon2KeyLength:                32,                      // Argon2算法生成的哈希值长度：32字节
+		Argon2SaltLength:               16,                      // Argon2算法使用的盐值长度：16字节
+		UserPendingCreateTTL:           MinUserPendingCreateTTL, // 待创建用户的有效期：使用最小默认值
 	}
 }
 
@@ -265,10 +266,10 @@ func (s *ServerRunOptions) Complete() {
 		s.Argon2Time = 1
 	}
 	if s.Argon2MemoryKB == 0 {
-		s.Argon2MemoryKB = 32 * 1024
+		s.Argon2MemoryKB = 8 * 1024
 	}
 	if s.Argon2Parallelism == 0 {
-		s.Argon2Parallelism = 2
+		s.Argon2Parallelism = 1
 	}
 	if s.Argon2KeyLength == 0 {
 		s.Argon2KeyLength = 32

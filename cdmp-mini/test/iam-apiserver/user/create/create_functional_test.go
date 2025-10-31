@@ -316,7 +316,7 @@ func TestCreateFunctional(t *testing.T) {
 			"metadata": map[string]any{"name": uniqueName(10)},
 			"password": basePassword,
 			"email":    fmt.Sprintf("%s@example.com", uniqueName(6)),
-			"phone":    "+8613800000000",
+			"phone":    fmt.Sprintf("+86138%08d", rand.Intn(1_0000_0000)),
 		}
 		ok := performCreate(t, env, "", validPayload)
 		assertStatus(t, ok.resp, http.StatusCreated, code.ErrSuccess)

@@ -1,0 +1,267 @@
+[
+  {
+    "name": "id_filter_match",
+    "description": "id 参数应精确匹配用户记录",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 3,
+    "checks": {
+      "code_ok": true,
+      "http_ok": true,
+      "single_result": true,
+      "username_match": true
+    },
+    "notes": [
+      "query=id=93020852\u0026limit=1",
+      "id 参数应精确匹配用户记录"
+    ]
+  },
+  {
+    "name": "exact_name_filter",
+    "description": "name 参数应返回目标用户",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 2,
+    "checks": {
+      "code_ok": true,
+      "http_ok": true,
+      "single_result": true,
+      "username_match": true
+    },
+    "notes": [
+      "query=limit=5\u0026name=list_fn_primary_1761874312840927600_56055",
+      "name 参数应返回目标用户"
+    ]
+  },
+  {
+    "name": "default_status_excludes_disabled",
+    "description": "默认状态过滤应排除禁用用户",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 2,
+    "checks": {
+      "code_ok": true,
+      "http_ok": true,
+      "no_disabled_seen": true
+    },
+    "notes": [
+      "query=limit=5\u0026name=list_fn_multi_d_1761874314761691392_22684",
+      "默认状态过滤应排除禁用用户"
+    ]
+  },
+  {
+    "name": "status_override_returns_disabled",
+    "description": "显式 status=0 应返回禁用用户",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 2,
+    "checks": {
+      "code_ok": true,
+      "http_ok": true,
+      "single_result": true,
+      "username_match": true
+    },
+    "notes": [
+      "query=limit=5\u0026name=list_fn_multi_d_1761874314761691392_22684\u0026status=0",
+      "显式 status=0 应返回禁用用户"
+    ]
+  },
+  {
+    "name": "multi_status_combination",
+    "description": "status=0,1 结合 email[like] 应返回多条记录",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 3,
+    "checks": {
+      "code_ok": true,
+      "contains_active": true,
+      "contains_disabled": true,
+      "http_ok": true,
+      "multi_results": true
+    },
+    "notes": [
+      "query=email%5Blike%5D=multi1761874314298580001\u0026status=0%2C1",
+      "returned=2",
+      "status=0,1 结合 email[like] 应返回多条记录"
+    ]
+  },
+  {
+    "name": "is_admin_true_filter",
+    "description": "isAdmin=true 应仅返回管理员用户",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 2,
+    "checks": {
+      "code_ok": true,
+      "http_ok": true,
+      "is_admin": true,
+      "single_result": true,
+      "username_match": true
+    },
+    "notes": [
+      "query=isAdmin=true\u0026limit=5\u0026name=list_fn_admin_1761874313842225171_60200",
+      "isAdmin=true 应仅返回管理员用户"
+    ]
+  },
+  {
+    "name": "email_like_filter",
+    "description": "email[like] 可模糊匹配邮箱",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 2,
+    "checks": {
+      "code_ok": true,
+      "contains_contact": true,
+      "http_ok": true,
+      "non_empty": true
+    },
+    "notes": [
+      "query=email%5Blike%5D=contact.list_fn_contact_1761874315216119853_67813\u0026limit=5",
+      "returned=1",
+      "email[like] 可模糊匹配邮箱"
+    ]
+  },
+  {
+    "name": "phone_like_filter",
+    "description": "phone[like] 可模糊匹配手机号",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 2,
+    "checks": {
+      "code_ok": true,
+      "contains_contact": true,
+      "http_ok": true,
+      "non_empty": true
+    },
+    "notes": [
+      "query=limit=5\u0026phone%5Blike%5D=151084",
+      "returned=1",
+      "phone[like] 可模糊匹配手机号"
+    ]
+  },
+  {
+    "name": "created_at_range_filter",
+    "description": "createdAt 窗口应准确筛选用户",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 2,
+    "checks": {
+      "code_ok": true,
+      "http_ok": true,
+      "returned_single": true,
+      "within_window": true
+    },
+    "notes": [
+      "query=createdAt%5Bgte%5D=2025-10-31T09%3A30%3A53%2B08%3A00\u0026createdAt%5Blte%5D=2025-10-31T09%3A32%3A53%2B08%3A00\u0026name=list_fn_primary_1761874312840927600_56055",
+      "target_created_at=2025-10-31T09:31:53+08:00",
+      "createdAt 窗口应准确筛选用户"
+    ]
+  },
+  {
+    "name": "pagination_offset_limit",
+    "description": "limit/offset 应按 id DESC 分页",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 2,
+    "checks": {
+      "code_ok": true,
+      "http_ok": true,
+      "order_expected": true,
+      "returned_two": true
+    },
+    "notes": [
+      "query=email%5Blike%5D=page1761874315705214423\u0026limit=2\u0026offset=1\u0026status=1",
+      "expected=[list_fn_page_2_1761874316691564266_38415,list_fn_page_1_1761874316219770384_67234]",
+      "limit/offset 应按 id DESC 分页"
+    ]
+  },
+  {
+    "name": "field_selector_compatibility",
+    "description": "fieldSelector=name=xxx 仍保持兼容",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 3,
+    "checks": {
+      "code_ok": true,
+      "http_ok": true,
+      "single_result": true,
+      "username_match": true
+    },
+    "notes": [
+      "query=fieldSelector=name%3Dlist_fn_primary_1761874312840927600_56055\u0026limit=5",
+      "fieldSelector=name=xxx 仍保持兼容"
+    ]
+  },
+  {
+    "name": "invalid_status_parameter",
+    "description": "非法 status 值应返回参数错误",
+    "success": true,
+    "http_status": 400,
+    "code": 110004,
+    "message": "[code: 110004] status 参数值非法: not-a-number",
+    "duration_ms": 2,
+    "checks": {
+      "code_invalid": true,
+      "http_bad_request": true
+    },
+    "notes": [
+      "query=status=not-a-number",
+      "非法 status 值应返回参数错误"
+    ]
+  },
+  {
+    "name": "invalid_time_parameter",
+    "description": "非法时间格式应返回参数错误",
+    "success": true,
+    "http_status": 400,
+    "code": 110004,
+    "message": "[code: 110004] createdAt[gte] 解析失败: 时间格式不支持: not-a-time",
+    "duration_ms": 2,
+    "checks": {
+      "code_invalid": true,
+      "http_bad_request": true
+    },
+    "notes": [
+      "query=createdAt%5Bgte%5D=not-a-time",
+      "非法时间格式应返回参数错误"
+    ]
+  },
+  {
+    "name": "unauthorized_without_token",
+    "description": "未携带凭证应返回 401",
+    "success": true,
+    "http_status": 401,
+    "code": 100205,
+    "message": "[code: 100205] 缺少Authorization头，支持格式：\n1. Basic认证：Authorization: Basic {base64(username:password)}\n2. JWT认证：Authorization: Bearer {jwt-token}",
+    "duration_ms": 0,
+    "checks": {
+      "http_unauthorized": true
+    },
+    "notes": [
+      "query=limit=1",
+      "未携带凭证应返回 401"
+    ]
+  }
+]

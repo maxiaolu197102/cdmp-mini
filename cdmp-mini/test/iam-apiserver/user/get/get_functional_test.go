@@ -50,8 +50,9 @@ type getFunctionalScenario struct {
 }
 
 type userRecord struct {
-	Spec   framework.UserSpec
-	Tokens *framework.AuthTokens
+	Spec    framework.UserSpec
+	Tokens  *framework.AuthTokens
+	Version uint64
 }
 
 type getDataset struct {
@@ -203,6 +204,7 @@ func (d *getDataset) newUser(t *testing.T, env *framework.Env, prefix string, ne
 	if needToken {
 		record.Tokens = env.LoginOrFail(t, spec.Name, spec.Password)
 	}
+	record.Version = 1
 	return record
 }
 
@@ -458,7 +460,15 @@ func runReadAfterUpdate(t *testing.T, env *framework.Env, data *getDataset) scen
 	updated := data.UpdateTarget.Spec
 	updated.Nickname = fmt.Sprintf("更新昵称-%d", time.Now().UnixNano())
 	start := time.Now()
-	resp, err := env.UpdateUser(updated)
+	if data.UpdateTarget.Version == 0 {
+		data.UpdateTarget.Version = 1
+	}
+	payload := map[string]any{
+		"metadata": map[string]string{"name": updated.Name},
+		"nickname": updated.Nickname,
+		"version":  data.UpdateTarget.Version,
+	}
+	resp, err := env.AdminRequest(http.MethodPut, fmt.Sprintf("/v1/users/%s", updated.Name), payload)
 	result.duration = time.Since(start)
 	if err != nil {
 		result.err = fmt.Errorf("update user: %w", err)
@@ -469,6 +479,12 @@ func runReadAfterUpdate(t *testing.T, env *framework.Env, data *getDataset) scen
 		result.code = resp.Code
 		result.message = resp.Message
 		result.success = false
+		return result
+	}
+	if version, err := extractUpdateUserVersion(resp); err == nil && version > 0 {
+		data.UpdateTarget.Version = version
+	} else if err != nil {
+		result.err = fmt.Errorf("parse update version: %w", err)
 		return result
 	}
 	token := env.AdminTokenOrFail(t)
@@ -593,7 +609,15 @@ func runStatusToggle(t *testing.T, env *framework.Env, data *getDataset) scenari
 	originalStatus := spec.Status
 	spec.Status = 0
 	start := time.Now()
-	resp, err := env.UpdateUser(spec)
+	if data.UpdateTarget.Version == 0 {
+		data.UpdateTarget.Version = 1
+	}
+	disablePayload := map[string]any{
+		"metadata": map[string]string{"name": spec.Name},
+		"status":   spec.Status,
+		"version":  data.UpdateTarget.Version,
+	}
+	resp, err := env.AdminRequest(http.MethodPut, fmt.Sprintf("/v1/users/%s", spec.Name), disablePayload)
 	result.duration = time.Since(start)
 	if err != nil {
 		result.err = fmt.Errorf("disable user: %w", err)
@@ -604,9 +628,31 @@ func runStatusToggle(t *testing.T, env *framework.Env, data *getDataset) scenari
 	result.message = resp.Message
 	result.checks["status_update_success"] = resp.HTTPStatus() == http.StatusOK && resp.Code == code.ErrSuccess
 	result.success = result.checks["status_update_success"]
-	spec.Status = originalStatus
-	_, _ = env.UpdateUser(spec)
-	data.UpdateTarget.Spec.Status = originalStatus
+	if result.success {
+		version, err := extractUpdateUserVersion(resp)
+		if err != nil {
+			result.err = fmt.Errorf("parse disable version: %w", err)
+			return result
+		}
+		if version > 0 {
+			data.UpdateTarget.Version = version
+		}
+		data.UpdateTarget.Spec.Status = spec.Status
+	}
+
+	restorePayload := map[string]any{
+		"metadata": map[string]string{"name": spec.Name},
+		"status":   originalStatus,
+		"version":  data.UpdateTarget.Version,
+	}
+	if respRestore, err := env.AdminRequest(http.MethodPut, fmt.Sprintf("/v1/users/%s", spec.Name), restorePayload); err == nil && respRestore != nil {
+		if respRestore.HTTPStatus() == http.StatusOK && respRestore.Code == code.ErrSuccess {
+			if version, vErr := extractUpdateUserVersion(respRestore); vErr == nil && version > 0 {
+				data.UpdateTarget.Version = version
+			}
+			data.UpdateTarget.Spec.Status = originalStatus
+		}
+	}
 	return result
 }
 
@@ -830,4 +876,21 @@ func extractUsernameFromGet(resp *framework.APIResponse) (string, error) {
 		return "", fmt.Errorf("payload missing get")
 	}
 	return value, nil
+}
+
+func extractUpdateUserVersion(resp *framework.APIResponse) (uint64, error) {
+	if resp == nil || len(resp.Data) == 0 {
+		return 0, fmt.Errorf("empty response data")
+	}
+	var payload struct {
+		UpdateUser struct {
+			Metadata struct {
+				Version uint64 `json:"version"`
+			} `json:"metadata"`
+		} `json:"update_user"`
+	}
+	if err := json.Unmarshal(resp.Data, &payload); err != nil {
+		return 0, err
+	}
+	return payload.UpdateUser.Metadata.Version, nil
 }

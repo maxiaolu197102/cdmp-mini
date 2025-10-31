@@ -15,4 +15,5 @@ type PolicyStore interface {
 	DeleteCollection(ctx context.Context, username string, names []string, opts metav1.DeleteOptions) error
 	Get(ctx context.Context, username string, name string, opts metav1.GetOptions) (*v1.Policy, error)
 	List(ctx context.Context, username string, opts metav1.ListOptions) (*v1.PolicyList, error)
+	CountByUsernames(ctx context.Context, usernames []string) (map[string]int64, error)
 }

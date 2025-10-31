@@ -2,6 +2,7 @@ package policy
 
 import (
 	"context"
+	"strings"
 
 	gormutil "github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/util"
 	v1 "github.com/maxiaolu1981/cretem/nexuscore/api/apiserver/v1"
@@ -47,4 +48,49 @@ func (p *Policy) List(ctx context.Context, username string, opts metav1.ListOpti
 
 	return ret, nil
 
+}
+
+func (p *Policy) CountByUsernames(ctx context.Context, usernames []string) (map[string]int64, error) {
+	result := make(map[string]int64, len(usernames))
+	if p == nil || p.Db == nil {
+		return result, nil
+	}
+	unique := make([]string, 0, len(usernames))
+	seen := make(map[string]struct{}, len(usernames))
+	for _, name := range usernames {
+		clean := strings.TrimSpace(name)
+		if clean == "" {
+			continue
+		}
+		if _, ok := seen[clean]; ok {
+			continue
+		}
+		seen[clean] = struct{}{}
+		unique = append(unique, clean)
+	}
+	if len(unique) == 0 {
+		return result, nil
+	}
+	type countRow struct {
+		Username string
+		Total    int64
+	}
+	rows := make([]countRow, 0, len(unique))
+	query := p.Db.WithContext(ctx).
+		Model(&v1.Policy{}).
+		Select("username, COUNT(*) as total").
+		Where("username IN ?", unique).
+		Group("username")
+	if err := query.Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		result[row.Username] = row.Total
+	}
+	for name := range seen {
+		if _, ok := result[name]; !ok {
+			result[name] = 0
+		}
+	}
+	return result, nil
 }

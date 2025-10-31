@@ -1,7 +1,7 @@
 package util
 
 // DefaultLimit define the default number of records to be retrieved.
-const DefaultLimit = 20
+const DefaultLimit = 100
 
 // LimitAndOffset contains offset and limit fields.
 type LimitAndOffset struct {

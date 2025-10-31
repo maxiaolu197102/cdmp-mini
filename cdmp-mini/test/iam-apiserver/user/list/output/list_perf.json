@@ -1,0 +1,154 @@
+[
+  {
+    "scenario": "baseline_serial",
+    "requests": 40,
+    "success_rate": 1,
+    "error_rate": 0,
+    "duration_ms": 62,
+    "qps": 637.4658844195307,
+    "error_count": 0,
+    "success_count": 40,
+    "latency": {
+      "min_ms": 1.376551,
+      "max_ms": 1.960938,
+      "avg_ms": 1.567615,
+      "p50_ms": 1.538589,
+      "p90_ms": 1.737371,
+      "p95_ms": 1.789779,
+      "p99_ms": 1.960938
+    },
+    "counters": {
+      "code_100001": 40,
+      "error": 0,
+      "success": 40
+    },
+    "notes": [
+      "requests=40",
+      "query=name",
+      "串行请求校验稳定性"
+    ]
+  },
+  {
+    "scenario": "parallel_mixed_filters",
+    "requests": 60,
+    "success_rate": 1,
+    "error_rate": 0,
+    "duration_ms": 41,
+    "qps": 1438.8415023759471,
+    "error_count": 0,
+    "success_count": 60,
+    "latency": {
+      "min_ms": 1.348561,
+      "max_ms": 17.605888,
+      "avg_ms": 2.804383,
+      "p50_ms": 1.671011,
+      "p90_ms": 5.068499,
+      "p95_ms": 9.859713,
+      "p99_ms": 17.605888
+    },
+    "counters": {
+      "code_100001": 60,
+      "error": 0,
+      "profile_by_name": 15,
+      "profile_disabled_status": 15,
+      "profile_email_like": 15,
+      "profile_phone_like": 15,
+      "success": 60
+    },
+    "notes": [
+      "workers=6 iterations=10",
+      "多过滤组合并发读取"
+    ]
+  },
+  {
+    "scenario": "pagination_window_scan",
+    "requests": 16,
+    "success_rate": 1,
+    "error_rate": 0,
+    "duration_ms": 23,
+    "qps": 667.62013949589,
+    "error_count": 0,
+    "success_count": 16,
+    "latency": {
+      "min_ms": 1.364237,
+      "max_ms": 1.726706,
+      "avg_ms": 1.496702,
+      "p50_ms": 1.453015,
+      "p90_ms": 1.64667,
+      "p95_ms": 1.726706,
+      "p99_ms": 1.726706
+    },
+    "counters": {
+      "code_100001": 16,
+      "cycles": 4,
+      "error": 0,
+      "pages": 4,
+      "success": 16
+    },
+    "notes": [
+      "pages=4 cycles=4",
+      "多页扫描分页一致性"
+    ]
+  },
+  {
+    "scenario": "invalid_parameter_resilience",
+    "requests": 12,
+    "success_rate": 1,
+    "error_rate": 0,
+    "duration_ms": 12,
+    "qps": 982.149996730259,
+    "error_count": 0,
+    "success_count": 12,
+    "latency": {
+      "min_ms": 0.942213,
+      "max_ms": 1.150359,
+      "avg_ms": 1.017362,
+      "p50_ms": 1.003618,
+      "p90_ms": 1.05357,
+      "p95_ms": 1.150359,
+      "p99_ms": 1.150359
+    },
+    "counters": {
+      "code_110004": 12,
+      "error": 0,
+      "invalid_extend": 3,
+      "invalid_offset": 3,
+      "invalid_status": 3,
+      "invalid_time": 3,
+      "success": 12
+    },
+    "notes": [
+      "variants=4",
+      "非法参数快速失败"
+    ]
+  },
+  {
+    "scenario": "load_user_parallel",
+    "requests": 64,
+    "success_rate": 1,
+    "error_rate": 0,
+    "duration_ms": 15,
+    "qps": 4083.0898578344672,
+    "error_count": 0,
+    "success_count": 64,
+    "latency": {
+      "min_ms": 1.251929,
+      "max_ms": 3.555702,
+      "avg_ms": 1.754164,
+      "p50_ms": 1.626185,
+      "p90_ms": 2.515315,
+      "p95_ms": 2.756994,
+      "p99_ms": 3.555702
+    },
+    "counters": {
+      "code_100001": 64,
+      "error": 0,
+      "load_users": 12,
+      "success": 64
+    },
+    "notes": [
+      "workers=8 iterations=8",
+      "批量用户并发读取"
+    ]
+  }
+]

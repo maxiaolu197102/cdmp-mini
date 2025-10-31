@@ -1,5 +1,63 @@
-用户创建全链路核心机制拆解（问题 - 方案 - 闭环）
+<!-- markdownlint-disable MD029 -->
+# 用户创建全链路核心机制拆解（问题 - 方案 - 闭环）
+
 本文围绕用户创建链路的 3 大核心问题（重复创建、标记残留、链路容错），以「问题场景→解决方案→异常闭环」的逻辑，用可视化格式拆解 5 个关键机制，每个机制包含细节说明与流程图示。
+
+测试 TODO（覆盖功能 + k6 压测）
+
+- [x] 梳理 create 控制层/服务层/存储层的参数校验与幂等逻辑，列出关键入口与依赖（Redis/Kafka/MySQL）。
+- [x] go test ./internal/apiserver/control/v1/user ./internal/apiserver/service/v1/user 验证单元测试，补齐 create 相关断言。
+- [x] 通过集成环境执行一次全链路手工测试：POST /v1/users 正常创建、重复请求幂等、非法参数 4xx、Redis 故障降级开关。
+- [x] 准备性能测试数据集（正常/重复/降级场景用户），查看并更新 `create_performance_test.go` 运行所需的前置条件，先做短程验证。
+- [x] 按默认配置执行性能测试：`IAM_APISERVER_E2E=1 go test -run TestCreatePerformance -count=1 ./test/iam-apiserver/user/create`，保留指标输出。
+- [x] 压测运行期间采集 MySQL 慢日志、Threads_connected/Threads_running 指标，确认 CREATE SQL、幂等查询与 Redis 标记是否进入慢日志。
+- [x] 基于 list API 模板补齐 create 专用 k6 压测脚本，支持可配置数据集与多场景门限（`test/iam-apiserver/user/create/k6/create.js`）。
+- [ ] 使用 sar、iostat 等采样 CPU/IO，整理与性能测试指标的对照数据。
+- [ ] 收尾恢复系统：清理临时测试用户与 Redis 标记，重置 long_query_time 及相关开关。
+- [ ] 将测试过程与发现更新到本文件，准备 PR / 发布说明。
+
+本轮 go test 结果：control 包暂无测试文件，service 包通过现有用例，后续若补充断言需新增 *_test.go。
+
+功能测试：`IAM_APISERVER_E2E=1 IAM_APISERVER_DISABLE_CLIENT_RATE_LIMITER=true go test ./test/iam-apiserver/user/create -run TestCreateFunctional -count=1`，所有子用例通过（正常创建、重复幂等、参数校验、唯一性约束等），输出保存在 `test/iam-apiserver/user/create/output/`。
+
+性能脚本预检：`IAM_APISERVER_E2E=1 IAM_APISERVER_DISABLE_CLIENT_RATE_LIMITER=true go test ./test/iam-apiserver/user/create -run TestDefaultGeneratorUniqueness -count=1`，确认生成器在 512 个样本内无用户名/手机号冲突；`TestCreatePerformance` 依赖 `framework.NewEnv` 自动生成数据，无需额外离线数据集。
+性能压测：`IAM_APISERVER_E2E=1 IAM_APISERVER_DISABLE_CLIENT_RATE_LIMITER=true go test ./test/iam-apiserver/user/create -run TestCreatePerformance -count=1`（耗时约 6.6 分钟）。`baseline_serial` ~38 ms，`baseline_concurrent` p99 ≈ 815 ms 高于 SLA 750 ms；`stress_ramp` 出现 46 次 409 冲突（遗留用户导致）并触发 1 次降级，需在复测前清理历史 `createperf_*` 用户或提高去重策略。详细指标存于 `test/iam-apiserver/user/create/output/create_perf.json`。
+
+慢日志采样：将 `long_query_time` 临时调至 50ms 后重新执行 `baseline_concurrent`，慢日志显示在 16:40:23~16:41:31 期间多次 `SELECT COUNT(*) FROM iam.user`，单次耗时 1.58~1.92s、扫描行数约 1100 万（`rows_examined`=11,106,117），确认复用的幂等检测逻辑存在全表扫描瓶颈。调试完成后已将阈值恢复为 1s，后续需结合索引/缓存策略优化该查询，并补采 `Threads_connected` 与 `Threads_running`。
+
+## k6 压测脚本（create.js）
+
+- 入口脚本：`test/iam-apiserver/user/create/k6/create.js`，按 `baseline_serial`、`parallel_ingest`、`duplicate_guard`、`validation_wall` 四类场景发压，默认阈值覆盖 `http_req_failed`、多个自定义 Trend/Rate 指标，并统计 Kafka 降级（`code=100401`）。
+- 必备环境变量：`BASE_URL`、`ADMIN_TOKEN`（或 `ADMIN_USERNAME` + `ADMIN_PASSWORD`）、`CREATE_DATASET`。`CREATE_DATASET` 为 JSON 字符串，包含用户名前缀、基准密码、邮箱域、可选扩展模板等配置，用于控制随机负载特征。
+- 示例：
+
+  ```bash
+  export CREATE_DATASET='{"usernamePrefix":"k6_create","basePassword":"InitPassw0rd!","emailDomain":"perf.local","phonePrefix":"138","phoneSuffixLength":8,"nicknamePool":["PerfOps","PerfQA","PerfSvc"],"extendTemplates":[{"department":"perf","tags":["baseline"]},{"department":"guard","tags":["parallel"]}],"labels":{"origin":"k6","module":"create"},"extras":{"team":"iam-perf"},"isAdminRatio":0.05,"defaultStatus":1}'
+  export BASE_URL="http://192.168.10.8:8088"
+  export ADMIN_TOKEN="$(cat ~/secrets/iam_admin.token)"
+  export IAM_APISERVER_DISABLE_CLIENT_RATE_LIMITER=true
+  k6 run --summary-export test/iam-apiserver/user/create/k6-summary.json test/iam-apiserver/user/create/k6/create.js
+  ```
+
+- `duplicate_guard` 场景会在 `setup()` 中自动预创建/校验一个重复用户名；压测结束后请通过 `mysql` + `/v1/users/<name>/force` 清理 `usernamePrefix` 生成的账号（如 `k6_create-*`），避免污染基准库。
+- 推荐与 `test/iam-apiserver/tools/collect_perf_metrics.sh` 并行运行，收集 Threads/pidstat/iostat，同时设置慢日志阈值以捕获 `SELECT COUNT(*)` 优化前后的差异。
+
+复测前准备（2025-10-31）：
+
+- 清理遗留数据：执行 `SELECT name FROM iam.user WHERE name LIKE 'createperf%';` 并逐个调用 `/v1/users/<name>/force`，MySQL `COUNT(*)` 返回 0；同时在 Redis 6379/6380/6381 删除 `genericapiserver:user:pending:createperf*` 标记，确保后续压测无脏数据干扰。
+- 测试回归：`IAM_APISERVER_E2E=1 IAM_APISERVER_DISABLE_CLIENT_RATE_LIMITER=true go test ./test/iam-apiserver/user/create -run TestCreateFunctional -count=1` 与 `... -run TestCreatePerformance/baseline_concurrent -count=1` 均通过，MySQL 再次确认无新遗留用户。
+- 资源采集计划：压测再跑前启用 `test/iam-apiserver/tools/collect_perf_metrics.sh --duration 600 --interval 5 --tag baseline`（内部会同时采样 MySQL Threads、`pidstat -urd`、`iostat -dx` 并写入 `log/perf/<timestamp>/`），必要时仍可加 `ts` 前缀重定向额外命令输出。
+- COUNT(*) 优化方案：
+  - 幂等校验改用 `SELECT 1 FROM user WHERE name=? LIMIT 1` / `SELECT 1 FROM user WHERE email=? LIMIT 1`，借助 `idx_name`、`idx_user_email_unique` 等唯一索引避免全局计数。
+  - 如需总量统计，新增 Redis 计数器或 `user_metrics` 表按事件更新，List API 前置缓存并设置 30s 失效；保留定时任务以 `ANALYZE TABLE user` 校准近似值。
+  - 长期方案：评估在 MySQL 增加 `idx_user_status_version (status,version)` 覆盖索引，并以 `count(status)` 替换裸 `COUNT(*)`，减少二级索引回表。
+
+## create API 关键入口与依赖
+
+- 控制层：`internal/apiserver/control/v1/user/create_control.go::Create` 负责解析请求体、调用 `v1.User.Validate`、设置默认状态、补齐登录时间，并在 `u.srv.Users().Create` 前加上请求级超时和审计、trace 标签。
+- 服务层：`internal/apiserver/service/v1/user/create_service.go::Create` 顺序执行邮箱/手机号归一化、密码哈希、`ensureContactUniqueness`（读取 Redis 缓存 + 数据库预检）、`checkUserExist`、`markUserPendingCreate`。依赖 Redis（pending 标记）、Kafka 生产者、用户缓存组件以及 `auth.EncryptWithConfig`。
+- 存储层：`internal/apiserver/store/user/create_store.go::Create` 当前为空实现，实际落库逻辑在 Kafka 消费者路径（需在后续异步链路测试关注），MySQL 唯一索引用于兜底幂等。
+- 关联依赖：Redis 用于 pending 标记和联系人缓存，Kafka 用于异步创建消息，MySQL 负责用户实体，`usercache`/`userctx` 提供缓存与上下文标记，trace/audit 模块贯穿全链路。
 一、幂等机制：避免重复请求 / 消息导致的重复创建
 
 1. 问题场景
@@ -45,7 +103,7 @@ Kafka消费者：读Redis标记
 成功：正常落库 / 失败：拒绝插入
 
 关键细节
-Redis 标记规则：键名 user:pending:<username>，用用户名唯一标识，避免跨用户重复。
+Redis 标记规则：键名 `user:pending:<username>`，用用户名唯一标识，避免跨用户重复。
 数据库兜底：user 表的「用户名 / 手机号 / 邮箱」字段设 唯一索引，即使前序拦截失效，数据库直接拒绝重复插入。
 3. 异常闭环
 异常场景 处理逻辑
@@ -115,7 +173,7 @@ Kafka消费者：读取Redis标记
 拒绝落库，记录错误日志
 
 关键细节
-Redis 标记设计：键名 user:pending:<username>，以用户名为唯一标识，确保跨请求 / 消息的唯一性。
+Redis 标记设计：键名 `user:pending:<username>`，以用户名为唯一标识，确保跨请求 / 消息的唯一性。
 SetNX 逻辑：仅当标记不存在时写入，避免重复请求进入异步链路；重复请求仅刷新 TTL，不重复发 Kafka。
 数据库兜底：「用户名 / 手机号 / 邮箱」字段唯一索引，是幂等的 “最后一道防线”。
 3. 异常闭环
@@ -312,3 +370,5 @@ Kafka 发送耗时高 按 TraceID 查 Span 耗时→结合 Kafka 监控看集群
 链路容错 / 性能 同步校验 + 异步落库 + 降级机制 响应快，故障不中断
 问题定位 全链路 Trace + 结构化日志 故障可追溯，排查效率高
 所有机制相互配合，形成 “高可用、高一致、可观测” 的用户创建链路，能应对客户端重试、中间件故障、流量峰值等 90% 以上的生产场景。
+
+<!-- markdownlint-enable MD029 -->

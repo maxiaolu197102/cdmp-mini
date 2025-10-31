@@ -74,6 +74,7 @@ const performanceOutputDir = "/home/mxl/cdmp-mini/test/iam-apiserver/user/login"
 
 func TestLoginPerformance_Concurrent(t *testing.T) {
 	env := framework.NewEnv(t)
+	env.DisableClientRateLimiter()
 	outputDir := env.EnsureOutputDir(t, performanceOutputDir)
 	recorder := framework.NewRecorder(t, outputDir, "login_concurrent")
 	defer recorder.Flush(t)
@@ -106,6 +107,7 @@ func TestLoginPerformance_Concurrent(t *testing.T) {
 
 func TestLoginPerformance_Errors(t *testing.T) {
 	env := framework.NewEnv(t)
+	env.DisableClientRateLimiter()
 	outputDir := env.EnsureOutputDir(t, performanceOutputDir)
 	recorder := framework.NewRecorder(t, outputDir, "login_errors")
 	defer recorder.Flush(t)
@@ -135,6 +137,7 @@ func TestLoginPerformance_Errors(t *testing.T) {
 
 func TestLoginPerformance_TokenRefresh(t *testing.T) {
 	env := framework.NewEnv(t)
+	env.DisableClientRateLimiter()
 	outputDir := env.EnsureOutputDir(t, performanceOutputDir)
 	recorder := framework.NewRecorder(t, outputDir, "login_refresh")
 	defer recorder.Flush(t)
@@ -158,6 +161,7 @@ func TestLoginPerformance_TokenRefresh(t *testing.T) {
 
 func TestLoginPerformance_MixedTraffic(t *testing.T) {
 	env := framework.NewEnv(t)
+	env.DisableClientRateLimiter()
 	outputDir := env.EnsureOutputDir(t, performanceOutputDir)
 	recorder := framework.NewRecorder(t, outputDir, "login_mixed")
 	defer recorder.Flush(t)

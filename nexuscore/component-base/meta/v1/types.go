@@ -68,6 +68,43 @@ type ListMeta struct {
 
 }
 
+// IdentifierFilter 描述用于唯一定位资源的标识过滤器。
+type IdentifierFilter struct {
+	ID         *uint64 `json:"id,omitempty"`
+	InstanceID string  `json:"instanceID,omitempty"`
+	Name       string  `json:"name,omitempty"`
+}
+
+// StatusFilter 描述与资源状态相关的筛选条件。
+type StatusFilter struct {
+	Statuses []int `json:"statuses,omitempty"`
+	IsAdmin  *bool `json:"isAdmin,omitempty"`
+}
+
+// ContactFilter 描述与联系信息相关的筛选条件。
+type ContactFilter struct {
+	Email     string `json:"email,omitempty"`
+	EmailLike string `json:"emailLike,omitempty"`
+	Phone     string `json:"phone,omitempty"`
+	PhoneLike string `json:"phoneLike,omitempty"`
+}
+
+// TimeRangeFilter 描述资源的时间范围筛选条件。
+type TimeRangeFilter struct {
+	CreatedAtGTE *time.Time `json:"createdAtGte,omitempty"`
+	CreatedAtLTE *time.Time `json:"createdAtLte,omitempty"`
+	UpdatedAtGT  *time.Time `json:"updatedAtGt,omitempty"`
+	UpdatedAtLT  *time.Time `json:"updatedAtLt,omitempty"`
+	LoginedAtLT  *time.Time `json:"loginedAtLt,omitempty"`
+}
+
+// ExtendFilter 描述扩展字段（JSON）相关的筛选条件。
+type ExtendFilter struct {
+	Equals   map[string]string   `json:"equals,omitempty"`
+	Contains map[string]string   `json:"contains,omitempty"`
+	In       map[string][]string `json:"in,omitempty"`
+}
+
 // ObjectMeta 是所有持久化资源必须具有的元数据，包含所有对象的通用属性。
 // 同时被 GORM 用作数据库模型的基础元信息。
 type ObjectMeta struct {
@@ -224,6 +261,21 @@ type ListOptions struct {
 
 	// Limit 指定要检索的记录数（每页条数）。
 	Limit *int64 `json:"limit,omitempty" form:"limit"`
+
+	// Identifiers 用于唯一标识资源的精确匹配过滤条件。
+	Identifiers IdentifierFilter `json:"identifiers,omitempty" form:"-"`
+
+	// Status 用于描述资源状态维度的过滤条件。
+	Status StatusFilter `json:"statusFilter,omitempty" form:"-"`
+
+	// Contact 用于描述资源联系信息的过滤条件。
+	Contact ContactFilter `json:"contactFilter,omitempty" form:"-"`
+
+	// Time 用于描述时间范围的过滤条件。
+	Time TimeRangeFilter `json:"timeFilter,omitempty" form:"-"`
+
+	// Extend 用于描述扩展字段（JSON）的过滤条件。
+	Extend ExtendFilter `json:"extendFilter,omitempty" form:"-"`
 }
 
 // ExportOptions 是标准 REST 获取调用的查询选项。

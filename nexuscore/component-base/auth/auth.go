@@ -20,8 +20,8 @@ const (
 	AlgorithmArgon2id = "argon2id"
 
 	defaultArgon2Time        = uint32(1)
-	defaultArgon2MemoryKB    = uint32(32 * 1024) // 32 MB
-	defaultArgon2Parallelism = uint8(2)
+	defaultArgon2MemoryKB    = uint32(8 * 1024) // 8 MB to reduce per-hash memory pressure
+	defaultArgon2Parallelism = uint8(1)
 	defaultArgon2KeyLength   = uint32(32)
 	defaultArgon2SaltLength  = uint32(16)
 )

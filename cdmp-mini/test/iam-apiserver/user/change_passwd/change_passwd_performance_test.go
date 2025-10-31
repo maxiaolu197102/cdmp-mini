@@ -26,6 +26,7 @@ type perfScenario struct {
 
 func TestChangePasswordPerformance(t *testing.T) {
 	env := framework.NewEnv(t)
+	env.DisableClientRateLimiter()
 	outputDir := env.EnsureOutputDir(t, testDir)
 	recorder := framework.NewRecorder(t, outputDir, "change_password")
 	defer recorder.Flush(t)

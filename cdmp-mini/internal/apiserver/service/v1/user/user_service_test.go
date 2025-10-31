@@ -57,7 +57,7 @@ func (f *fakeUserStore) GetByEmail(context.Context, string, *options.Options) (*
 func (f *fakeUserStore) GetByPhone(context.Context, string, *options.Options) (*v1.User, error) {
 	panic("unexpected call to GetByPhone")
 }
-func (f *fakeUserStore) List(context.Context, string, metav1.ListOptions, *options.Options) (*v1.UserList, error) {
+func (f *fakeUserStore) List(context.Context, metav1.ListOptions, *options.Options) (*v1.UserList, error) {
 	panic("unexpected call to List")
 }
 func (f *fakeUserStore) ListAllUsernames(context.Context) ([]string, error) {
