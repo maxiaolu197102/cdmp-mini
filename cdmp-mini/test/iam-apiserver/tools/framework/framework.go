@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"math/rand"
 	"net/http"
@@ -488,12 +489,13 @@ type UserSpec struct {
 
 func (e *Env) NewUserSpec(prefix, password string) UserSpec {
 	username := e.RandomUsername(prefix)
+	checksum := crc32.ChecksumIEEE([]byte(username)) % 100000000
 	return UserSpec{
 		Name:     username,
 		Nickname: "集成测试用户",
 		Password: password,
 		Email:    fmt.Sprintf("%s@example.com", username),
-		Phone:    fmt.Sprintf("138%08d", e.random.Intn(100000000)),
+		Phone:    fmt.Sprintf("199%08d", checksum),
 		Status:   1,
 		IsAdmin:  0,
 	}

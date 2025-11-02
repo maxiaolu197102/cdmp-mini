@@ -6,14 +6,14 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 2,
+    "duration_ms": 1,
     "checks": {
       "payload_present": true,
       "username_match": true
     },
     "notes": [
       "管理员精确查询存在的用户",
-      "响应耗时=2.777285ms"
+      "响应耗时=1.826309ms"
     ]
   },
   {
@@ -23,7 +23,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 2,
+    "duration_ms": 1,
     "checks": {
       "username_match": true
     },
@@ -38,7 +38,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 6,
+    "duration_ms": 2,
     "checks": {
       "email_match": true,
       "single_result": true,
@@ -55,7 +55,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 6,
+    "duration_ms": 1,
     "checks": {
       "ignored_sort_param": true
     },
@@ -70,7 +70,7 @@
     "http_status": 400,
     "code": 110004,
     "message": "[code: 110004] 参数错误:map[ListOptions.Limit:Invalid value: -1: 必须在0到10000之间（包含边界）]",
-    "duration_ms": 2,
+    "duration_ms": 1,
     "checks": {
       "limit_rejected": true
     },
@@ -85,7 +85,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 5,
+    "duration_ms": 1,
     "checks": {
       "max_limit_success": true
     },
@@ -100,7 +100,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 6,
+    "duration_ms": 1,
     "checks": {
       "empty_result": true
     },
@@ -115,7 +115,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 6,
+    "duration_ms": 1,
     "checks": {
       "nickname_preserved": true
     },
@@ -130,7 +130,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 2,
+    "duration_ms": 1,
     "checks": {
       "length": true,
       "username_match": true
@@ -146,7 +146,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 2,
+    "duration_ms": 1,
     "checks": {
       "immediate_visible": true
     },
@@ -161,7 +161,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 4,
+    "duration_ms": 2,
     "checks": {
       "retrievable_post_update": true,
       "update_request_success": true
@@ -178,7 +178,7 @@
     "http_status": 404,
     "code": 110001,
     "message": "[code: 110001] 用户不存在",
-    "duration_ms": 613,
+    "duration_ms": 305,
     "checks": {
       "not_found_code": true
     },
@@ -190,10 +190,10 @@
     "name": "list_after_delete",
     "description": "删除后列表结果不包含该用户",
     "success": true,
-    "http_status": 500,
-    "code": 110005,
-    "message": "[code: 110005] 用户不存在,无法查询",
-    "duration_ms": 5,
+    "http_status": 200,
+    "code": 100001,
+    "message": "操作成功",
+    "duration_ms": 1,
     "checks": {
       "deleted_not_listed": true
     },
@@ -223,7 +223,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "用户更新成功",
-    "duration_ms": 4,
+    "duration_ms": 2,
     "checks": {
       "status_update_success": true
     },
@@ -253,7 +253,7 @@
     "http_status": 400,
     "code": 100004,
     "message": "[code: 100004] 用户名不合法:名称部分必须由字母、数字、'-'、'_'或'.'组成，且首尾必须为字母或数字（例如：'MyName'，或'my.name'，或'123-abc'，用于验证的正则表达式：'([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]'）",
-    "duration_ms": 2,
+    "duration_ms": 1,
     "checks": {
       "no_data_leak": true
     },
@@ -268,7 +268,7 @@
     "http_status": 400,
     "code": 100004,
     "message": "[code: 100004] 用户名不合法:名称部分长度不能超过63个字符",
-    "duration_ms": 2,
+    "duration_ms": 1,
     "checks": {
       "handled": true
     },
@@ -352,7 +352,7 @@
     },
     "notes": [
       "记录查询延迟与业务码",
-      "duration=2.654581ms"
+      "duration=2.214498ms"
     ]
   },
   {
@@ -367,7 +367,7 @@
     "notes": [
       "批量测试数据分布验证",
       "bulk_count=12",
-      "hot_users=[get_bulk_00_1761806986429220101_44323 get_bulk_01_1761806986925174009_04734 get_bulk_02_1761806987389926421_23261]"
+      "hot_users=[get_bulk_00_1762019978809418458_93855 get_bulk_01_1762019979238794193_17805 get_bulk_02_1762019979683300982_98786]"
     ]
   }
 ]

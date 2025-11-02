@@ -76,7 +76,13 @@ var (
 	}
 )
 
-const poolStatsReportInterval = 5 * time.Second
+const (
+	poolStatsReportInterval = 5 * time.Second
+	slowDBQueryThreshold    = 200 * time.Millisecond
+	dbWriteMaxRetries       = 3
+	dbWriteInitialBackoff   = 100 * time.Millisecond
+	dbWriteMaxBackoff       = 2 * time.Second
+)
 
 type conditionValueKind int
 
@@ -1088,6 +1094,11 @@ func (c *UserConsumer) handleSingleUpdate(ctx context.Context, msg kafka.Message
 	updated.ObjectMeta.Version = existingVersion + 1
 
 	if err := c.updateUserInDB(ctx, &updated, expectedVersion); err != nil {
+		if isDuplicateKeyDBError(err) {
+			// 唯一约束冲突视为幂等或业务性冲突，不应进入重试或死信队列，直接认为处理完成并提交偏移量
+			log.Warnf("用户更新命中唯一约束冲突，忽略并提交偏移: username=%s err=%v", updated.Name, err)
+			return nil
+		}
 		if errors.IsCode(err, code.ErrResourceConflict) {
 			return c.sendToRetry(ctx, msg, "更新用户失败: "+err.Error())
 		}
@@ -1119,8 +1130,24 @@ func (c *UserConsumer) handleBatchPatch(ctx context.Context, msg kafka.Message, 
 		return c.sendToRetry(ctx, msg, "查询批量更新目标失败: "+err.Error())
 	}
 	if len(targets) == 0 {
+		log.Warnw("批量更新条件未匹配任何用户", map[string]any{
+			"message_key": string(msg.Key),
+			"conditions":  update.Conditions,
+			"where":       whereClause,
+			"args":        args,
+		})
 		return nil
 	}
+
+	const maxLoggedTargets = 10
+	loggedTargets := make([]string, 0, len(targets))
+	for i := 0; i < len(targets) && i < maxLoggedTargets; i++ {
+		loggedTargets = append(loggedTargets, targets[i].Name)
+	}
+	if len(targets) > maxLoggedTargets {
+		loggedTargets = append(loggedTargets, "...")
+	}
+	log.Infow("批量更新命中用户", "message_key", string(msg.Key), "count", len(targets), "sample_users", loggedTargets)
 
 	var retryErr error
 	conflicts := 0
@@ -1142,8 +1169,14 @@ func (c *UserConsumer) handleBatchPatch(ctx context.Context, msg kafka.Message, 
 			return c.sendToDeadLetter(ctx, msg, "SERIALIZE_EXTEND_FAILED: "+err.Error())
 		}
 		if err := c.updateUserInDB(ctx, &patched, patched.ExpectedVersion); err != nil {
+			if isDuplicateKeyDBError(err) {
+				// 对于批量更新，单条发生唯一约束冲突时记录并跳过该条，继续处理其他目标
+				log.Warnf("批量更新命中唯一约束冲突，跳过该条: username=%s err=%v", patched.Name, err)
+				continue
+			}
 			if errors.IsCode(err, code.ErrResourceConflict) {
 				conflicts++
+				log.Warnf("批量更新版本冲突: username=%s current_version=%d expected_version=%d new_version=%d", existing.Name, existing.ObjectMeta.Version, expected, patched.ObjectMeta.Version)
 				continue
 			}
 			retryErr = err
@@ -1159,6 +1192,7 @@ func (c *UserConsumer) handleBatchPatch(ctx context.Context, msg kafka.Message, 
 	}
 	if conflicts > 0 {
 		log.Warnf("批量更新存在版本冲突: count=%d", conflicts)
+		return c.sendToRetry(ctx, msg, fmt.Sprintf("批量更新存在版本冲突: count=%d", conflicts))
 	}
 	return nil
 }
@@ -1166,6 +1200,8 @@ func (c *UserConsumer) handleBatchPatch(ctx context.Context, msg kafka.Message, 
 func (c *UserConsumer) createUserInDB(ctx context.Context, user *v1.User, markerDegraded bool) (bool, error) {
 	user.Email = usercache.NormalizeEmail(user.Email)
 	user.Phone = usercache.NormalizePhone(user.Phone)
+
+	totalStart := time.Now()
 
 	now := time.Now()
 	user.CreatedAt = now
@@ -1176,7 +1212,10 @@ func (c *UserConsumer) createUserInDB(ctx context.Context, user *v1.User, marker
 	}
 
 	db, err := c.ensureSQLX()
+	prepareDuration := time.Since(totalStart)
+	trace.AddRequestTag(ctx, "create_prepare_ms", prepareDuration.Milliseconds())
 	if err != nil {
+		trace.AddRequestTag(ctx, "create_prepare_error", err.Error())
 		return false, fmt.Errorf("获取数据库连接失败: %w", err)
 	}
 
@@ -1189,6 +1228,7 @@ func (c *UserConsumer) createUserInDB(ctx context.Context, user *v1.User, marker
 	if version == 0 {
 		version = 1
 	}
+	execStart := time.Now()
 	res, err := db.ExecContext(ctx,
 		"INSERT INTO `user` (instanceID, name, nickname, password, email, phone, status, isAdmin, extendShadow, createdAt, updatedAt, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		user.InstanceID,
@@ -1204,14 +1244,21 @@ func (c *UserConsumer) createUserInDB(ctx context.Context, user *v1.User, marker
 		now,
 		version,
 	)
+	createDuration := time.Since(execStart)
+	totalDuration := time.Since(totalStart)
+	metrics.BusinessProcessingTime.WithLabelValues("consumer", "create_user_db").Observe(createDuration.Seconds())
+	metrics.BusinessProcessingTime.WithLabelValues("consumer", "create_user_db_total").Observe(totalDuration.Seconds())
+	trace.AddRequestTag(ctx, "create_db_ms", createDuration.Milliseconds())
+	trace.AddRequestTag(ctx, "create_total_ms", totalDuration.Milliseconds())
 	if err != nil {
+		metrics.BusinessFailures.WithLabelValues("consumer", "create_user_db", "db_exec_error").Inc()
 		if isDuplicateKeyDBError(err) {
-			log.Warnf("检测到用户重复插入: username=%s err=%v", user.Name, err)
+			log.Warnw("检测到用户重复插入，直接忽略", "username", user.Name, "error", err, "prepare_duration", prepareDuration, "db_duration", createDuration, "total_duration", totalDuration)
 			trace.AddRequestTag(ctx, "create_db_duplicate", true)
 			if markerDegraded {
 				trace.AddRequestTag(ctx, "create_degraded_conflict", true)
-				return false, errors.WithCode(code.ErrResourceConflict, "创建用户请求已降级且用户名已存在")
 			}
+			metrics.BusinessSuccess.WithLabelValues("consumer", "create_user_db", "duplicate_skip").Inc()
 			return false, nil
 		}
 		return false, fmt.Errorf("数据创建失败: %w", err)
@@ -1221,6 +1268,8 @@ func (c *UserConsumer) createUserInDB(ctx context.Context, user *v1.User, marker
 		user.ID = uint64(insertedID)
 	}
 	user.ObjectMeta.Version = version
+	metrics.BusinessSuccess.WithLabelValues("consumer", "create_user_db", "db_exec").Inc()
+	log.Infow("用户插入完成", "username", user.Name, "prepare_duration", prepareDuration, "db_duration", createDuration, "total_duration", totalDuration, "marker_degraded", markerDegraded, "version", user.ObjectMeta.Version)
 
 	return true, nil
 }
@@ -1231,29 +1280,77 @@ func (c *UserConsumer) loadUserSnapshot(ctx context.Context, username string) (*
 	if trimmed == "" {
 		return nil, nil
 	}
+
+	if c.redis != nil {
+		cacheKey := usercache.UserKey(trimmed)
+		if cacheKey != "" {
+			start := time.Now()
+			value, err := c.redis.GetKey(ctx, cacheKey)
+			duration := time.Since(start)
+			metricErr := err
+			if err == redis.Nil {
+				metricErr = nil
+			}
+			metrics.RecordRedisOperation("user_snapshot_get", duration.Seconds(), metricErr)
+			switch {
+			case err == redis.Nil:
+				metrics.BusinessSuccess.WithLabelValues("consumer", "load_user_snapshot", "cache_miss").Inc()
+			case err != nil:
+				metrics.BusinessFailures.WithLabelValues("consumer", "load_user_snapshot", "cache_error").Inc()
+				log.Warnw("读取用户缓存失败", "username", trimmed, "error", err)
+			case value == cacheNullSentinel || strings.TrimSpace(value) == "":
+				metrics.BusinessSuccess.WithLabelValues("consumer", "load_user_snapshot", "cache_sentinel").Inc()
+			default:
+				cached, decodeErr := usercache.Unmarshal([]byte(value))
+				if decodeErr != nil {
+					metrics.BusinessFailures.WithLabelValues("consumer", "load_user_snapshot", "cache_decode_error").Inc()
+					log.Warnw("用户缓存反序列化失败", "username", trimmed, "error", decodeErr)
+				} else if cached != nil {
+					trace.AddRequestTag(ctx, "snapshot_source", "cache")
+					metrics.BusinessSuccess.WithLabelValues("consumer", "load_user_snapshot", "cache_hit").Inc()
+					return cached, nil
+				}
+			}
+		}
+	}
+
 	db, err := c.ensureSQLX()
 	if err != nil {
 		return nil, fmt.Errorf("获取数据库连接失败: %w", err)
 	}
 
 	const query = "SELECT id, instanceID, name, nickname, password, email, phone, status, isAdmin, extendShadow, createdAt, updatedAt, loginedAt, version FROM `user` WHERE name = ? LIMIT 1"
+	trace.AddRequestTag(ctx, "snapshot_source", "database")
+	start := time.Now()
 	rows, err := db.QueryContext(ctx, query, trimmed)
+	duration := time.Since(start)
+	metrics.BusinessProcessingTime.WithLabelValues("consumer", "load_user_snapshot_db").Observe(duration.Seconds())
+	trace.AddRequestTag(ctx, "snapshot_db_ms", duration.Milliseconds())
 	if err != nil {
+		metrics.BusinessFailures.WithLabelValues("consumer", "load_user_snapshot", "db_query_error").Inc()
 		return nil, err
 	}
 	defer rows.Close()
 	if !rows.Next() {
+		metrics.BusinessSuccess.WithLabelValues("consumer", "load_user_snapshot", "db_miss").Inc()
 		return nil, nil
 	}
 	var record v1.User
 	if _, err := dbscan.ScanUserFullInto(rows, &record); err != nil {
 		if stderrs.Is(err, sql.ErrNoRows) {
+			metrics.BusinessSuccess.WithLabelValues("consumer", "load_user_snapshot", "db_miss").Inc()
 			return nil, nil
 		}
+		metrics.BusinessFailures.WithLabelValues("consumer", "load_user_snapshot", "db_scan_error").Inc()
 		return nil, err
 	}
 	if err := rows.Err(); err != nil {
+		metrics.BusinessFailures.WithLabelValues("consumer", "load_user_snapshot", "db_rows_error").Inc()
 		return nil, err
+	}
+	metrics.BusinessSuccess.WithLabelValues("consumer", "load_user_snapshot", "db_hit").Inc()
+	if duration > slowDBQueryThreshold {
+		log.Warnw("用户快照查询耗时较长", "username", trimmed, "duration", duration)
 	}
 	return &record, nil
 }
@@ -1418,6 +1515,31 @@ func isDuplicateKeyDBError(err error) bool {
 	return false
 }
 
+func isRetryableDBWriteError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var mysqlErr *mysql.MySQLError
+	if stderrs.As(err, &mysqlErr) {
+		if mysqlErr.Number == 1213 || mysqlErr.Number == 1205 {
+			return true
+		}
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "deadlock") || strings.Contains(msg, "lock wait timeout") {
+		return true
+	}
+	return false
+}
+
+func nextDBBackoff(attempt int) time.Duration {
+	delay := dbWriteInitialBackoff << (attempt - 1)
+	if delay > dbWriteMaxBackoff {
+		return dbWriteMaxBackoff
+	}
+	return delay
+}
+
 func ensureUserInstanceID(user *v1.User) {
 	if user == nil {
 		return
@@ -1474,8 +1596,9 @@ func (c *UserConsumer) updateUserInDB(ctx context.Context, user *v1.User, expect
 	}
 
 	newVersion := user.ObjectMeta.Version
+	// 强制使用 (name, version) 复合索引以避免优化器选择次优索引导致高延迟
 	queryBuilder := strings.Builder{}
-	queryBuilder.WriteString("UPDATE `user` SET email = ?, password = ?, status = ?, isAdmin = ?, updatedAt = ?, extendShadow = ?, nickname = ?, phone = ?, loginedAt = ?, version = ? WHERE name = ?")
+	queryBuilder.WriteString("UPDATE `user` FORCE INDEX (idx_user_name_version) SET email = ?, password = ?, status = ?, isAdmin = ?, updatedAt = ?, extendShadow = ?, nickname = ?, phone = ?, loginedAt = ?, version = ? WHERE name = ?")
 	args := []interface{}{
 		user.Email,
 		user.Password,
@@ -1494,19 +1617,47 @@ func (c *UserConsumer) updateUserInDB(ctx context.Context, user *v1.User, expect
 		args = append(args, *expectedVersion)
 	}
 
-	res, execErr := db.ExecContext(ctx, queryBuilder.String(), args...)
-	if execErr != nil {
-		return fmt.Errorf("数据库更新失败: %w", execErr)
+	var (
+		res      sql.Result
+		execErr  error
+		duration time.Duration
+	)
+	for attempt := 1; attempt <= dbWriteMaxRetries; attempt++ {
+		start := time.Now()
+		res, execErr = db.ExecContext(ctx, queryBuilder.String(), args...)
+		duration = time.Since(start)
+		metrics.BusinessProcessingTime.WithLabelValues("consumer", "update_user_db").Observe(duration.Seconds())
+		trace.AddRequestTag(ctx, "update_db_ms", duration.Milliseconds())
+		if execErr == nil {
+			break
+		}
+		metrics.BusinessFailures.WithLabelValues("consumer", "update_user_db", "db_exec_error").Inc()
+		if attempt == dbWriteMaxRetries || !isRetryableDBWriteError(execErr) {
+			return fmt.Errorf("数据库更新失败: %w", execErr)
+		}
+		log.Warnw("用户更新SQL检测到死锁/锁等待，准备重试", "username", user.Name, "attempt", attempt, "error", execErr)
+		time.Sleep(nextDBBackoff(attempt))
 	}
 
 	if expectedVersion != nil {
 		affected, affErr := res.RowsAffected()
 		if affErr != nil {
+			metrics.BusinessFailures.WithLabelValues("consumer", "update_user_db", "rows_affected_error").Inc()
 			return fmt.Errorf("获取更新影响行数失败: %w", affErr)
 		}
 		if affected == 0 {
+			metrics.BusinessFailures.WithLabelValues("consumer", "update_user_db", "version_conflict").Inc()
 			return errors.WithCode(code.ErrResourceConflict, "用户数据版本冲突")
 		}
+	}
+
+	metrics.BusinessSuccess.WithLabelValues("consumer", "update_user_db", "db_exec").Inc()
+	if duration > slowDBQueryThreshold {
+		expected := uint64(0)
+		if expectedVersion != nil {
+			expected = *expectedVersion
+		}
+		log.Warnw("用户更新SQL耗时较长", "username", user.Name, "duration", duration, "expected_version", expected, "new_version", newVersion)
 	}
 
 	return nil
@@ -2077,13 +2228,20 @@ func isRecoverableError(errStr string) bool {
 
 func (c *UserConsumer) setUserCache(ctx context.Context, user *v1.User, previous *v1.User) error {
 	var (
-		startTime    time.Time
-		operationErr error
-		wroteCache   bool
+		writeStart      time.Time
+		operationErr    error
+		wroteCache      bool
+		prepareDuration time.Duration
+		writeDuration   time.Duration
 	)
+	totalStart := time.Now()
 	defer func() {
 		if wroteCache {
-			metrics.RecordRedisOperation("set", time.Since(startTime).Seconds(), operationErr)
+			observed := writeDuration
+			if observed <= 0 && !writeStart.IsZero() {
+				observed = time.Since(writeStart)
+			}
+			metrics.RecordRedisOperation("set", observed.Seconds(), operationErr)
 		}
 	}()
 
@@ -2124,8 +2282,9 @@ func (c *UserConsumer) setUserCache(ctx context.Context, user *v1.User, previous
 		pipelineItems = append(pipelineItems, buildContactCacheItems(user)...)
 	}
 
+	prepareDuration = time.Since(totalStart)
 	if len(pipelineItems) > 0 {
-		startTime = time.Now()
+		writeStart = time.Now()
 		wroteCache = true
 		if len(pipelineItems) == 1 {
 			item := pipelineItems[0]
@@ -2133,10 +2292,31 @@ func (c *UserConsumer) setUserCache(ctx context.Context, user *v1.User, previous
 		} else {
 			operationErr = c.redis.BatchSet(ctx, pipelineItems)
 		}
+		writeDuration = time.Since(writeStart)
 		if operationErr != nil {
+			metrics.BusinessFailures.WithLabelValues("consumer", "set_user_cache", "redis_write_error").Inc()
 			return operationErr
 		}
 	}
+	totalDuration := time.Since(totalStart)
+	metrics.BusinessProcessingTime.WithLabelValues("consumer", "set_user_cache_prepare").Observe(prepareDuration.Seconds())
+	if wroteCache {
+		metrics.BusinessProcessingTime.WithLabelValues("consumer", "set_user_cache_write").Observe(writeDuration.Seconds())
+	}
+	metrics.BusinessProcessingTime.WithLabelValues("consumer", "set_user_cache_total").Observe(totalDuration.Seconds())
+	trace.AddRequestTag(ctx, "cache_set_ms", totalDuration.Milliseconds())
+	trace.AddRequestTag(ctx, "cache_prepare_ms", prepareDuration.Milliseconds())
+	if wroteCache {
+		trace.AddRequestTag(ctx, "cache_write_ms", writeDuration.Milliseconds())
+	}
+	trace.AddRequestTag(ctx, "cache_pipeline_items", len(pipelineItems))
+	trace.AddRequestTag(ctx, "cache_contacts_changed", contactChanged)
+	if needCacheWrite || contactChanged {
+		log.Infow("用户缓存刷新完成", "username", user.Name, "duration", totalDuration, "prepare_duration", prepareDuration, "write_duration", writeDuration, "cache_write", needCacheWrite, "contacts_updated", contactChanged, "pipeline_items", len(pipelineItems))
+	} else {
+		log.Debugw("用户缓存刷新跳过写入", "username", user.Name, "duration", totalDuration)
+	}
+	metrics.BusinessSuccess.WithLabelValues("consumer", "set_user_cache", "complete").Inc()
 
 	return operationErr
 }
@@ -2246,8 +2426,9 @@ func (c *UserConsumer) evictContactCaches(ctx context.Context, previous *v1.User
 	if current != nil {
 		curEmail = usercache.NormalizeEmail(current.Email)
 	}
+	var keysToEvict []string
 	if prevEmail != "" && prevEmail != curEmail {
-		c.removeCacheKey(ctx, usercache.EmailKey(previous.Email))
+		keysToEvict = append(keysToEvict, usercache.EmailKey(previous.Email))
 	}
 
 	prevPhone := usercache.NormalizePhone(previous.Phone)
@@ -2256,7 +2437,21 @@ func (c *UserConsumer) evictContactCaches(ctx context.Context, previous *v1.User
 		curPhone = usercache.NormalizePhone(current.Phone)
 	}
 	if prevPhone != "" && prevPhone != curPhone {
-		c.removeCacheKey(ctx, usercache.PhoneKey(previous.Phone))
+		keysToEvict = append(keysToEvict, usercache.PhoneKey(previous.Phone))
+	}
+
+	switch len(keysToEvict) {
+	case 0:
+		return
+	case 1:
+		c.removeCacheKey(ctx, keysToEvict[0])
+	default:
+		if err := c.redis.BatchDelete(ctx, keysToEvict); err != nil {
+			log.Warnw("批量删除联系缓存失败，回退逐个删除", "keys", keysToEvict, "error", err)
+			for _, key := range keysToEvict {
+				c.removeCacheKey(ctx, key)
+			}
+		}
 	}
 }
 

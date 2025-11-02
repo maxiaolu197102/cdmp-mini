@@ -4,18 +4,18 @@
     "requests": 50,
     "success_rate": 1,
     "error_rate": 0,
-    "duration_ms": 125,
-    "qps": 399.1411886597028,
+    "duration_ms": 80,
+    "qps": 620.6214689896677,
     "error_count": 0,
     "success_count": 50,
     "latency": {
-      "min_ms": 2.227938,
-      "max_ms": 3.088518,
-      "avg_ms": 2.480884,
-      "p50_ms": 2.44221,
-      "p90_ms": 2.695099,
-      "p95_ms": 2.814079,
-      "p99_ms": 3.085577
+      "min_ms": 1.363183,
+      "max_ms": 3.341181,
+      "avg_ms": 1.600044,
+      "p50_ms": 1.555555,
+      "p90_ms": 1.73399,
+      "p95_ms": 1.790421,
+      "p99_ms": 2.62442
     },
     "counters": {
       "cache_checks": 50,
@@ -37,17 +37,17 @@
     "success_rate": 1,
     "error_rate": 0,
     "duration_ms": 2,
-    "qps": 409.4132289602542,
+    "qps": 472.49712367375963,
     "error_count": 0,
     "success_count": 1,
     "latency": {
-      "min_ms": 2.357583,
-      "max_ms": 2.357583,
-      "avg_ms": 2.357583,
-      "p50_ms": 2.357583,
-      "p90_ms": 2.357583,
-      "p95_ms": 2.357583,
-      "p99_ms": 2.357583
+      "min_ms": 2.061,
+      "max_ms": 2.061,
+      "avg_ms": 2.061,
+      "p50_ms": 2.061,
+      "p90_ms": 2.061,
+      "p95_ms": 2.061,
+      "p99_ms": 2.061
     },
     "counters": {
       "cache_checks": 1,
@@ -68,18 +68,18 @@
     "requests": 160,
     "success_rate": 1,
     "error_rate": 0,
-    "duration_ms": 27,
-    "qps": 5871.803986264969,
+    "duration_ms": 20,
+    "qps": 7825.26075358337,
     "error_count": 0,
     "success_count": 160,
     "latency": {
-      "min_ms": 1.417076,
-      "max_ms": 9.613393,
-      "avg_ms": 2.613662,
-      "p50_ms": 1.741047,
-      "p90_ms": 5.827738,
-      "p95_ms": 7.182067,
-      "p99_ms": 8.56463
+      "min_ms": 1.450041,
+      "max_ms": 3.957875,
+      "avg_ms": 1.904387,
+      "p50_ms": 1.756755,
+      "p90_ms": 2.338842,
+      "p95_ms": 3.173196,
+      "p99_ms": 3.671142
     },
     "counters": {
       "cache_checks": 160,
@@ -100,22 +100,22 @@
     "requests": 320,
     "success_rate": 1,
     "error_rate": 0,
-    "duration_ms": 26,
-    "qps": 12196.41828546487,
+    "duration_ms": 58,
+    "qps": 5483.317230087222,
     "error_count": 0,
     "success_count": 320,
     "latency": {
-      "min_ms": 1.626731,
-      "max_ms": 6.223427,
-      "avg_ms": 2.459876,
-      "p50_ms": 2.099477,
-      "p90_ms": 3.786263,
-      "p95_ms": 4.658149,
-      "p99_ms": 5.466763
+      "min_ms": 1.45591,
+      "max_ms": 37.403323,
+      "avg_ms": 5.596697,
+      "p50_ms": 2.330138,
+      "p90_ms": 3.81561,
+      "p95_ms": 35.430761,
+      "p99_ms": 36.715954
     },
     "counters": {
       "cache_checks": 320,
-      "cache_hits": 320,
+      "cache_hits": 289,
       "failures": 0,
       "http_200": 320,
       "http_401": 0,
@@ -124,7 +124,7 @@
     "notes": [
       "索引命中率近似验证 (基于响应时延)",
       "索引命中率",
-      "cache_hit_rate=100.00%"
+      "cache_hit_rate=90.31%"
     ]
   },
   {
@@ -132,18 +132,18 @@
     "requests": 400,
     "success_rate": 1,
     "error_rate": 0,
-    "duration_ms": 47,
-    "qps": 8382.366510132259,
+    "duration_ms": 39,
+    "qps": 10095.457854126136,
     "error_count": 0,
     "success_count": 400,
     "latency": {
-      "min_ms": 1.444564,
-      "max_ms": 5.857688,
-      "avg_ms": 2.30183,
-      "p50_ms": 1.854484,
-      "p90_ms": 3.744095,
-      "p95_ms": 4.591784,
-      "p99_ms": 5.125194
+      "min_ms": 1.511814,
+      "max_ms": 3.428761,
+      "avg_ms": 1.897231,
+      "p50_ms": 1.828704,
+      "p90_ms": 2.166666,
+      "p95_ms": 2.38338,
+      "p99_ms": 3.311268
     },
     "counters": {
       "cache_checks": 400,
@@ -164,22 +164,22 @@
     "requests": 1280,
     "success_rate": 1,
     "error_rate": 0,
-    "duration_ms": 200,
-    "qps": 6387.812883434082,
+    "duration_ms": 118,
+    "qps": 10782.900129899408,
     "error_count": 0,
     "success_count": 1280,
     "latency": {
-      "min_ms": 1.485905,
-      "max_ms": 130.014116,
-      "avg_ms": 19.254674,
-      "p50_ms": 8.838546,
-      "p90_ms": 58.359061,
-      "p95_ms": 72.777724,
-      "p99_ms": 121.876452
+      "min_ms": 1.724645,
+      "max_ms": 73.384516,
+      "avg_ms": 11.351551,
+      "p50_ms": 4.735371,
+      "p90_ms": 36.518909,
+      "p95_ms": 54.361261,
+      "p99_ms": 60.137923
     },
     "counters": {
       "cache_checks": 1280,
-      "cache_hits": 1264,
+      "cache_hits": 1280,
       "failures": 0,
       "http_200": 1280,
       "http_401": 0,
@@ -188,7 +188,7 @@
     "notes": [
       "高并发(128) 吞吐量测量",
       "高并发吞吐",
-      "cache_hit_rate=98.75%"
+      "cache_hit_rate=100.00%"
     ]
   },
   {
@@ -196,22 +196,22 @@
     "requests": 2048,
     "success_rate": 1,
     "error_rate": 0,
-    "duration_ms": 226,
-    "qps": 9033.652543562495,
+    "duration_ms": 274,
+    "qps": 7468.565662292765,
     "error_count": 0,
     "success_count": 2048,
     "latency": {
-      "min_ms": 2.595985,
-      "max_ms": 222.715297,
-      "avg_ms": 46.64108,
-      "p50_ms": 38.153753,
-      "p90_ms": 111.118443,
-      "p95_ms": 115.077047,
-      "p99_ms": 134.3818
+      "min_ms": 2.687141,
+      "max_ms": 247.240165,
+      "avg_ms": 57.034913,
+      "p50_ms": 40.02031,
+      "p90_ms": 128.038431,
+      "p95_ms": 156.954219,
+      "p99_ms": 167.168378
     },
     "counters": {
       "cache_checks": 2048,
-      "cache_hits": 2009,
+      "cache_hits": 1805,
       "failures": 0,
       "http_200": 2048,
       "http_401": 0,
@@ -220,7 +220,7 @@
     "notes": [
       "峰值并发(512) 降级策略观察",
       "峰值并发",
-      "cache_hit_rate=98.10%"
+      "cache_hit_rate=88.13%"
     ]
   },
   {
@@ -228,22 +228,22 @@
     "requests": 1024,
     "success_rate": 1,
     "error_rate": 0,
-    "duration_ms": 135,
-    "qps": 7537.810714869847,
+    "duration_ms": 113,
+    "qps": 9024.263574486302,
     "error_count": 0,
     "success_count": 1024,
     "latency": {
-      "min_ms": 1.450521,
-      "max_ms": 28.683135,
-      "avg_ms": 8.039343,
-      "p50_ms": 6.967518,
-      "p90_ms": 14.563846,
-      "p95_ms": 18.367957,
-      "p99_ms": 21.813116
+      "min_ms": 2.196235,
+      "max_ms": 25.618712,
+      "avg_ms": 6.768886,
+      "p50_ms": 5.310784,
+      "p90_ms": 12.29342,
+      "p95_ms": 18.160531,
+      "p99_ms": 21.943093
     },
     "counters": {
       "cache_checks": 1024,
-      "cache_hits": 988,
+      "cache_hits": 990,
       "failures": 0,
       "http_200": 1024,
       "http_401": 0,
@@ -252,7 +252,7 @@
     "notes": [
       "连接池效率 (64 并发, 热点轮询)",
       "连接池利用率",
-      "cache_hit_rate=96.48%"
+      "cache_hit_rate=96.68%"
     ]
   }
 ]

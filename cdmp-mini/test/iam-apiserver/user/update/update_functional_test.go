@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"net/http"
 	"net/url"
 	"os"
@@ -36,6 +37,11 @@ type updateCase struct {
 }
 
 var errUserListVersionUnsupported = errors.New("user list requires version column not present")
+
+func deriveDeterministicPhone(seed string) string {
+	checksum := crc32.ChecksumIEEE([]byte(seed)) % 100000000
+	return fmt.Sprintf("139%08d", checksum)
+}
 
 func TestUpdateFunctional(t *testing.T) {
 	env := framework.NewEnv(t)
@@ -118,11 +124,15 @@ func TestUpdateFunctional(t *testing.T) {
 				return spec, true
 			},
 			payload: func(spec framework.UserSpec) map[string]any {
+				phone := deriveDeterministicPhone(spec.Name + "_full")
+				if phone == spec.Phone {
+					phone = deriveDeterministicPhone(spec.Name + "_full_alt")
+				}
 				return map[string]any{
 					"metadata": map[string]string{"name": spec.Name},
 					"nickname": "全字段更新",
 					"email":    fmt.Sprintf("%s-full@example.com", spec.Name),
-					"phone":    "13900000000",
+					"phone":    phone,
 					"status":   1,
 					"isAdmin":  0,
 					"version":  1,
@@ -283,13 +293,13 @@ func TestUpdateFunctional(t *testing.T) {
 	}
 }
 
-func TestPatchProfileFunctional(t *testing.T) {
+func TestTargetedPatchFunctional(t *testing.T) {
 	env := framework.NewEnv(t)
 	outputDir := env.EnsureOutputDir(t, testDir)
-	recorder := framework.NewRecorder(t, outputDir, "patch_profile")
+	recorder := framework.NewRecorder(t, outputDir, "patch_targeted")
 	defer recorder.Flush(t)
 	if env.UserVersionUnsupported() {
-		t.Skip("backend missing user version column; skipping patch profile tests")
+		t.Skip("backend missing user version column; skipping targeted patch tests")
 	}
 
 	const basePassword = "InitPassw0rd!"
@@ -297,20 +307,22 @@ func TestPatchProfileFunctional(t *testing.T) {
 	cases := []struct {
 		name        string
 		description string
+		method      string
+		path        func(spec framework.UserSpec) string
 		payload     func(spec framework.UserSpec) map[string]any
 		expectHTTP  int
 		expectCode  int
 		waitCheck   func(t *testing.T, env *framework.Env, spec framework.UserSpec)
 	}{
 		{
-			name:        "single_field_patch",
-			description: "PATCH 仅更新昵称",
+			name:        "profile_update_nickname",
+			description: "PUT /api/users/{name}/profile 仅更新昵称",
+			method:      http.MethodPut,
+			path: func(spec framework.UserSpec) string {
+				return fmt.Sprintf("/api/users/%s/profile", spec.Name)
+			},
 			payload: func(spec framework.UserSpec) map[string]any {
-				return map[string]any{
-					"updates": map[string]any{
-						"nickname": "patch_single_field",
-					},
-				}
+				return map[string]any{"nickname": "patch_single_field"}
 			},
 			expectHTTP: http.StatusAccepted,
 			expectCode: code.ErrSuccess,
@@ -328,72 +340,16 @@ func TestPatchProfileFunctional(t *testing.T) {
 			},
 		},
 		{
-			name:        "clear_phone_to_null",
-			description: "PATCH 清空手机号应落盘为 NULL",
+			name:        "profile_version_conflict",
+			description: "PUT /api/users/{name}/profile 携带错误版本不应落盘",
+			method:      http.MethodPut,
+			path: func(spec framework.UserSpec) string {
+				return fmt.Sprintf("/api/users/%s/profile", spec.Name)
+			},
 			payload: func(spec framework.UserSpec) map[string]any {
 				return map[string]any{
-					"updates": map[string]any{
-						"phone": "",
-					},
-				}
-			},
-			expectHTTP: http.StatusAccepted,
-			expectCode: code.ErrSuccess,
-			waitCheck: func(t *testing.T, env *framework.Env, spec framework.UserSpec) {
-				if spec.Phone == "" {
-					t.Fatalf("login before change failed: %v", fmt.Errorf("test setup expected initial phone to be non-empty"))
-				}
-				user, unsupported := waitForPublicUser(t, env, spec.Name, 25*time.Second, func(u *publicUser) bool {
-					return u != nil && u.Username == spec.Name && u.Phone == ""
-				})
-				if unsupported {
-					t.Logf("skip phone clearing verification for %s: backend missing version column", spec.Name)
-					return
-				}
-				if user == nil {
-					t.Fatalf("login before change failed: %v", fmt.Errorf("phone clear patch not observed for %s", spec.Name))
-				}
-				if user.Phone != "" {
-					t.Fatalf("login before change failed: %v", fmt.Errorf("expected phone to be empty, got=%s", user.Phone))
-				}
-			},
-		},
-		{
-			name:        "multi_field_patch",
-			description: "PATCH 同时更新昵称与邮箱确保原子性",
-			payload: func(spec framework.UserSpec) map[string]any {
-				return map[string]any{
-					"updates": map[string]any{
-						"nickname": "patch_multi_field",
-						"email":    fmt.Sprintf("%s-patch@example.com", spec.Name),
-					},
-				}
-			},
-			expectHTTP: http.StatusAccepted,
-			expectCode: code.ErrSuccess,
-			waitCheck: func(t *testing.T, env *framework.Env, spec framework.UserSpec) {
-				expectedEmail := fmt.Sprintf("%s-patch@example.com", spec.Name)
-				user, unsupported := waitForPublicUser(t, env, spec.Name, 25*time.Second, func(u *publicUser) bool {
-					return u != nil && u.Username == spec.Name && u.Nickname == "patch_multi_field" && u.Email == expectedEmail
-				})
-				if unsupported {
-					t.Logf("skip multi-field verification for %s: backend missing version column", spec.Name)
-					return
-				}
-				if user == nil {
-					t.Fatalf("login before change failed: %v", fmt.Errorf("multi field patch not applied"))
-				}
-			},
-		},
-		{
-			name:        "optimistic_lock_conflict",
-			description: "携带错误版本号的 PATCH 不应覆盖现有数据",
-			payload: func(spec framework.UserSpec) map[string]any {
-				return map[string]any{
-					"updates": map[string]any{
-						"nickname": "should_not_apply",
-					},
-					"version": float64(9999),
+					"nickname": "should_not_apply",
+					"version":  float64(9999),
 				}
 			},
 			expectHTTP: http.StatusAccepted,
@@ -422,13 +378,119 @@ func TestPatchProfileFunctional(t *testing.T) {
 				}
 			},
 		},
+		{
+			name:        "password_patch_success",
+			description: "PATCH /api/users/{name}/password 更新密码并验证登录",
+			method:      http.MethodPatch,
+			path: func(spec framework.UserSpec) string {
+				return fmt.Sprintf("/api/users/%s/password", spec.Name)
+			},
+			payload: func(spec framework.UserSpec) map[string]any {
+				return map[string]any{"password": "NewPassw0rd#1"}
+			},
+			expectHTTP: http.StatusAccepted,
+			expectCode: code.ErrSuccess,
+			waitCheck: func(t *testing.T, env *framework.Env, spec framework.UserSpec) {
+				newPassword := "NewPassw0rd#1"
+				deadline := time.Now().Add(25 * time.Second)
+				for time.Now().Before(deadline) {
+					tokens, _, err := env.Login(spec.Name, newPassword)
+					if err == nil && tokens != nil {
+						break
+					}
+					time.Sleep(300 * time.Millisecond)
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("login before change failed: %v", fmt.Errorf("new password not applied for %s", spec.Name))
+				}
+
+				oldPasswordDeadline := time.Now().Add(5 * time.Second)
+				for time.Now().Before(oldPasswordDeadline) {
+					if _, _, err := env.Login(spec.Name, spec.Password); err != nil {
+						return
+					}
+					time.Sleep(200 * time.Millisecond)
+				}
+				t.Fatalf("login before change failed: %v", fmt.Errorf("old password still valid for %s", spec.Name))
+			},
+		},
+		{
+			name:        "password_missing_field",
+			description: "PATCH /api/users/{name}/password 缺少密码字段返回校验错误",
+			method:      http.MethodPatch,
+			path: func(spec framework.UserSpec) string {
+				return fmt.Sprintf("/api/users/%s/password", spec.Name)
+			},
+			payload: func(spec framework.UserSpec) map[string]any {
+				return map[string]any{}
+			},
+			expectHTTP: http.StatusBadRequest,
+			expectCode: code.ErrInvalidParameter,
+		},
+		{
+			name:        "email_patch_single_field",
+			description: "PATCH /api/users/{name}/email 更新邮箱",
+			method:      http.MethodPatch,
+			path: func(spec framework.UserSpec) string {
+				return fmt.Sprintf("/api/users/%s/email", spec.Name)
+			},
+			payload: func(spec framework.UserSpec) map[string]any {
+				return map[string]any{"email": fmt.Sprintf("%s-patch@example.com", spec.Name)}
+			},
+			expectHTTP: http.StatusAccepted,
+			expectCode: code.ErrSuccess,
+			waitCheck: func(t *testing.T, env *framework.Env, spec framework.UserSpec) {
+				expectedEmail := fmt.Sprintf("%s-patch@example.com", spec.Name)
+				user, unsupported := waitForPublicUser(t, env, spec.Name, 25*time.Second, func(u *publicUser) bool {
+					return u != nil && u.Username == spec.Name && u.Email == expectedEmail
+				})
+				if unsupported {
+					t.Logf("skip email verification for %s: backend missing version column", spec.Name)
+					return
+				}
+				if user == nil {
+					t.Fatalf("login before change failed: %v", fmt.Errorf("email patch not applied"))
+				}
+			},
+		},
+		{
+			name:        "phone_clear_to_empty",
+			description: "PATCH /api/users/{name}/phone 清空手机号",
+			method:      http.MethodPatch,
+			path: func(spec framework.UserSpec) string {
+				return fmt.Sprintf("/api/users/%s/phone", spec.Name)
+			},
+			payload: func(spec framework.UserSpec) map[string]any {
+				return map[string]any{"phone": ""}
+			},
+			expectHTTP: http.StatusAccepted,
+			expectCode: code.ErrSuccess,
+			waitCheck: func(t *testing.T, env *framework.Env, spec framework.UserSpec) {
+				if spec.Phone == "" {
+					t.Fatalf("login before change failed: %v", fmt.Errorf("test setup expected initial phone to be non-empty"))
+				}
+				user, unsupported := waitForPublicUser(t, env, spec.Name, 25*time.Second, func(u *publicUser) bool {
+					return u != nil && u.Username == spec.Name && u.Phone == ""
+				})
+				if unsupported {
+					t.Logf("skip phone clearing verification for %s: backend missing version column", spec.Name)
+					return
+				}
+				if user == nil {
+					t.Fatalf("login before change failed: %v", fmt.Errorf("phone clear patch not observed for %s", spec.Name))
+				}
+				if user.Phone != "" {
+					t.Fatalf("login before change failed: %v", fmt.Errorf("expected phone to be empty, got=%s", user.Phone))
+				}
+			},
+		},
 	}
 
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			if env.UserVersionUnsupported() {
-				t.Skip("backend missing user version column; skipping patch profile tests")
+				t.Skip("backend missing version column; skipping targeted patch tests")
 			}
 			spec := env.NewUserSpec("patch_case_", basePassword)
 			env.CreateUserAndWait(t, spec, 15*time.Second)
@@ -438,13 +500,13 @@ func TestPatchProfileFunctional(t *testing.T) {
 
 			payload := tc.payload(spec)
 			start := time.Now()
-			resp, err := env.AdminRequest(http.MethodPatch, fmt.Sprintf("/api/users/%s/profile", spec.Name), payload)
+			resp, err := env.AdminRequest(tc.method, tc.path(spec), payload)
 			duration := time.Since(start)
 			if err != nil {
 				if errors.Is(err, framework.ErrUserVersionColumnMissing) || env.UserVersionUnsupported() {
-					t.Skip("backend missing user version column; skipping patch profile tests")
+					t.Skip("backend missing version column; skipping targeted patch tests")
 				}
-				t.Fatalf("login before change failed: %v", fmt.Errorf("patch profile request: %w", err))
+				t.Fatalf("login before change failed: %v", fmt.Errorf("targeted patch request: %w", err))
 			}
 			if resp.HTTPStatus() != tc.expectHTTP {
 				t.Fatalf("login before change failed: %v", fmt.Errorf("unexpected http=%d", resp.HTTPStatus()))
@@ -460,7 +522,7 @@ func TestPatchProfileFunctional(t *testing.T) {
 			recorder.AddCase(framework.CaseResult{
 				Name:        tc.name,
 				Description: tc.description,
-				Success:     true,
+				Success:     resp.HTTPStatus() == tc.expectHTTP && resp.Code == tc.expectCode,
 				HTTPStatus:  resp.HTTPStatus(),
 				Code:        resp.Code,
 				Message:     resp.Message,
@@ -470,7 +532,7 @@ func TestPatchProfileFunctional(t *testing.T) {
 			})
 		})
 		if env.UserVersionUnsupported() {
-			t.Skip("backend missing user version column; skipping patch profile tests")
+			t.Skip("backend missing version column; skipping targeted patch tests")
 		}
 	}
 }
@@ -823,14 +885,17 @@ func TestConditionalPatchFunctional(t *testing.T) {
 
 func createTestUsers(t *testing.T, env *framework.Env, prefix, password string, count int) []framework.UserSpec {
 	t.Helper()
+	keepFailures := os.Getenv("IAM_APISERVER_KEEP_FAILURES") == "1"
 	specs := make([]framework.UserSpec, count)
 	for i := range specs {
 		specs[i] = env.NewUserSpec(fmt.Sprintf("%s%d_", prefix, i), password)
 		env.CreateUserAndWait(t, specs[i], 15*time.Second)
-		spec := specs[i]
-		t.Cleanup(func() {
-			env.ForceDeleteUserIgnore(spec.Name)
-		})
+		if !keepFailures {
+			spec := specs[i]
+			t.Cleanup(func() {
+				env.ForceDeleteUserIgnore(spec.Name)
+			})
+		}
 	}
 	return specs
 }
@@ -840,21 +905,22 @@ func applyPatchProfileAndWait(t *testing.T, env *framework.Env, spec framework.U
 	if env.UserVersionUnsupported() {
 		t.Skip("backend missing version column; skipping patch profile helper")
 	}
-	payload := map[string]any{
-		"updates": updates,
+	payload := make(map[string]any, len(updates))
+	for k, v := range updates {
+		payload[k] = v
 	}
-	resp, err := env.AdminRequest(http.MethodPatch, fmt.Sprintf("/api/users/%s/profile", spec.Name), payload)
+	resp, err := env.AdminRequest(http.MethodPut, fmt.Sprintf("/api/users/%s/profile", spec.Name), payload)
 	if err != nil {
 		if errors.Is(err, framework.ErrUserVersionColumnMissing) || env.UserVersionUnsupported() {
 			t.Skip("backend missing version column; skipping patch profile helper")
 		}
-		t.Fatalf("login before change failed: %v", fmt.Errorf("patch profile %s: %w", spec.Name, err))
+		t.Fatalf("login before change failed: %v", fmt.Errorf("update profile %s: %w", spec.Name, err))
 	}
 	if resp.HTTPStatus() != http.StatusAccepted && resp.HTTPStatus() != http.StatusOK {
-		t.Fatalf("login before change failed: %v", fmt.Errorf("patch profile %s unexpected http=%d", spec.Name, resp.HTTPStatus()))
+		t.Fatalf("login before change failed: %v", fmt.Errorf("update profile %s unexpected http=%d", spec.Name, resp.HTTPStatus()))
 	}
 	if resp.Code != code.ErrSuccess {
-		t.Fatalf("login before change failed: %v", fmt.Errorf("patch profile %s unexpected code=%d message=%s", spec.Name, resp.Code, resp.Message))
+		t.Fatalf("login before change failed: %v", fmt.Errorf("update profile %s unexpected code=%d message=%s", spec.Name, resp.Code, resp.Message))
 	}
 	if predicate == nil {
 		return

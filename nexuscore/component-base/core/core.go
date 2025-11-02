@@ -86,6 +86,10 @@ func determineStatusCode(req *http.Request) int {
 	case method == "PUT" && isResourceUpdate(path):
 		return http.StatusOK
 
+	// 异步局部更新（PUT /api/users/...）
+	case method == http.MethodPut && strings.HasPrefix(path, "/api/users/"):
+		return http.StatusAccepted
+
 	// 批量/异步局部更新（PATCH /api/users...）
 	case method == http.MethodPatch && strings.HasPrefix(path, "/api/users"):
 		return http.StatusAccepted
@@ -167,6 +171,12 @@ func getSuccessMessage(req *http.Request, data interface{}) string {
 
 	case strings.HasPrefix(path, "/v1/users") && method == "PATCH":
 		return "用户信息更新成功"
+
+	case strings.HasPrefix(path, "/api/users") && method == http.MethodPut:
+		return "用户信息更新请求已接受"
+
+	case strings.HasPrefix(path, "/api/users") && method == http.MethodPatch:
+		return "用户信息更新请求已接受"
 
 	default:
 		// 基于数据内容进一步判断

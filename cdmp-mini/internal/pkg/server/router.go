@@ -192,7 +192,10 @@ func (g *GenericAPIServer) installApiRoutes() error {
 			business.UserServiceMiddleware(),
 		)
 		apiUsers.PUT(":name", lagProtect, writeLimit, userController.Update)
-		apiUsers.PATCH(":name/profile", lagProtect, writeLimit, userController.PatchProfile)
+		apiUsers.PUT(":name/profile", lagProtect, writeLimit, userController.UpdateProfile)
+		apiUsers.PATCH(":name/password", lagProtect, writeLimit, userController.PatchPassword)
+		apiUsers.PATCH(":name/email", lagProtect, writeLimit, userController.PatchEmail)
+		apiUsers.PATCH(":name/phone", lagProtect, writeLimit, userController.PatchPhone)
 		apiUsers.PATCH("", lagProtect, writeLimit, userController.PatchCollection)
 	}
 

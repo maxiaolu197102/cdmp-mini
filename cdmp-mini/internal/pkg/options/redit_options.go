@@ -40,9 +40,9 @@ func NewRedisOptions() *RedisOptions {
 		Password:              "",
 		Database:              0,
 		MasterName:            "",
-		MaxIdle:               25,              // 空闲连接数          // 最大活跃连接数
-		Timeout:               5 * time.Second, // 连接超时
-		EnableCluster:         true,            // 集群模式
+		MaxIdle:               25,               // 空闲连接数          // 最大活跃连接数
+		Timeout:               60 * time.Second, // 连接超时
+		EnableCluster:         true,             // 集群模式
 		UseSSL:                false,
 		SSLInsecureSkipVerify: false,
 		IdleTimeout:           120 * time.Second,  // 空闲超时2分钟

@@ -764,8 +764,9 @@ func (rc *RetryConsumer) updateUserInDB(ctx context.Context, user *v1.User, expe
 		loginedValue = user.LoginedAt
 	}
 	newVersion := user.ObjectMeta.Version
+	// 强制使用 (name, version) 复合索引保证重试路径与主消费路径性能一致
 	queryBuilder := strings.Builder{}
-	queryBuilder.WriteString("UPDATE `user` SET email = ?, password = ?, status = ?, isAdmin = ?, updatedAt = ?, extendShadow = ?, nickname = ?, phone = ?, loginedAt = ?, version = ? WHERE name = ?")
+	queryBuilder.WriteString("UPDATE `user` FORCE INDEX (idx_user_name_version) SET email = ?, password = ?, status = ?, isAdmin = ?, updatedAt = ?, extendShadow = ?, nickname = ?, phone = ?, loginedAt = ?, version = ? WHERE name = ?")
 	args := []interface{}{
 		user.Email,
 		user.Password,
@@ -786,6 +787,10 @@ func (rc *RetryConsumer) updateUserInDB(ctx context.Context, user *v1.User, expe
 
 	res, execErr := db.ExecContext(ctx, queryBuilder.String(), args...)
 	if execErr != nil {
+		if isDuplicateKeyError(execErr.Error()) {
+			log.Warnf("重试更新命中唯一约束冲突，忽略并提交偏移: username=%s err=%v", user.Name, execErr)
+			return nil
+		}
 		return execErr
 	}
 	if expectedVersion != nil {
@@ -914,8 +919,9 @@ func (rc *RetryConsumer) evictContactCaches(ctx context.Context, previous *v1.Us
 	if current != nil {
 		curEmail = usercache.NormalizeEmail(current.Email)
 	}
+	var keysToEvict []string
 	if prevEmail != "" && prevEmail != curEmail {
-		rc.removeCacheKey(ctx, usercache.EmailKey(previous.Email))
+		keysToEvict = append(keysToEvict, usercache.EmailKey(previous.Email))
 	}
 
 	prevPhone := usercache.NormalizePhone(previous.Phone)
@@ -924,7 +930,21 @@ func (rc *RetryConsumer) evictContactCaches(ctx context.Context, previous *v1.Us
 		curPhone = usercache.NormalizePhone(current.Phone)
 	}
 	if prevPhone != "" && prevPhone != curPhone {
-		rc.removeCacheKey(ctx, usercache.PhoneKey(previous.Phone))
+		keysToEvict = append(keysToEvict, usercache.PhoneKey(previous.Phone))
+	}
+
+	switch len(keysToEvict) {
+	case 0:
+		return
+	case 1:
+		rc.removeCacheKey(ctx, keysToEvict[0])
+	default:
+		if err := rc.redis.BatchDelete(ctx, keysToEvict); err != nil {
+			log.Warnw("重试消费者批量删除联系缓存失败，回退逐个删除", "keys", keysToEvict, "error", err)
+			for _, key := range keysToEvict {
+				rc.removeCacheKey(ctx, key)
+			}
+		}
 	}
 }
 

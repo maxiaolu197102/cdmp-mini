@@ -1,5 +1,6 @@
 {
   "enabled": false,
+  "client_limiter_enabled": false,
   "starting_rate": 10000,
   "min_rate": 10000,
   "max_rate": 20000,

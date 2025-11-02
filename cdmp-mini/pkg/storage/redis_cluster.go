@@ -12,6 +12,7 @@ import (
 
 	redis "github.com/redis/go-redis/v9"
 
+	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/metrics"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/options"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/pkg/log"
 
@@ -461,7 +462,14 @@ func (r *RedisCluster) GetKey(ctx context.Context, keyName string) (string, erro
 	cluster := r.singleton()
 	fixedKey := r.fixKey(keyName)
 
+	start := time.Now()
 	value, err := cluster.Get(ctx, fixedKey).Result()
+	duration := time.Since(start)
+	recordErr := err
+	if errors.Is(err, redis.Nil) {
+		recordErr = nil
+	}
+	metrics.RecordRedisOperation("storage_get_key", duration.Seconds(), recordErr)
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
 			return "", redis.Nil // ✅ 明确返回redis.Nil表示key不存在
@@ -590,9 +598,11 @@ func (r *RedisCluster) SetKey(ctx context.Context, keyName, session string, time
 		return err
 	}
 	fixedKey := r.fixKey(keyName)
+	start := time.Now()
 	err := r.withConn(ctx, func(cmd redis.Cmdable) error {
 		return cmd.Set(ctx, fixedKey, session, timeout).Err()
 	})
+	metrics.RecordRedisOperation("storage_set_key", time.Since(start).Seconds(), err)
 	if err != nil {
 		log.Errorf("Error trying to set value: %s", err.Error())
 		return err
@@ -601,36 +611,59 @@ func (r *RedisCluster) SetKey(ctx context.Context, keyName, session string, time
 	return nil
 }
 
-// BatchSet writes multiple items using pipelining to reduce per-call overhead.
-func (r *RedisCluster) BatchSet(ctx context.Context, items []KeyValueTTL) error {
-	if len(items) == 0 {
-		return nil
-	}
+func (r *RedisCluster) executePipeline(ctx context.Context, metricLabel string, fn func(redis.Pipeliner) error) error {
 	if err := r.Up(); err != nil {
+		metrics.RecordRedisOperation(metricLabel, 0, err)
 		return err
 	}
+	start := time.Now()
 	err := r.withConn(ctx, func(cmd redis.Cmdable) error {
 		_, pipeErr := cmd.Pipelined(ctx, func(pipe redis.Pipeliner) error {
-			for _, item := range items {
-				if item.Key == "" {
-					continue
-				}
-				pipe.Set(ctx, r.fixKey(item.Key), item.Value, item.TTL)
-			}
-			return nil
+			return fn(pipe)
 		})
 		if pipeErr != nil && !errors.Is(pipeErr, redis.Nil) {
 			return pipeErr
 		}
 		return nil
 	})
-	if err != nil {
-		if !errors.Is(err, redis.Nil) {
-			log.Errorf("redis pipeline set failed: %v", err)
-		}
-		return err
+	duration := time.Since(start)
+	metrics.RecordRedisOperation(metricLabel, duration.Seconds(), err)
+	if err != nil && !errors.Is(err, redis.Nil) {
+		log.Errorf("redis pipeline %s failed: %v", metricLabel, err)
 	}
-	return nil
+	return err
+}
+
+// BatchSet writes multiple items using pipelining to reduce per-call overhead.
+func (r *RedisCluster) BatchSet(ctx context.Context, items []KeyValueTTL) error {
+	if len(items) == 0 {
+		return nil
+	}
+	return r.executePipeline(ctx, "storage_batch_set", func(pipe redis.Pipeliner) error {
+		for _, item := range items {
+			if item.Key == "" {
+				continue
+			}
+			pipe.Set(ctx, r.fixKey(item.Key), item.Value, item.TTL)
+		}
+		return nil
+	})
+}
+
+// BatchDelete removes multiple keys using pipelining to reduce round-trips.
+func (r *RedisCluster) BatchDelete(ctx context.Context, keys []string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	return r.executePipeline(ctx, "storage_batch_delete", func(pipe redis.Pipeliner) error {
+		for _, key := range keys {
+			if key == "" {
+				continue
+			}
+			pipe.Del(ctx, r.fixKey(key))
+		}
+		return nil
+	})
 }
 
 // SetRawKey sets the value of the given key (without prefix)
@@ -862,12 +895,16 @@ func (r *RedisCluster) GetKeysAndValues(ctx context.Context) map[string]string {
 
 // DeleteKey removes a key from the database
 func (r *RedisCluster) DeleteKey(ctx context.Context, keyName string) (bool, error) {
+	start := time.Now()
 	if err := r.Up(); err != nil {
+		metrics.RecordRedisOperation("storage_delete_key", 0, err)
 		return false, err
 	}
 	//	log.Debugf("DEL Key was: %s", keyName)
 	//	log.Debugf("DEL Key became: %s", r.fixKey(keyName))
 	n, err := r.singleton().Del(ctx, r.fixKey(keyName)).Result()
+	duration := time.Since(start)
+	metrics.RecordRedisOperation("storage_delete_key", duration.Seconds(), err)
 	if err != nil {
 		// 根据错误类型提供更具体的错误信息
 		if errors.Is(err, context.DeadlineExceeded) {

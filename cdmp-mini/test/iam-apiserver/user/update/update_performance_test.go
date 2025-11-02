@@ -91,15 +91,13 @@ func TestUpdatePerformance(t *testing.T) {
 
 	patchRequest := func(env *framework.Env, spec framework.UserSpec, worker, iter int, _ *uint64) error {
 		payload := map[string]any{
-			"updates": map[string]any{
-				"nickname": fmt.Sprintf("patch_perf_%d_%d", worker, iter),
-			},
+			"nickname": fmt.Sprintf("patch_perf_%d_%d", worker, iter),
 		}
-		resp, err := env.AdminRequest(http.MethodPatch, fmt.Sprintf("/api/users/%s/profile", spec.Name), payload)
+		resp, err := env.AdminRequest(http.MethodPut, fmt.Sprintf("/api/users/%s/profile", spec.Name), payload)
 		if err != nil {
 			return err
 		}
-		if resp.HTTPStatus() != http.StatusAccepted {
+		if resp.HTTPStatus() != http.StatusAccepted && resp.HTTPStatus() != http.StatusOK {
 			return fmt.Errorf("unexpected status=%d", resp.HTTPStatus())
 		}
 		return nil

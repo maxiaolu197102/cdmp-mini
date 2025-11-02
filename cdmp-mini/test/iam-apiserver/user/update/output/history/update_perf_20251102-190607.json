@@ -1,0 +1,112 @@
+[
+  {
+    "scenario": "update_baseline_put",
+    "requests": 20,
+    "success_rate": 1,
+    "error_rate": 0,
+    "duration_ms": 63,
+    "qps": 317.10680880324014,
+    "error_count": 0,
+    "success_count": 20,
+    "latency": {
+      "min_ms": 2.348192,
+      "max_ms": 11.38766,
+      "avg_ms": 3.15136815,
+      "p50_ms": 2.5846115000000003,
+      "p90_ms": 3.441625900000002,
+      "p95_ms": 5.089355700000005,
+      "p99_ms": 10.127999139999993
+    },
+    "notes": [
+      "PUT 单记录延迟基线"
+    ]
+  },
+  {
+    "scenario": "patch_baseline_profile",
+    "requests": 20,
+    "success_rate": 1,
+    "error_rate": 0,
+    "duration_ms": 47,
+    "qps": 420.8524298630487,
+    "error_count": 0,
+    "success_count": 20,
+    "latency": {
+      "min_ms": 1.897573,
+      "max_ms": 3.05188,
+      "avg_ms": 2.3730491500000004,
+      "p50_ms": 2.257014,
+      "p90_ms": 3.0022994,
+      "p95_ms": 3.0413331,
+      "p99_ms": 3.0497706200000003
+    },
+    "notes": [
+      "PATCH 单记录延迟基线"
+    ]
+  },
+  {
+    "scenario": "update_parallel_put",
+    "requests": 200,
+    "success_rate": 1,
+    "error_rate": 0,
+    "duration_ms": 50,
+    "qps": 3978.4084611677195,
+    "error_count": 0,
+    "success_count": 200,
+    "latency": {
+      "min_ms": 2.423169,
+      "max_ms": 15.133815,
+      "avg_ms": 4.623897729999997,
+      "p50_ms": 3.6983775000000003,
+      "p90_ms": 6.288430099999999,
+      "p95_ms": 13.21739614999999,
+      "p99_ms": 14.856531659999996
+    },
+    "notes": [
+      "PUT 更新昵称+邮箱吞吐"
+    ]
+  },
+  {
+    "scenario": "patch_parallel_profile",
+    "requests": 200,
+    "success_rate": 1,
+    "error_rate": 0,
+    "duration_ms": 73,
+    "qps": 2734.341322741443,
+    "error_count": 0,
+    "success_count": 200,
+    "latency": {
+      "min_ms": 1.936745,
+      "max_ms": 10.546073,
+      "avg_ms": 6.900069589999998,
+      "p50_ms": 7.0022015,
+      "p90_ms": 8.214077699999999,
+      "p95_ms": 9.237208649999996,
+      "p99_ms": 10.17074547
+    },
+    "notes": [
+      "PATCH 更新昵称吞吐"
+    ]
+  },
+  {
+    "scenario": "patch_batch_condition",
+    "requests": 10,
+    "success_rate": 1,
+    "error_rate": 0,
+    "duration_ms": 18,
+    "qps": 553.6795354894464,
+    "error_count": 0,
+    "success_count": 10,
+    "latency": {
+      "min_ms": 1.671897,
+      "max_ms": 2.062667,
+      "avg_ms": 1.8058071000000002,
+      "p50_ms": 1.7861415,
+      "p90_ms": 1.9706807,
+      "p95_ms": 2.01667385,
+      "p99_ms": 2.05346837
+    },
+    "notes": [
+      "PATCH 批量条件更新请求耗时"
+    ]
+  }
+]
