@@ -172,12 +172,16 @@ func sanitizeTraceKey(component string) string {
 	return replacer.Replace(trimmed)
 }
 
-func NewUserConsumer(opts *options.KafkaOptions, topic, groupID string, db *gorm.DB, redis *storage.RedisCluster) *UserConsumer {
+func NewUserConsumer(opts *options.KafkaOptions, topic, groupID string, instanceIndex int, db *gorm.DB, redis *storage.RedisCluster) *UserConsumer {
+	groupInstanceID := buildGroupInstanceID(opts.InstanceID, groupID, instanceIndex)
+
 	consumer := &UserConsumer{
 		reader: kafka.NewReader(kafka.ReaderConfig{
 			Brokers: opts.Brokers,
 			Topic:   topic,
 			GroupID: groupID,
+			// Enable static membership so that the coordinator can track this consumer across restarts.
+			GroupInstanceID: groupInstanceID,
 
 			// 优化配置
 			MinBytes:      32 * 1024, // 32KB，兼顾延迟与批量度
@@ -200,7 +204,7 @@ func NewUserConsumer(opts *options.KafkaOptions, topic, groupID string, db *gorm
 		opts:          opts,
 		poolComponent: groupID,
 		// 新增：实例ID赋值
-		instanceID: parseInstanceID(opts.InstanceID),
+		instanceID: instanceIndex,
 	}
 	if sqlCore, err := db.DB(); err != nil {
 		log.Errorf("initialize sqlx db failed: %v", err)
@@ -241,6 +245,47 @@ func parseInstanceID(idStr string) int {
 		sum += int(c)
 	}
 	return sum & 0x7FFFFFFF // 保证正数
+}
+
+func buildGroupInstanceID(base, group string, index int) string {
+	const maxLen = 249
+
+	baseComponent := sanitizeGroupInstanceComponent(base)
+	if baseComponent == "" {
+		baseComponent = "consumer"
+	}
+
+	groupComponent := sanitizeGroupInstanceComponent(group)
+	if groupComponent == "" {
+		groupComponent = "group"
+	}
+
+	candidate := fmt.Sprintf("%s-%s-%02d", baseComponent, groupComponent, index)
+	if len(candidate) > maxLen {
+		candidate = candidate[:maxLen]
+	}
+	return candidate
+}
+
+func sanitizeGroupInstanceComponent(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(trimmed))
+	for _, r := range trimmed {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '-', r == '_', r == '.', r == '@':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+	return b.String()
 }
 
 // 消费

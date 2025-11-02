@@ -69,6 +69,10 @@ type ConsumerGroupConfig struct {
 	// ID is the consumer group ID.  It must not be empty.
 	ID string
 
+	// GroupInstanceID is the optional static membership identifier. When set,
+	// the consumer will use static membership semantics with the coordinator.
+	GroupInstanceID string
+
 	// The list of broker addresses used to connect to the kafka cluster.  It
 	// must not be empty.
 	Brokers []string
@@ -183,6 +187,10 @@ func (config *ConsumerGroupConfig) Validate() error {
 
 	if config.Dialer == nil {
 		config.Dialer = DefaultDialer
+	}
+
+	if config.GroupInstanceID != "" && len(config.GroupInstanceID) > 249 {
+		return fmt.Errorf("GroupInstanceID out of bounds: %d", len(config.GroupInstanceID))
 	}
 
 	if len(config.GroupBalancers) == 0 {
@@ -925,12 +933,12 @@ func (cg *ConsumerGroup) coordinator() (coordinator, error) {
 // the leader.  Otherwise, GroupMemberAssignments will be nil.
 //
 // Possible kafka error codes returned:
-//  * GroupLoadInProgress:
-//  * GroupCoordinatorNotAvailable:
-//  * NotCoordinatorForGroup:
-//  * InconsistentGroupProtocol:
-//  * InvalidSessionTimeout:
-//  * GroupAuthorizationFailed:
+//   - GroupLoadInProgress:
+//   - GroupCoordinatorNotAvailable:
+//   - NotCoordinatorForGroup:
+//   - InconsistentGroupProtocol:
+//   - InvalidSessionTimeout:
+//   - GroupAuthorizationFailed:
 func (cg *ConsumerGroup) joinGroup(conn coordinator, memberID string) (string, int32, GroupMemberAssignments, error) {
 	request, err := cg.makeJoinGroupRequest(memberID)
 	if err != nil {
@@ -944,6 +952,21 @@ func (cg *ConsumerGroup) joinGroup(conn coordinator, memberID string) (string, i
 	if err != nil {
 		return "", 0, nil, err
 	}
+
+	cg.withLogger(func(l Logger) {
+		negotiatedVersion := int(response.v)
+		slimmedInstanceID := ""
+		hasStaticID := request.GroupInstanceID != nil && len(strings.TrimSpace(*request.GroupInstanceID)) > 0
+		if hasStaticID {
+			value := strings.TrimSpace(*request.GroupInstanceID)
+			if len(value) > 64 {
+				slimmedInstanceID = value[:64]
+			} else {
+				slimmedInstanceID = value
+			}
+		}
+		l.Printf("joinGroup negotiated version=%d static_membership=%t instance_id_preview=%q", negotiatedVersion, hasStaticID, slimmedInstanceID)
+	})
 
 	memberID = response.MemberID
 	generationID := response.GenerationID
@@ -985,6 +1008,11 @@ func (cg *ConsumerGroup) makeJoinGroupRequest(memberID string) (joinGroupRequest
 		SessionTimeout:   int32(cg.config.SessionTimeout / time.Millisecond),
 		RebalanceTimeout: int32(cg.config.RebalanceTimeout / time.Millisecond),
 		ProtocolType:     defaultProtocolType,
+	}
+
+	if trimmed := strings.TrimSpace(cg.config.GroupInstanceID); trimmed != "" {
+		instanceID := trimmed
+		request.GroupInstanceID = &instanceID
 	}
 
 	for _, balancer := range cg.config.GroupBalancers {
@@ -1073,11 +1101,11 @@ func (cg *ConsumerGroup) makeMemberProtocolMetadata(in []joinGroupResponseMember
 // Readers subscriptions topic => partitions
 //
 // Possible kafka error codes returned:
-//  * GroupCoordinatorNotAvailable:
-//  * NotCoordinatorForGroup:
-//  * IllegalGeneration:
-//  * RebalanceInProgress:
-//  * GroupAuthorizationFailed:
+//   - GroupCoordinatorNotAvailable:
+//   - NotCoordinatorForGroup:
+//   - IllegalGeneration:
+//   - RebalanceInProgress:
+//   - GroupAuthorizationFailed:
 func (cg *ConsumerGroup) syncGroup(conn coordinator, memberID string, generationID int32, memberAssignments GroupMemberAssignments) (map[string][]int32, error) {
 	request := cg.makeSyncGroupRequestV0(memberID, generationID, memberAssignments)
 	response, err := conn.syncGroup(request)
@@ -1087,6 +1115,21 @@ func (cg *ConsumerGroup) syncGroup(conn coordinator, memberID string, generation
 	if err != nil {
 		return nil, err
 	}
+
+	cg.withLogger(func(l Logger) {
+		negotiatedVersion := int(response.v)
+		hasStaticID := request.GroupInstanceID != nil && len(strings.TrimSpace(*request.GroupInstanceID)) > 0
+		slimmedInstanceID := ""
+		if hasStaticID {
+			value := strings.TrimSpace(*request.GroupInstanceID)
+			if len(value) > 64 {
+				slimmedInstanceID = value[:64]
+			} else {
+				slimmedInstanceID = value
+			}
+		}
+		l.Printf("syncGroup negotiated version=%d static_membership=%t instance_id_preview=%q", negotiatedVersion, hasStaticID, slimmedInstanceID)
+	})
 
 	assignments := groupAssignment{}
 	reader := bufio.NewReader(bytes.NewReader(response.MemberAssignments))
@@ -1112,6 +1155,11 @@ func (cg *ConsumerGroup) makeSyncGroupRequestV0(memberID string, generationID in
 		GroupID:      cg.config.ID,
 		GenerationID: generationID,
 		MemberID:     memberID,
+	}
+
+	if trimmed := strings.TrimSpace(cg.config.GroupInstanceID); trimmed != "" {
+		instanceID := trimmed
+		request.GroupInstanceID = &instanceID
 	}
 
 	if memberAssignments != nil {

@@ -130,7 +130,7 @@ func NewKafkaOptions() *KafkaOptions {
 		BaseRetryDelay:           5 * time.Second,
 		MaxRetryDelay:            2 * time.Minute,
 		AutoCreateTopic:          true,
-		DesiredPartitions:        96, //CPU 核数的 2~4 倍设置（如 32、48、64）
+		DesiredPartitions:        64, // 默认按照现有 64 个分区并发消费
 		AutoExpandPartitions:     true,
 		ProducerMaxInFlight:      40000,
 		LagScaleThreshold:        10000,            // 默认滞后阈值
@@ -203,7 +203,7 @@ func (k *KafkaOptions) Complete() {
 		k.BatchTimeout = 100 * time.Millisecond
 	}
 	if k.WorkerCount <= 0 {
-		k.WorkerCount = 16 // 默认调整为16个worker
+		k.WorkerCount = k.DesiredPartitions
 	}
 	if k.MinBytes <= 0 {
 		k.MinBytes = 10 * 1024
@@ -214,7 +214,10 @@ func (k *KafkaOptions) Complete() {
 
 	// 新增：设置合理的分区数默认值
 	if k.DesiredPartitions <= 0 {
-		k.DesiredPartitions = 48 // 默认16个分区
+		k.DesiredPartitions = 64
+	}
+	if k.WorkerCount <= 0 {
+		k.WorkerCount = k.DesiredPartitions
 	}
 	if k.MetricsRefreshInterval <= 0 {
 		k.MetricsRefreshInterval = 30 * time.Second

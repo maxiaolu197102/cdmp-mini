@@ -803,7 +803,7 @@ func (g *GenericAPIServer) initKafkaComponents(db *gorm.DB) error {
 	for i := 0; i < consumerCount; i++ {
 		// 创建消费者实例 - 使用相同的消费组ID
 		createConsumers[i] = NewUserConsumer(kafkaOpts, UserCreateTopic,
-			createGroupID, db, g.redis)
+			createGroupID, i, db, g.redis)
 		createConsumers[i].SetProducer(userProducer)
 		createConsumers[i].SetInstanceID(i)
 		if g.datastore != nil {
@@ -814,7 +814,7 @@ func (g *GenericAPIServer) initKafkaComponents(db *gorm.DB) error {
 		}
 
 		updateConsumers[i] = NewUserConsumer(kafkaOpts, UserUpdateTopic,
-			updateGroupID, db, g.redis)
+			updateGroupID, i, db, g.redis)
 		updateConsumers[i].SetProducer(userProducer)
 		updateConsumers[i].SetInstanceID(i)
 		if g.datastore != nil {
@@ -825,7 +825,7 @@ func (g *GenericAPIServer) initKafkaComponents(db *gorm.DB) error {
 		}
 
 		deleteConsumers[i] = NewUserConsumer(kafkaOpts, UserDeleteTopic,
-			deleteGroupID, db, g.redis)
+			deleteGroupID, i, db, g.redis)
 		deleteConsumers[i].SetProducer(userProducer)
 		deleteConsumers[i].SetInstanceID(i)
 		if g.datastore != nil {

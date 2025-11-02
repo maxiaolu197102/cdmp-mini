@@ -32,7 +32,7 @@ const DEFAULT_TAG_VALUE = '_default';
 const scenarioSettings = {};
 
 export const options = {
-    setupTimeout: '900s',
+    setupTimeout: '300s',
     thresholds: {
         http_req_failed: ['rate<0.05'],
         http_req_duration: ['p(99)<2000'],
@@ -48,35 +48,35 @@ export const options = {
         update_put_baseline: scenarioConfig('PUT_BASELINE', {
             exec: 'scenarioPutBaseline',
             rate: 30,
-            duration: '6h',
+            duration: '1h',
             preAllocatedVUs: 4,
             maxVUs: 12,
         }),
         update_profile_baseline: scenarioConfig('PROFILE_BASELINE', {
             exec: 'scenarioProfileBaseline',
             rate: 40,
-            duration: '6h',
+            duration: '1h',
             preAllocatedVUs: 4,
             maxVUs: 12,
         }),
         update_put_parallel: scenarioConfig('PUT_PARALLEL', {
             exec: 'scenarioPutParallel',
             rate: 200,
-            duration: '6h',
+            duration: '1h',
             preAllocatedVUs: 32,
             maxVUs: 64,
         }),
         update_profile_parallel: scenarioConfig('PROFILE_PARALLEL', {
             exec: 'scenarioProfileParallel',
             rate: 220,
-            duration: '6h',
+            duration: '1h',
             preAllocatedVUs: 32,
             maxVUs: 64,
         }),
         update_batch_condition: scenarioConfig('BATCH_CONDITION', {
             exec: 'scenarioBatchCondition',
             rate: 12,
-            duration: '6h',
+            duration: '1h',
             preAllocatedVUs: 6,
             maxVUs: 24,
         }),

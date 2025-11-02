@@ -231,6 +231,9 @@ func (t syncGroupRequestGroupAssignmentV0) writeTo(wb *writeBuffer) {
 }
 
 type syncGroupRequestV0 struct {
+	// v holds the negotiated API version for the request
+	v apiVersion
+
 	// GroupID holds the unique group identifier
 	GroupID string
 
@@ -240,24 +243,43 @@ type syncGroupRequestV0 struct {
 	// MemberID assigned by the group coordinator
 	MemberID string
 
+	// GroupInstanceID holds the optional static membership identifier
+	GroupInstanceID *string
+
 	GroupAssignments []syncGroupRequestGroupAssignmentV0
 }
 
 func (t syncGroupRequestV0) size() int32 {
-	return sizeofString(t.GroupID) +
+	sz := sizeofString(t.GroupID) +
 		sizeofInt32(t.GenerationID) +
-		sizeofString(t.MemberID) +
-		sizeofArray(len(t.GroupAssignments), func(i int) int32 { return t.GroupAssignments[i].size() })
+		sizeofString(t.MemberID)
+
+	if t.v >= v3 {
+		sz += sizeofNullableString(t.GroupInstanceID)
+	}
+
+	return sz + sizeofArray(len(t.GroupAssignments), func(i int) int32 { return t.GroupAssignments[i].size() })
 }
 
 func (t syncGroupRequestV0) writeTo(wb *writeBuffer) {
 	wb.writeString(t.GroupID)
 	wb.writeInt32(t.GenerationID)
 	wb.writeString(t.MemberID)
+
+	if t.v >= v3 {
+		wb.writeNullableString(t.GroupInstanceID)
+	}
+
 	wb.writeArray(len(t.GroupAssignments), func(i int) { t.GroupAssignments[i].writeTo(wb) })
 }
 
 type syncGroupResponseV0 struct {
+	// v holds the negotiated API version for the response
+	v apiVersion
+
+	// ThrottleTimeMS holds the throttle time returned by brokers for v1+
+	ThrottleTimeMS int32
+
 	// ErrorCode holds response error code
 	ErrorCode int16
 
@@ -268,17 +290,29 @@ type syncGroupResponseV0 struct {
 }
 
 func (t syncGroupResponseV0) size() int32 {
-	return sizeofInt16(t.ErrorCode) +
-		sizeofBytes(t.MemberAssignments)
+	sz := sizeofInt16(t.ErrorCode) + sizeofBytes(t.MemberAssignments)
+	if t.v >= v1 {
+		sz += sizeofInt32(t.ThrottleTimeMS)
+	}
+	return sz
 }
 
 func (t syncGroupResponseV0) writeTo(wb *writeBuffer) {
+	if t.v >= v1 {
+		wb.writeInt32(t.ThrottleTimeMS)
+	}
 	wb.writeInt16(t.ErrorCode)
 	wb.writeBytes(t.MemberAssignments)
 }
 
 func (t *syncGroupResponseV0) readFrom(r *bufio.Reader, sz int) (remain int, err error) {
-	if remain, err = readInt16(r, sz, &t.ErrorCode); err != nil {
+	remain = sz
+	if t.v >= v1 {
+		if remain, err = readInt32(r, remain, &t.ThrottleTimeMS); err != nil {
+			return
+		}
+	}
+	if remain, err = readInt16(r, remain, &t.ErrorCode); err != nil {
 		return
 	}
 	if remain, err = readBytes(r, remain, &t.MemberAssignments); err != nil {

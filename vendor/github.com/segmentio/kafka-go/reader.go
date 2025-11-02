@@ -357,6 +357,10 @@ type ReaderConfig struct {
 	// Partition should NOT be specified e.g. 0
 	GroupID string
 
+	// GroupInstanceID sets the static membership identifier used when joining
+	// a consumer group. Leave empty to use dynamic (ephemeral) membership.
+	GroupInstanceID string
+
 	// GroupTopics allows specifying multiple topics, but can only be used in
 	// combination with GroupID, as it is a consumer-group feature. As such, if
 	// GroupID is set, then either Topic or GroupTopics must be defined.
@@ -543,6 +547,9 @@ func (config *ReaderConfig) Validate() error {
 	}
 
 	if config.GroupID != "" {
+		if config.GroupInstanceID != "" && len(config.GroupInstanceID) > 249 {
+			return fmt.Errorf("GroupInstanceID exceeds maximum length: %d", len(config.GroupInstanceID))
+		}
 		if config.Partition != 0 {
 			return errors.New("either Partition or GroupID may be specified, but not both")
 		}
@@ -550,8 +557,13 @@ func (config *ReaderConfig) Validate() error {
 		if len(config.Topic) == 0 && len(config.GroupTopics) == 0 {
 			return errors.New("either Topic or GroupTopics must be specified with GroupID")
 		}
-	} else if len(config.Topic) == 0 {
-		return errors.New("cannot create a new kafka reader with an empty topic")
+	} else {
+		if config.GroupInstanceID != "" {
+			return errors.New("GroupInstanceID may only be set when GroupID is configured")
+		}
+		if len(config.Topic) == 0 {
+			return errors.New("cannot create a new kafka reader with an empty topic")
+		}
 	}
 
 	if config.MinBytes > config.MaxBytes {
@@ -726,6 +738,7 @@ func NewReader(config ReaderConfig) *Reader {
 			Brokers:                r.config.Brokers,
 			Dialer:                 r.config.Dialer,
 			Topics:                 r.getTopics(),
+			GroupInstanceID:        r.config.GroupInstanceID,
 			GroupBalancers:         r.config.GroupBalancers,
 			HeartbeatInterval:      r.config.HeartbeatInterval,
 			PartitionWatchInterval: r.config.PartitionWatchInterval,

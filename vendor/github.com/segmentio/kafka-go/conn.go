@@ -369,10 +369,12 @@ func (c *Conn) heartbeat(request heartbeatRequestV0) (heartbeatResponseV0, error
 //
 // See http://kafka.apache.org/protocol.html#The_Messages_JoinGroup
 func (c *Conn) joinGroup(request joinGroupRequest) (joinGroupResponse, error) {
-	version, err := c.negotiateVersion(joinGroup, v1, v2)
+	version, err := c.negotiateVersion(joinGroup, v1, v2, v5)
 	if err != nil {
 		return joinGroupResponse{}, err
 	}
+
+	request.v = version
 
 	response := joinGroupResponse{v: version}
 
@@ -513,11 +515,17 @@ func (c *Conn) offsetFetch(request offsetFetchRequestV1) (offsetFetchResponseV1,
 //
 // See http://kafka.apache.org/protocol.html#The_Messages_SyncGroup
 func (c *Conn) syncGroup(request syncGroupRequestV0) (syncGroupResponseV0, error) {
-	var response syncGroupResponseV0
+	version, err := c.negotiateVersion(syncGroup, v0, v1, v2, v3)
+	if err != nil {
+		return syncGroupResponseV0{}, err
+	}
 
-	err := c.readOperation(
+	request.v = version
+	response := syncGroupResponseV0{v: version}
+
+	err = c.readOperation(
 		func(deadline time.Time, id int32) error {
-			return c.writeRequest(syncGroup, v0, id, request)
+			return c.writeRequest(syncGroup, version, id, request)
 		},
 		func(deadline time.Time, size int) error {
 			return expectZeroSize(func() (remain int, err error) {
