@@ -13,8 +13,9 @@ const CODE_RESOURCE_CONFLICT = 110006;
 const CODE_KAFKA_DEGRADED = 100401;
 
 const HTTP_OK = 200;
-const HTTP_ACCEPTED = 202;
 const HTTP_CREATED = 201;
+const HTTP_ACCEPTED = 202;
+const HTTP_UNAUTHORIZED = 401;
 const HTTP_CONFLICT = 409;
 
 const updatePutLatency = new Trend('update_put_latency', true);
@@ -86,6 +87,7 @@ export const options = {
 export function setup() {
     const baseUrl = sanitizeBaseUrl(requireEnv('BASE_URL'));
     const dataset = parseDataset(requireEnv('UPDATE_DATASET'));
+    applyRunOffsets(dataset);
     const token = obtainToken(baseUrl);
 
     const context = {
@@ -165,29 +167,48 @@ function runPutScenario({ context, scenarioName, userPool, tags }) {
     const state = ensureVuState(scenarioName);
     const user = pickUserForVu(state, scenarioName, userPool);
     const payload = buildPutPayload(context.dataset, state, user);
-    const res = sendPutRequest(context, user, payload, tags);
-    updatePutLatency.add(res.timings.duration);
-    const parsed = parseResponse(res);
-    const degraded = isDegraded(parsed);
-    const success = res.status === HTTP_OK && parsed.code === CODE_SUCCESS;
+    const maxAttempts = resolvePutMaxAttempts(context.dataset);
+    let attempt = 0;
+    let res = null;
+    let parsed = { code: null, message: '', data: null };
+    let success = false;
+    let degraded = false;
+
+    while (attempt < maxAttempts) {
+        attempt += 1;
+        res = sendPutRequest(context, user, payload, tags);
+        updatePutLatency.add(res.timings.duration);
+        parsed = parseResponse(res);
+        degraded = degraded || isDegraded(parsed);
+        success = res.status === HTTP_OK && parsed.code === CODE_SUCCESS;
+        if (success) {
+            const newVersion = extractUpdateVersion(parsed.data);
+            if (newVersion !== null) {
+                state.versions[user.name] = newVersion;
+                payload.version = newVersion;
+            }
+            break;
+        }
+        if (!needsVersionResync(parsed.code, res.status)) {
+            break;
+        }
+        const version = tryResyncVersion(context, user, tags);
+        if (version === null) {
+            break;
+        }
+        state.versions[user.name] = version;
+        payload.version = version;
+    }
+
     updatePutSuccessRate.add(success);
     degradedRate.add(degraded);
 
-    if (success) {
-        const newVersion = extractUpdateVersion(parsed.data);
-        if (newVersion !== null) {
-            state.versions[user.name] = newVersion;
-        }
-    } else if (needsVersionResync(parsed.code, res.status)) {
-        const version = tryResyncVersion(context, user, tags);
-        if (version !== null) {
-            state.versions[user.name] = version;
-        }
-    }
+    const finalRes = res || { status: 0, timings: { duration: 0 } };
+    const finalParsed = parsed || { code: null, message: '', data: null };
 
-    recordChecks(res, {
+    recordChecks(finalRes, {
         put_http_200: r => r.status === HTTP_OK,
-        put_code_success: () => parsed.code === CODE_SUCCESS,
+        put_code_success: () => finalParsed.code === CODE_SUCCESS,
     });
 
     sleep(context.dataset.sleepBetween);
@@ -319,22 +340,89 @@ function buildBatchUpdates(dataset, state) {
     return updates;
 }
 
+function sendWithAuthRetry(context, tags, executor) {
+    const sanitizedTags = tags || {};
+    const attempt = () => {
+        const params = buildRequestParams(context, sanitizedTags);
+        return executor(params);
+    };
+    let res = attempt();
+    if (shouldRefreshAdminToken(res) && refreshAdminToken(context)) {
+        res = attempt();
+    }
+    return res;
+}
+
+function shouldRefreshAdminToken(res) {
+    if (!res || res.status !== HTTP_UNAUTHORIZED) {
+        return false;
+    }
+    const rawBody = typeof res.body === 'string' ? res.body : '';
+    if (rawBody) {
+        const lowered = rawBody.toLowerCase();
+        if (lowered.indexOf('token is expired') !== -1) {
+            return true;
+        }
+        try {
+            const parsed = JSON.parse(rawBody);
+            const message = extractMessageField(parsed);
+            return typeof message === 'string' && message.toLowerCase().indexOf('token is expired') !== -1;
+        } catch (err) {
+            // no-op: body不是JSON
+        }
+    }
+    return false;
+}
+
+function extractMessageField(payload) {
+    if (!payload || typeof payload !== 'object') {
+        return '';
+    }
+    if (typeof payload.message === 'string') {
+        return payload.message;
+    }
+    if (payload.error && typeof payload.error.message === 'string') {
+        return payload.error.message;
+    }
+    if (payload.data && typeof payload.data.message === 'string') {
+        return payload.data.message;
+    }
+    return '';
+}
+
+function refreshAdminToken(context) {
+    try {
+        const token = obtainToken(context.baseUrl, { forceLogin: true });
+        if (token) {
+            context.token = token;
+            console.log(`[auth] refreshed admin token at ${new Date().toISOString()}`);
+            return true;
+        }
+    } catch (err) {
+        console.error(`[auth] failed to refresh admin token: ${err && err.message ? err.message : err}`);
+    }
+    return false;
+}
+
 function sendPutRequest(context, user, payload, extraTags) {
     const tags = mergeTags({ endpoint: 'put_user', username: user.name }, extraTags);
-    const params = buildRequestParams(context, tags);
-    return http.put(`${context.baseUrl}/v1/users/${encodeURIComponent(user.name)}`, JSON.stringify(payload), params);
+    return sendWithAuthRetry(context, tags, params =>
+        http.put(`${context.baseUrl}/v1/users/${encodeURIComponent(user.name)}`, JSON.stringify(payload), params)
+    );
 }
 
 function sendProfilePatch(context, user, payload, extraTags) {
     const tags = mergeTags({ endpoint: 'profile_patch', username: user.name }, extraTags);
-    const params = buildRequestParams(context, tags);
-    return http.put(`${context.baseUrl}/api/users/${encodeURIComponent(user.name)}/profile`, JSON.stringify(payload), params);
+    return sendWithAuthRetry(context, tags, params =>
+        http.put(`${context.baseUrl}/api/users/${encodeURIComponent(user.name)}/profile`, JSON.stringify(payload), params)
+    );
 }
 
 function sendBatchPatch(context, payload, extraTags) {
     const tags = mergeTags({ endpoint: 'batch_patch' }, extraTags);
-    const params = buildRequestParams(context, tags);
-    return http.patch(`${context.baseUrl}/api/users`, JSON.stringify(payload), params);
+    return sendWithAuthRetry(context, tags, params =>
+        http.patch(`${context.baseUrl}/api/users`, JSON.stringify(payload), params)
+    );
 }
 
 function buildRequestParams(context, tags) {
@@ -351,27 +439,91 @@ function seedUserGroup(context, label, count, tags) {
         return [];
     }
     const users = [];
+    const dataset = context.dataset;
     for (let i = 0; i < count; i += 1) {
-        const username = buildSeedUsername(context.dataset, label, i);
-        const payload = buildSeedPayload(context.dataset, username, i);
-        const res = sendCreateUser(context, payload, tags);
-        if (res.status !== HTTP_CREATED) {
+        let attempt = 0;
+        let username;
+        let payload;
+        let phone = '';
+        for (; ;) {
+            username = buildSeedUsername(dataset, label, i, attempt);
+            payload = buildSeedPayload(dataset, username, i);
+            if (dataset.phonePrefix) {
+                phone = allocateSeedPhoneCandidate(dataset, attempt);
+                payload.phone = phone;
+            } else {
+                phone = '';
+            }
+
+            const res = sendCreateUser(context, payload, tags);
+            if (res.status === HTTP_CREATED) {
+                if (dataset.phonePrefix) {
+                    commitSeedPhone(dataset, attempt);
+                }
+                waitForUserVisibility(context, username, tags);
+                users.push({
+                    name: username,
+                    version: 1,
+                    baseEmail: username.slice(0, 48),
+                    phone,
+                });
+                break;
+            }
+
             const parsed = parseResponse(res);
-            fail(`创建种子用户失败: username=${username} http=${res.status} code=${parsed.code} message=${parsed.message}`);
+            if (shouldRetrySeedCreation(res.status, parsed, dataset)) {
+                console.warn(
+                    `[setup] phone conflict detected, retrying: phone=${phone} status=${res.status} code=${parsed.code} attempt=${attempt}`
+                );
+                attempt += 1;
+                continue;
+            }
+
+            fail(
+                `创建种子用户失败: username=${username} http=${res.status} code=${parsed.code} message=${parsed.message}`
+            );
         }
-        waitForUserVisibility(context, username, tags);
-        users.push({
-            name: username,
-            version: 1,
-            baseEmail: username.slice(0, 48),
-            phone: payload.phone || '',
-        });
     }
     return users;
 }
 
-function buildSeedUsername(dataset, label, index) {
-    const suffix = `${label}-${index}-${uniqueSuffix()}`;
+function allocateSeedPhoneCandidate(dataset, attempt) {
+    const cursor = Number.isFinite(dataset.phoneSeedCursor) ? dataset.phoneSeedCursor : 0;
+    const suffixCapacity = Math.pow(10, dataset.phoneSuffixLength);
+    const suffixIndex = dataset.phoneSeedOffset + cursor + attempt;
+    if (suffixIndex >= suffixCapacity) {
+        fail('可用手机号空间耗尽，请增大 phoneSuffixLength 或减少种子用户数量');
+    }
+    return dataset.phonePrefix + padNumber(suffixIndex, dataset.phoneSuffixLength);
+}
+
+function commitSeedPhone(dataset, attempt) {
+    if (!dataset.phonePrefix) {
+        return;
+    }
+    if (!Number.isFinite(dataset.phoneSeedCursor)) {
+        dataset.phoneSeedCursor = 0;
+    }
+    dataset.phoneSeedCursor += attempt + 1;
+}
+
+function shouldRetrySeedCreation(status, parsed, dataset) {
+    if (!dataset.phonePrefix || !parsed) {
+        return false;
+    }
+    const code = parsed.code;
+    const message = typeof parsed.message === 'string' ? parsed.message : '';
+    const lowered = message.toLowerCase();
+    const phoneConflict =
+        message.indexOf('手机号') !== -1 || lowered.indexOf('phone') !== -1 || lowered.indexOf('mobile') !== -1;
+    if (!phoneConflict) {
+        return false;
+    }
+    return code === CODE_VALIDATION || code === CODE_INVALID_PARAMETER || code === CODE_RESOURCE_CONFLICT || status === HTTP_CONFLICT;
+}
+
+function buildSeedUsername(dataset, label, index, attempt = 0) {
+    const suffix = `${label}-${index}-${attempt}-${uniqueSuffix()}`;
     let candidate = `${dataset.usernamePrefix}-${suffix}`;
     if (candidate.length > dataset.maxUsernameLength) {
         candidate = candidate.slice(0, dataset.maxUsernameLength);
@@ -388,9 +540,6 @@ function buildSeedPayload(dataset, username, index) {
         status: 1,
         isAdmin: index % 5 === 0 ? 1 : 0,
     };
-    if (dataset.phonePrefix) {
-        payload.phone = dataset.phonePrefix + padNumber(index, dataset.phoneSuffixLength);
-    }
     if (dataset.seedExtras) {
         payload.extras = dataset.seedExtras;
     }
@@ -405,15 +554,18 @@ function buildSeedPayload(dataset, username, index) {
 
 function sendCreateUser(context, payload, tags) {
     const finalTags = mergeTags({ endpoint: 'create_user_seed' }, tags);
-    const params = buildRequestParams(context, finalTags);
-    return http.post(`${context.baseUrl}/v1/users`, JSON.stringify(payload), params);
+    return sendWithAuthRetry(context, finalTags, params =>
+        http.post(`${context.baseUrl}/v1/users`, JSON.stringify(payload), params)
+    );
 }
 
 function waitForUserVisibility(context, username, tags) {
     const deadline = Date.now() + context.dataset.userReadyTimeoutMs;
-    const params = buildRequestParams(context, mergeTags({ endpoint: 'get_user_seed', username }, tags));
+    const baseTags = mergeTags({ endpoint: 'get_user_seed', username }, tags);
     while (Date.now() < deadline) {
-        const res = http.get(`${context.baseUrl}/v1/users/${encodeURIComponent(username)}`, params);
+        const res = sendWithAuthRetry(context, baseTags, params =>
+            http.get(`${context.baseUrl}/v1/users/${encodeURIComponent(username)}`, params)
+        );
         if (res.status === HTTP_OK) {
             return;
         }
@@ -556,9 +708,25 @@ function needsVersionResync(code, status) {
     return code === CODE_RESOURCE_CONFLICT || code === CODE_INVALID_PARAMETER;
 }
 
+function resolvePutMaxAttempts(dataset) {
+    const raw = dataset && Number.isFinite(Number(dataset.putMaxAttempts))
+        ? parseInt(dataset.putMaxAttempts, 10)
+        : NaN;
+    let attempts = Number.isNaN(raw) ? 2 : raw;
+    if (!Number.isFinite(attempts) || attempts < 1) {
+        attempts = 1;
+    }
+    if (attempts > 5) {
+        attempts = 5;
+    }
+    return attempts;
+}
+
 function tryResyncVersion(context, user, tags) {
-    const params = buildRequestParams(context, mergeTags({ endpoint: 'get_user_sync', username: user.name }, tags));
-    const res = http.get(`${context.baseUrl}/v1/users/${encodeURIComponent(user.name)}`, params);
+    const baseTags = mergeTags({ endpoint: 'get_user_sync', username: user.name }, tags);
+    const res = sendWithAuthRetry(context, baseTags, params =>
+        http.get(`${context.baseUrl}/v1/users/${encodeURIComponent(user.name)}`, params)
+    );
     if (res.status !== HTTP_OK) {
         return null;
     }
@@ -680,29 +848,46 @@ function scenarioConfig(prefix, defaults) {
     return resolved;
 }
 
-function obtainToken(baseUrl) {
-    if (__ENV.ADMIN_TOKEN && __ENV.ADMIN_TOKEN.trim() !== '') {
+function obtainToken(baseUrl, options = {}) {
+    const forceLogin = Boolean(options.forceLogin);
+    if (!forceLogin && __ENV.ADMIN_TOKEN && __ENV.ADMIN_TOKEN.trim() !== '') {
         return __ENV.ADMIN_TOKEN.trim();
     }
     const username = (__ENV.ADMIN_USERNAME || '').trim();
     const password = (__ENV.ADMIN_PASSWORD || '').trim();
     if (!username || !password) {
+        if (forceLogin) {
+            console.error('[auth] ADMIN_USERNAME 或 ADMIN_PASSWORD 未配置，无法刷新 Token');
+            return null;
+        }
         fail('请通过 ADMIN_TOKEN 或 ADMIN_USERNAME/ADMIN_PASSWORD 提供管理员凭据');
     }
     const payload = JSON.stringify({ username, password });
     const res = http.post(`${baseUrl}/login`, payload, { headers: { 'Content-Type': 'application/json' } });
     if (res.status !== HTTP_OK) {
+        if (forceLogin) {
+            console.error(`[auth] 管理员登录失败，状态码: ${res.status}`);
+            return null;
+        }
         fail(`管理员登录失败，状态码: ${res.status}`);
     }
     let body;
     try {
         body = res.json();
     } catch (err) {
+        if (forceLogin) {
+            console.error('[auth] 解析登录响应失败: ' + err.message);
+            return null;
+        }
         fail('解析登录响应失败: ' + err.message);
     }
     const data = body && typeof body === 'object' ? body.data : null;
     const token = data ? data.access_token || data.accessToken || data.token : null;
     if (!token) {
+        if (forceLogin) {
+            console.error('[auth] 登录响应缺少 access_token');
+            return null;
+        }
         fail('登录响应中缺少 access_token');
     }
     return String(token).trim();
@@ -773,6 +958,13 @@ function parseDataset(raw) {
     parsed.profileUpdateEmail = Boolean(parsed.profileUpdateEmail);
     parsed.profileUpdatePhone = Boolean(parsed.profileUpdatePhone);
     parsed.batchToggleStatus = Boolean(parsed.batchToggleStatus);
+    parsed.putMaxAttempts = parseIntSafe(parsed.putMaxAttempts, 2);
+    if (!Number.isFinite(parsed.putMaxAttempts) || parsed.putMaxAttempts < 1) {
+        parsed.putMaxAttempts = 1;
+    }
+    if (parsed.putMaxAttempts > 5) {
+        parsed.putMaxAttempts = 5;
+    }
 
     parsed.maxUsernameLength = parseIntSafe(parsed.maxUsernameLength, 63);
     if (parsed.maxUsernameLength < 16) {
@@ -789,6 +981,48 @@ function parseDataset(raw) {
     parsed.seedExtendTemplate = isPlainObject(parsed.seedExtendTemplate) ? parsed.seedExtendTemplate : null;
 
     return parsed;
+}
+
+function applyRunOffsets(dataset) {
+    const totalSeeds =
+        (dataset.serialUserCount || 0) +
+        (dataset.parallelPutUserCount || 0) +
+        (dataset.profileUserCount || 0) +
+        (dataset.batchUserCount || 0);
+
+    if (!dataset.phonePrefix || dataset.phoneSuffixLength <= 0 || totalSeeds <= 0) {
+        dataset.phoneSeedOffset = 0;
+        dataset.phoneSeedCursor = 0;
+        return;
+    }
+
+    const suffixCapacity = Math.pow(10, dataset.phoneSuffixLength);
+    if (!Number.isFinite(suffixCapacity) || suffixCapacity <= totalSeeds) {
+        fail(
+            `phoneSuffixLength=${dataset.phoneSuffixLength} 无法支撑 ${totalSeeds} 个种子用户，` +
+            '请增大 phoneSuffixLength 或减少数据集中用户数量'
+        );
+    }
+
+    const entropy = Date.now() + Math.floor(Math.random() * suffixCapacity);
+    const preferred = entropy % suffixCapacity;
+    const minOffset = 1; // 避免以 0000 开头与历史数据冲突
+    let candidate = preferred < minOffset ? minOffset : preferred;
+
+    const maxOffset = suffixCapacity - totalSeeds;
+    if (candidate > maxOffset) {
+        candidate = maxOffset;
+    }
+
+    if (candidate < minOffset) {
+        candidate = minOffset;
+    }
+
+    dataset.phoneSeedOffset = candidate;
+    dataset.phoneSeedCursor = 0;
+    console.log(
+        `[setup] phoneSeedOffset=${dataset.phoneSeedOffset} capacity=${suffixCapacity} totalSeeds=${totalSeeds}`
+    );
 }
 
 function enforceString(obj, field) {

@@ -839,7 +839,7 @@ func (g *GenericAPIServer) initKafkaComponents(db *gorm.DB) error {
 	log.Info("初始化重试消费者...")
 	retryGroupId := g.consumerGroupID("retry")
 	for i := 0; i < kafkaOpts.RetryWorkerCount; i++ {
-		retryConsumers[i] = NewRetryConsumer(db, g.redis, userProducer, kafkaOpts, UserRetryTopic, retryGroupId)
+		retryConsumers[i] = NewRetryConsumer(db, g.redis, userProducer, kafkaOpts, UserRetryTopic, retryGroupId, i)
 		if g.datastore != nil {
 			retryConsumers[i].SetPoolStatsProvider(g.datastore.PoolStats)
 		}

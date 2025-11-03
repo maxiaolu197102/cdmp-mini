@@ -30,34 +30,40 @@ import (
 )
 
 type RetryConsumer struct {
-	reader        *kafka.Reader
-	db            *gorm.DB
-	sqlxDB        *sqlx.DB
-	redis         *storage.RedisCluster
-	producer      *UserProducer
-	maxRetries    int
-	kafkaOptions  *options.KafkaOptions
-	poolReporter  poolStatsReporter
-	poolComponent string
+	reader          *kafka.Reader
+	db              *gorm.DB
+	sqlxDB          *sqlx.DB
+	redis           *storage.RedisCluster
+	producer        *UserProducer
+	maxRetries      int
+	kafkaOptions    *options.KafkaOptions
+	poolReporter    poolStatsReporter
+	poolComponent   string
+	groupInstanceID string
+	instanceIndex   int
 }
 
-func NewRetryConsumer(db *gorm.DB, redis *storage.RedisCluster, producer *UserProducer, kafkaOptions *options.KafkaOptions, topic, groupid string) *RetryConsumer {
+func NewRetryConsumer(db *gorm.DB, redis *storage.RedisCluster, producer *UserProducer, kafkaOptions *options.KafkaOptions, topic, groupid string, instanceIndex int) *RetryConsumer {
+	groupInstanceID := buildGroupInstanceID(kafkaOptions.InstanceID, groupid, instanceIndex)
 	rc := &RetryConsumer{
 		reader: kafka.NewReader(kafka.ReaderConfig{
-			Brokers:        kafkaOptions.Brokers,
-			Topic:          topic,
-			GroupID:        groupid,
-			MinBytes:       10e3,
-			MaxBytes:       10e6,
-			CommitInterval: 2 * time.Second,
-			StartOffset:    kafka.FirstOffset,
+			Brokers:         kafkaOptions.Brokers,
+			Topic:           topic,
+			GroupID:         groupid,
+			GroupInstanceID: groupInstanceID,
+			MinBytes:        10e3,
+			MaxBytes:        10e6,
+			CommitInterval:  2 * time.Second,
+			StartOffset:     kafka.FirstOffset,
 		}),
-		db:            db,
-		redis:         redis,
-		producer:      producer,
-		maxRetries:    kafkaOptions.MaxRetries,
-		kafkaOptions:  kafkaOptions,
-		poolComponent: groupid,
+		db:              db,
+		redis:           redis,
+		producer:        producer,
+		maxRetries:      kafkaOptions.MaxRetries,
+		kafkaOptions:    kafkaOptions,
+		poolComponent:   groupid,
+		groupInstanceID: groupInstanceID,
+		instanceIndex:   instanceIndex,
 	}
 	if core, err := db.DB(); err != nil {
 		log.Errorf("retry consumer sqlx init failed: %v", err)
@@ -162,22 +168,22 @@ func (rc *RetryConsumer) StartConsuming(ctx context.Context, workerCount int, re
 }
 
 func (rc *RetryConsumer) retryWorker(ctx context.Context, workerID int) {
-	log.Debugf("启动重试消费者Worker %d", workerID)
+	log.Debugf("启动重试消费者Worker %d (groupInstanceID=%s)", workerID, rc.groupInstanceID)
 
 	for {
 		select {
 		case <-ctx.Done():
-			log.Debugf("重试Worker %d: 停止消费", workerID)
+			log.Debugf("重试Worker %d (groupInstanceID=%s): 停止消费", workerID, rc.groupInstanceID)
 			return
 		default:
-			log.Debugf("Worker %d: 准备获取消息...", workerID)
+			log.Debugf("Worker %d (groupInstanceID=%s): 准备获取消息...", workerID, rc.groupInstanceID)
 			msg, err := rc.reader.FetchMessage(ctx)
 			if err != nil {
 				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-					log.Debugf("Worker %d: 上下文已取消，退出", workerID)
+					log.Debugf("Worker %d (groupInstanceID=%s): 上下文已取消，退出", workerID, rc.groupInstanceID)
 					return
 				}
-				log.Warnf("重试Worker %d: 获取消息失败: %v，稍后重试", workerID, err)
+				log.Warnf("重试Worker %d (groupInstanceID=%s): 获取消息失败: %v，稍后重试", workerID, rc.groupInstanceID, err)
 				select {
 				case <-time.After(200 * time.Millisecond):
 				case <-ctx.Done():
@@ -187,12 +193,12 @@ func (rc *RetryConsumer) retryWorker(ctx context.Context, workerID int) {
 			}
 
 			if err := rc.processRetryMessage(ctx, msg); err != nil {
-				log.Errorf("重试Worker %d: 处理消息失败: %v", workerID, err)
+				log.Errorf("重试Worker %d (groupInstanceID=%s): 处理消息失败: %v", workerID, rc.groupInstanceID, err)
 				continue
 			}
 
 			if err := rc.commitWithRetry(ctx, msg, workerID); err != nil {
-				log.Errorf("重试Worker %d: 提交偏移量失败: %v", workerID, err)
+				log.Errorf("重试Worker %d (groupInstanceID=%s): 提交偏移量失败: %v", workerID, rc.groupInstanceID, err)
 			}
 		}
 	}
