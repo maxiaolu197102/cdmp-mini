@@ -1,0 +1,110 @@
+[
+  {
+    "scenario": "login_concurrent_50",
+    "requests": 200,
+    "success_rate": 1,
+    "error_rate": 0,
+    "duration_ms": 52,
+    "qps": 3835.622554335141,
+    "error_count": 0,
+    "success_count": 200,
+    "latency": {
+      "min_ms": 2.241982,
+      "max_ms": 42.925729,
+      "avg_ms": 12.20889892,
+      "p50_ms": 6.29768,
+      "p90_ms": 35.324654,
+      "p95_ms": 38.072036,
+      "p99_ms": 41.858863
+    },
+    "counters": {
+      "login_attempt": 200,
+      "login_success": 200
+    },
+    "notes": [
+      "login_attempt=200",
+      "login_success=200"
+    ]
+  },
+  {
+    "scenario": "login_concurrent_100",
+    "requests": 400,
+    "success_rate": 1,
+    "error_rate": 0,
+    "duration_ms": 99,
+    "qps": 4037.4249102051467,
+    "error_count": 0,
+    "success_count": 400,
+    "latency": {
+      "min_ms": 3.193543,
+      "max_ms": 80.226434,
+      "avg_ms": 21.630031579999997,
+      "p50_ms": 10.281744,
+      "p90_ms": 54.599005,
+      "p95_ms": 61.665774,
+      "p99_ms": 70.031964
+    },
+    "counters": {
+      "login_attempt": 400,
+      "login_success": 400
+    },
+    "notes": [
+      "login_attempt=400",
+      "login_success=400"
+    ]
+  },
+  {
+    "scenario": "login_concurrent_200",
+    "requests": 800,
+    "success_rate": 1,
+    "error_rate": 0,
+    "duration_ms": 158,
+    "qps": 5052.299669450136,
+    "error_count": 0,
+    "success_count": 800,
+    "latency": {
+      "min_ms": 3.1006,
+      "max_ms": 101.869006,
+      "avg_ms": 32.777788263750004,
+      "p50_ms": 22.731097,
+      "p90_ms": 73.127864,
+      "p95_ms": 83.048557,
+      "p99_ms": 91.310718
+    },
+    "counters": {
+      "login_attempt": 800,
+      "login_success": 800
+    },
+    "notes": [
+      "login_attempt=800",
+      "login_success=800"
+    ]
+  },
+  {
+    "scenario": "login_concurrent_500",
+    "requests": 2000,
+    "success_rate": 1,
+    "error_rate": 0,
+    "duration_ms": 264,
+    "qps": 7553.952405416395,
+    "error_count": 0,
+    "success_count": 2000,
+    "latency": {
+      "min_ms": 3.433487,
+      "max_ms": 213.169169,
+      "avg_ms": 58.825096402999996,
+      "p50_ms": 58.963568,
+      "p90_ms": 89.305498,
+      "p95_ms": 100.83431,
+      "p99_ms": 135.243406
+    },
+    "counters": {
+      "login_attempt": 2000,
+      "login_success": 2000
+    },
+    "notes": [
+      "login_attempt=2000",
+      "login_success=2000"
+    ]
+  }
+]

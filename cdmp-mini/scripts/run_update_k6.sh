@@ -118,6 +118,15 @@ if ! command -v k6 >/dev/null 2>&1; then
     exit 1
 fi
 
+# 允许通过 K6_DURATION 环境变量统一缩短/拉长所有场景时长。
+# 该变量是 k6 的内置配置，如果直接传给 k6 会覆盖脚本自定义的 scenarios。
+# 因此在启动前把它取出转发到自定义变量，并从环境中删除，避免触发 k6 内置 fallback。
+K6_DURATION_OVERRIDE_VALUE="${K6_DURATION:-}"
+if [[ -n "${K6_DURATION_OVERRIDE_VALUE}" ]]; then
+    export K6_DURATION_OVERRIDE="${K6_DURATION_OVERRIDE_VALUE}"
+    unset K6_DURATION
+fi
+
 BASE_URL=$(printf '%s' "${BASE_URL}" | sed 's#[[:space:]]##g')
 BASE_URL=${BASE_URL%%/}
 if [[ ! "${BASE_URL}" =~ ^https?:// ]]; then

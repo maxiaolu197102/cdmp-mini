@@ -29,6 +29,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1308,33 +1309,100 @@ func (u *UserService) warmContactCache() error {
 // 通用重试工具
 
 func (u *UserService) checkUserExist(ctx context.Context, username string, forceRefresh bool) (*v1.User, error) {
-	// 先尝试无锁查询缓存（大部分请求应该在这里返回）
+	cacheSpanCtx, cacheSpan := trace.StartSpan(ctx, "user-service", "check_user_cache")
+	if cacheSpanCtx != nil {
+		ctx = cacheSpanCtx
+	}
+	cacheStatus := "success"
+	cacheCode := strconv.Itoa(code.ErrSuccess)
+	cacheDetails := map[string]any{
+		"username":      username,
+		"force_refresh": forceRefresh,
+	}
+	endCacheSpan := func() {
+		if cacheSpan != nil {
+			trace.EndSpan(cacheSpan, cacheStatus, cacheCode, cacheDetails)
+			cacheSpan = nil
+		}
+	}
+	defer endCacheSpan()
+
 	baseCtx := ctx
 	if forceRefresh {
 		baseCtx = WithForceCacheRefresh(ctx)
+		cacheDetails["forced_refresh_ctx"] = true
 	}
+
 	user, found, err := u.tryGetFromCache(baseCtx, username)
+	cacheDetails["cache_found"] = found
 	if err != nil {
 		log.Errorf("缓存查询异常，继续流程", "error", err.Error(), "username", username)
 		metrics.CacheErrors.WithLabelValues("query_failed", "get").Inc()
+		cacheStatus = "error"
+		cacheDetails["cache_error"] = err.Error()
+		if c := errors.GetCode(err); c != 0 {
+			cacheCode = strconv.Itoa(c)
+		} else {
+			cacheCode = strconv.Itoa(code.ErrUnknown)
+		}
+	}
+
+	if err == nil && found {
+		cacheDetails["cache_return_candidate"] = true
 	}
 	if err == nil && found && user != nil {
 		switch user.Name {
 		case RATE_LIMIT_PREVENTION:
+			cacheDetails["cache_result"] = "negative_hit"
 			if !forceRefresh {
 				return user, nil
 			}
+			cacheDetails["cache_result"] = "negative_bypass"
 		case BLACKLIST_SENTINEL:
+			cacheDetails["cache_result"] = "blacklist_hit"
 			if !forceRefresh {
 				return user, nil
 			}
+			cacheDetails["cache_result"] = "blacklist_bypass"
 		default:
+			cacheDetails["cache_result"] = "hit"
 			return user, nil
 		}
 	}
 
-	// 缓存未命中，重试DB查询（带独立ctx）
+	if err == nil && !found {
+		cacheDetails["cache_result"] = "miss"
+	}
+
+	if cacheSpan != nil {
+		cacheDetails["fallback_db"] = true
+	}
+	endCacheSpan()
+
+	dbSpanCtx, dbSpan := trace.StartSpan(ctx, "user-service", "check_user_primary_lookup")
+	if dbSpanCtx != nil {
+		ctx = dbSpanCtx
+	}
+	dbStatus := "success"
+	dbCode := strconv.Itoa(code.ErrSuccess)
+	dbDetails := map[string]any{
+		"username":      username,
+		"force_refresh": forceRefresh,
+	}
+	start := time.Now()
+	attemptCount := 0
+	sharedHit := false
+	defer func() {
+		if dbSpan != nil {
+			dbDetails["duration_ms"] = time.Since(start).Milliseconds()
+			dbDetails["attempts"] = attemptCount
+			dbDetails["singleflight_shared"] = sharedHit
+			trace.EndSpan(dbSpan, dbStatus, dbCode, dbDetails)
+		}
+	}()
+
 	result, err := util.RetryWithBackoff(u.Options.RedisOptions.MaxRetries, isRetryableError, func() (interface{}, error) {
+		attemptCount++
 		dbCtx, cancel := u.newDBContext(ctx, u.contactRefreshTimeout())
 		defer cancel()
 		r, err, shared := u.group.Do(username, func() (interface{}, error) {
@@ -1342,15 +1410,25 @@ func (u *UserService) checkUserExist(ctx context.Context, username string, force
 		})
 		if shared {
 			metrics.RequestsMerged.WithLabelValues("get").Inc()
+			sharedHit = true
 		}
 		return r, err
 	})
 	if err != nil {
+		dbStatus = "error"
+		dbDetails["error"] = err.Error()
+		if c := errors.GetCode(err); c != 0 {
+			dbCode = strconv.Itoa(c)
+		} else {
+			dbCode = strconv.Itoa(code.ErrUnknown)
+		}
 		return nil, err
 	}
 	if result == nil {
+		dbDetails["db_result"] = "not_found"
 		return nil, nil
 	}
+	dbDetails["db_result"] = "hit"
 	return result.(*v1.User), nil
 }
 

@@ -1,0 +1,254 @@
+{
+    "metrics": {
+        "dropped_iterations": {
+            "count": 620,
+            "rate": 4.947837130658626
+        },
+        "http_req_receiving": {
+            "avg": 0.09333319078332956,
+            "min": 0.020599,
+            "med": 0.073882,
+            "max": 29.058065,
+            "p(90)": 0.14069699999999996,
+            "p(95)": 0.16180699999999992
+        },
+        "vus": {
+            "value": 2,
+            "min": 2,
+            "max": 96
+        },
+        "delete_force_degraded_rate": {
+            "passes": 0,
+            "fails": 6223,
+            "thresholds": {
+                "rate<0.02": false
+            },
+            "value": 0
+        },
+        "http_reqs": {
+            "count": 91009,
+            "rate": 726.2866281034047
+        },
+        "http_req_tls_handshaking": {
+            "p(95)": 0,
+            "avg": 0,
+            "min": 0,
+            "med": 0,
+            "max": 0,
+            "p(90)": 0
+        },
+        "http_req_blocked": {
+            "avg": 0.009244144436264406,
+            "min": 0.002602,
+            "med": 0.007126,
+            "max": 28.738271,
+            "p(90)": 0.013582199999999997,
+            "p(95)": 0.016086599999999993
+        },
+        "checks": {
+            "passes": 12446,
+            "fails": 0,
+            "value": 1
+        },
+        "http_req_failed": {
+            "passes": 0,
+            "fails": 91009,
+            "thresholds": {
+                "rate<0.05": false
+            },
+            "value": 0
+        },
+        "delete_force_single_latency": {
+            "min": 1.758009,
+            "med": 3.163415,
+            "max": 135.035816,
+            "p(90)": 7.919313600000007,
+            "p(95)": 13.213036000000004,
+            "avg": 4.678087284622557,
+            "thresholds": {
+                "p(95)<500": false
+            }
+        },
+        "http_req_waiting": {
+            "avg": 9.907941970321668,
+            "min": 1.204479,
+            "med": 4.134718,
+            "max": 397.220595,
+            "p(90)": 23.23640199999999,
+            "p(95)": 31.753736199999985
+        },
+        "delete_force_batch_success_rate": {
+            "passes": 858,
+            "fails": 0,
+            "thresholds": {
+                "rate>0.95": false
+            },
+            "value": 1
+        },
+        "http_req_connecting": {
+            "avg": 0.0002143669637068862,
+            "min": 0,
+            "med": 0,
+            "max": 0.710094,
+            "p(90)": 0,
+            "p(95)": 0
+        },
+        "vus_max": {
+            "value": 109,
+            "min": 48,
+            "max": 109
+        },
+        "delete_force_batch_latency": {
+            "max": 291.197925,
+            "p(90)": 29.605977000000003,
+            "p(95)": 40.232340199999996,
+            "avg": 19.181228834498828,
+            "min": 9.199984,
+            "med": 15.565278,
+            "thresholds": {
+                "p(95)<700": false
+            }
+        },
+        "http_req_duration{expected_response:true}": {
+            "min": 1.255157,
+            "med": 4.253999,
+            "max": 397.32427,
+            "p(90)": 23.387235599999997,
+            "p(95)": 31.929064799999974,
+            "avg": 10.033873513696452
+        },
+        "http_req_sending": {
+            "avg": 0.03259835259150199,
+            "min": 0.008362,
+            "med": 0.026406,
+            "max": 13.323305,
+            "p(90)": 0.0516912,
+            "p(95)": 0.060867599999999945
+        },
+        "iteration_duration": {
+            "p(95)": 5025.7212338,
+            "avg": 1279.6608033895177,
+            "min": 308.940663,
+            "med": 616.911932,
+            "max": 20498.127317,
+            "p(90)": 4577.7852416
+        },
+        "iterations": {
+            "rate": 49.66192010336876,
+            "count": 6223
+        },
+        "data_received": {
+            "count": 64564634,
+            "rate": 515250.4732783619
+        },
+        "delete_force_single_success_rate": {
+            "passes": 5365,
+            "fails": 0,
+            "thresholds": {
+                "rate>0.97": false
+            },
+            "value": 1
+        },
+        "http_req_duration": {
+            "p(90)": 23.387235599999997,
+            "p(95)": 31.929064799999974,
+            "avg": 10.033873513696452,
+            "min": 1.255157,
+            "med": 4.253999,
+            "max": 397.32427,
+            "thresholds": {
+                "p(99)<2000": false
+            }
+        },
+        "data_sent": {
+            "count": 70417126,
+            "rate": 561955.597833979
+        }
+    },
+    "setup_data": {
+        "baseUrl": "http://192.168.10.8:8088",
+        "dataset": {
+            "basePassword": "Test@1234",
+            "emailDomain": "example.com",
+            "seedExtendTemplate": null,
+            "seedNicknamePrefix": "dforce",
+            "userReadyTimeoutMs": 30000,
+            "batchSize": 15,
+            "deleteVerifyTimeoutMs": 20000,
+            "seedLabels": null,
+            "usernamePrefix": "delete-force-user",
+            "respawnOnFailure": true,
+            "seedExtras": null,
+            "sleepBetween": 0.05,
+            "maxUsernameLength": 40,
+            "requestTimeout": "60s",
+            "verifyDeletion": true
+        },
+        "scenarioMeta": {
+            "scenarioBatchParallel": {
+                "exec": "scenarioBatchParallel",
+                "executor": "constant-arrival-rate",
+                "maxVUs": 36,
+                "preAllocatedVUs": 12,
+                "rate": 12,
+                "timeUnit": "1s",
+                "duration": "2m"
+            },
+            "scenarioSingleBaseline": {
+                "rate": 5,
+                "timeUnit": "1s",
+                "duration": "2m",
+                "exec": "scenarioSingleBaseline",
+                "executor": "constant-arrival-rate",
+                "maxVUs": 16,
+                "preAllocatedVUs": 4
+            },
+            "scenarioSingleParallel": {
+                "exec": "scenarioSingleParallel",
+                "executor": "constant-arrival-rate",
+                "maxVUs": 64,
+                "preAllocatedVUs": 32,
+                "rate": 40,
+                "timeUnit": "1s",
+                "duration": "2m"
+            }
+        },
+        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQiOiJodHRwczovL2dpdGh1Yi5jb20vbWF4aWFvbHUxOTgxL2NyZXRlbSIsImV4cCI6MTc2MjIwMDUxNCwiaWF0IjoxNzYyMTk2OTE0LCJpc2FkbWluIjoiMSIsImlzcyI6Imh0dHBzOi8vZ2l0aHViLmNvbS9tYXhpYW9sdTE5ODEvY3JldGVtIiwianRpIjoiand0Xzd5enlrM25sNzdtdjYxIiwib3JpZ19pYXQiOjE3NjIxOTY5MTQsInJvbGUiOiJhZG1pbiIsInNlc3Npb25faWQiOiJzZXNzX2Y3MjUzNDdiYjFiYzAxZDgiLCJzdWIiOiJhZG1pbiIsInR5cGUiOiJhY2Nlc3MiLCJ1c2VyX2lkIjoiMyIsInVzZXJfc3RhdHVzIjoxLCJ1c2VybmFtZSI6ImFkbWluIn0.Q9Q1cQTXgK3ECIglWmI_qwpNLJ0-U6pfoyyrV9a8Ljg"
+    },
+    "root_group": {
+        "groups": {},
+        "checks": {
+                "delete_http_success": {
+                    "name": "delete_http_success",
+                    "path": "::delete_http_success",
+                    "id": "72d90dbccd57d883464a617cd2605bc7",
+                    "passes": 5365,
+                    "fails": 0
+                },
+                "delete_code_success": {
+                    "name": "delete_code_success",
+                    "path": "::delete_code_success",
+                    "id": "4a87a8aa2fe2390aa74b938558fe2969",
+                    "passes": 5365,
+                    "fails": 0
+                },
+                "batch_http_success": {
+                    "name": "batch_http_success",
+                    "path": "::batch_http_success",
+                    "id": "b912f021de20510db0ee7f3b7d6d00a3",
+                    "passes": 858,
+                    "fails": 0
+                },
+                "batch_code_success": {
+                    "name": "batch_code_success",
+                    "path": "::batch_code_success",
+                    "id": "724a84b4a36bd1cbf95e0c14b9654e8e",
+                    "passes": 858,
+                    "fails": 0
+                }
+            },
+        "name": "",
+        "path": "",
+        "id": "d41d8cd98f00b204e9800998ecf8427e"
+    }
+}

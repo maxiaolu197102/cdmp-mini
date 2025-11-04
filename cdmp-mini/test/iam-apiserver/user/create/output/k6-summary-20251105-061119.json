@@ -1,0 +1,174 @@
+{
+    "metrics": {
+        "http_req_connecting": {
+            "max": 0.136692,
+            "p(90)": 0.136692,
+            "p(95)": 0.136692,
+            "avg": 0.136692,
+            "min": 0.136692,
+            "med": 0.136692
+        },
+        "http_req_duration": {
+            "avg": 0.980058,
+            "min": 0.980058,
+            "med": 0.980058,
+            "max": 0.980058,
+            "p(90)": 0.980058,
+            "p(95)": 0.980058,
+            "thresholds": {
+                "p(99)<2000": false
+            }
+        },
+        "http_req_tls_handshaking": {
+            "avg": 0,
+            "min": 0,
+            "med": 0,
+            "max": 0,
+            "p(90)": 0,
+            "p(95)": 0
+        },
+        "create_duplicate_conflict_rate": {
+            "passes": 0,
+            "fails": 0,
+            "thresholds": {
+                "rate>0.95": false
+            },
+            "value": 0
+        },
+        "http_req_receiving": {
+            "max": 0.131083,
+            "p(90)": 0.131083,
+            "p(95)": 0.131083,
+            "avg": 0.131083,
+            "min": 0.131083,
+            "med": 0.131083
+        },
+        "create_duplicate_latency": {
+            "min": 0,
+            "med": 0,
+            "max": 0,
+            "p(90)": 0,
+            "p(95)": 0,
+            "avg": 0,
+            "thresholds": {
+                "p(95)<250": false
+            }
+        },
+        "http_req_waiting": {
+            "avg": 0.773933,
+            "min": 0.773933,
+            "med": 0.773933,
+            "max": 0.773933,
+            "p(90)": 0.773933,
+            "p(95)": 0.773933
+        },
+        "data_received": {
+            "count": 667,
+            "rate": 249467.3106189669
+        },
+        "create_parallel_success_rate": {
+            "passes": 0,
+            "fails": 0,
+            "thresholds": {
+                "rate>0.95": false
+            },
+            "value": 0
+        },
+        "create_validation_failure_rate": {
+            "fails": 0,
+            "passes": 0,
+            "thresholds": {
+                "rate>0.95": false
+            },
+            "value": 0
+        },
+        "http_req_failed": {
+            "passes": 1,
+            "fails": 0,
+            "thresholds": {
+                "rate<0.05": true
+            },
+            "value": 1
+        },
+        "http_reqs": {
+            "count": 1,
+            "rate": 374.01395894897587
+        },
+        "create_degraded_rate": {
+            "fails": 0,
+            "passes": 0,
+            "thresholds": {
+                "rate<0.02": false
+            },
+            "value": 0
+        },
+        "create_validation_latency": {
+            "p(95)": 0,
+            "avg": 0,
+            "min": 0,
+            "med": 0,
+            "max": 0,
+            "p(90)": 0,
+            "thresholds": {
+                "p(95)<200": false
+            }
+        },
+        "http_req_sending": {
+            "avg": 0.075042,
+            "min": 0.075042,
+            "med": 0.075042,
+            "max": 0.075042,
+            "p(90)": 0.075042,
+            "p(95)": 0.075042
+        },
+        "create_baseline_latency": {
+            "p(95)": 0,
+            "avg": 0,
+            "min": 0,
+            "med": 0,
+            "max": 0,
+            "p(90)": 0,
+            "thresholds": {
+                "p(95)<350": false
+            }
+        },
+        "create_parallel_latency": {
+            "avg": 0,
+            "min": 0,
+            "med": 0,
+            "max": 0,
+            "p(90)": 0,
+            "p(95)": 0,
+            "thresholds": {
+                "p(95)<900": false
+            }
+        },
+        "data_sent": {
+            "count": 839,
+            "rate": 313797.71155819076
+        },
+        "http_req_blocked": {
+            "avg": 0.208519,
+            "min": 0.208519,
+            "med": 0.208519,
+            "max": 0.208519,
+            "p(90)": 0.208519,
+            "p(95)": 0.208519
+        },
+        "create_baseline_success_rate": {
+            "passes": 0,
+            "fails": 0,
+            "thresholds": {
+                "rate>0.98": false
+            },
+            "value": 0
+        }
+    },
+    "root_group": {
+        "name": "",
+        "path": "",
+        "id": "d41d8cd98f00b204e9800998ecf8427e",
+        "groups": {},
+        "checks": {}
+    }
+}

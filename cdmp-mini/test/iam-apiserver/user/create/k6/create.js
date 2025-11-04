@@ -118,6 +118,13 @@ export function scenarioParallelIngest(cfg) {
     const success = res.status === HTTP_CREATED && parsed.code === CODE_SUCCESS && !degraded;
     ingestSuccessRate.add(success);
     degradedRate.add(degraded);
+    // 抽样打印出错 variant 响应
+    const isVariant = variant.label && variant.label.startsWith('variant_');
+    const check201 = res.status === HTTP_CREATED;
+    const checkCode = parsed.code === CODE_SUCCESS;
+    if (isVariant && (!check201 || !checkCode) && Math.random() < 0.2) {
+        console.log(`[variant-fail-sample] label=%s status=%s code=%s body=%j`, variant.label, res.status, parsed.code, parsed.payload);
+    }
     check(res, {
         [`${variant.label}_http_201`]: r => r.status === HTTP_CREATED,
         [`${variant.label}_code_success`]: () => parsed.code === CODE_SUCCESS,

@@ -1,0 +1,14 @@
+{
+    "usernamePrefix": "delete-force-user",
+    "basePassword": "Test@1234",
+    "emailDomain": "example.com",
+    "seedNicknamePrefix": "dforce",
+    "sleepBetween": 0.05,
+    "requestTimeout": "60s",
+    "userReadyTimeoutMs": 30000,
+    "deleteVerifyTimeoutMs": 20000,
+    "maxUsernameLength": 40,
+    "batchSize": 15,
+    "verifyDeletion": true,
+    "respawnOnFailure": true
+}

@@ -21,7 +21,7 @@
     "http_status": 202,
     "code": 100001,
     "message": "用户信息更新请求已接受",
-    "duration_ms": 5,
+    "duration_ms": 2,
     "checks": {
       "response": true
     },
@@ -36,7 +36,7 @@
     "http_status": 202,
     "code": 100001,
     "message": "用户信息更新请求已接受",
-    "duration_ms": 3,
+    "duration_ms": 2,
     "checks": {
       "response": true
     },
@@ -51,7 +51,7 @@
     "http_status": 202,
     "code": 100001,
     "message": "用户信息更新请求已接受",
-    "duration_ms": 3,
+    "duration_ms": 2,
     "checks": {
       "response": true
     },

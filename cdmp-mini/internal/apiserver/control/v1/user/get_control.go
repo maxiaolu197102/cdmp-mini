@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	sru "github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/service/v1/user"
+	storectx "github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/store"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/audit"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/code"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/metrics"
@@ -32,9 +33,15 @@ func (u *UserController) Get(ctx *gin.Context) {
 	controllerCtx, controllerSpan := trace.StartSpan(traceCtx, "user-controller", "get_user")
 	if controllerCtx == nil {
 		controllerCtx = traceCtx
-	} else {
-		ctx.Request = ctx.Request.WithContext(controllerCtx)
 	}
+
+	if strongConsistencyRequested(ctx) {
+		controllerCtx = sru.WithForceCacheRefresh(controllerCtx)
+		controllerCtx = storectx.WithForcePrimary(controllerCtx)
+		trace.AddRequestTag(controllerCtx, "consistency_mode", "strong")
+	}
+
+	ctx.Request = ctx.Request.WithContext(controllerCtx)
 	trace.SetOperator(controllerCtx, operator)
 	trace.AddRequestTag(controllerCtx, "controller", "get_user")
 	trace.AddRequestTag(controllerCtx, "target_user", username)
@@ -140,11 +147,13 @@ func (u *UserController) Get(ctx *gin.Context) {
 		publicUser := v1.ConvertToPublicUser(user)
 		successData := gin.H{
 			"get":            publicUser.Username,
+			"detail":         publicUser,
 			"operator":       operator,
 			"operation_time": time.Now().Format(time.RFC3339),
 			"operation_type": "retrieve",
 		}
 		controllerDetails["result_user"] = publicUser.Username
+		controllerDetails["result_version"] = publicUser.Metadata.Version
 		core.WriteResponse(ctx, nil, successData)
 		auditLog("success", "")
 		return nil
@@ -163,4 +172,27 @@ func (u *UserController) Get(ctx *gin.Context) {
 	}
 
 	trace.RecordOutcome(controllerCtx, outcomeCode, outcomeMessage, outcomeStatus, outcomeHTTP)
+}
+
+func strongConsistencyRequested(ctx *gin.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	if value := strings.TrimSpace(ctx.Query("consistency")); value != "" {
+		lowered := strings.ToLower(value)
+		if lowered == "strong" || lowered == "primary" || lowered == "write" {
+			return true
+		}
+	}
+	if header := strings.TrimSpace(ctx.GetHeader("X-Consistency-Mode")); header != "" {
+		lowered := strings.ToLower(header)
+		if lowered == "strong" || lowered == "primary" || lowered == "write" {
+			return true
+		}
+	}
+	if header := strings.TrimSpace(ctx.GetHeader("X-Force-Primary")); header != "" {
+		lowered := strings.ToLower(header)
+		return lowered == "1" || lowered == "true" || lowered == "yes"
+	}
+	return false
 }

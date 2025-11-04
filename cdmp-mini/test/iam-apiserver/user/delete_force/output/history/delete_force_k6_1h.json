@@ -1,0 +1,254 @@
+{
+    "metrics": {
+        "http_req_sending": {
+            "max": 52.46068,
+            "p(90)": 0.041216,
+            "p(95)": 0.054522,
+            "avg": 0.03448883681310213,
+            "min": 0.008564,
+            "med": 0.020885
+        },
+        "dropped_iterations": {
+            "count": 369384,
+            "rate": 101.75656250031783
+        },
+        "delete_force_batch_latency": {
+            "med": 214.556604,
+            "max": 10264.384755,
+            "p(90)": 1313.7978900000003,
+            "p(95)": 5203.713001600003,
+            "avg": 755.3438126025994,
+            "min": 9.591004,
+            "thresholds": {
+                "p(95)<700": true
+            }
+        },
+        "http_req_connecting": {
+            "avg": 0.00009028919429174911,
+            "min": 0,
+            "med": 0,
+            "max": 41.492204,
+            "p(90)": 0,
+            "p(95)": 0
+        },
+        "http_req_receiving": {
+            "avg": 0.08356931097244172,
+            "min": 0.017912,
+            "med": 0.058892,
+            "max": 64.399897,
+            "p(90)": 0.108295,
+            "p(95)": 0.14234619999999973
+        },
+        "delete_force_single_success_rate": {
+            "fails": 0,
+            "passes": 227423,
+            "thresholds": {
+                "rate>0.97": false
+            },
+            "value": 1
+        },
+        "iteration_duration": {
+            "max": 89522.196422,
+            "p(90)": 9367.829255800001,
+            "p(95)": 17528.169539199956,
+            "avg": 5112.694019339624,
+            "min": 286.88049,
+            "med": 2010.509227
+        },
+        "vus_max": {
+            "value": 392,
+            "min": 115,
+            "max": 392
+        },
+        "delete_force_single_latency": {
+            "avg": 162.58088628257875,
+            "min": 1.847273,
+            "med": 50.133485,
+            "max": 9520.294658,
+            "p(90)": 233.43226640000015,
+            "p(95)": 339.5989361,
+            "thresholds": {
+                "p(95)<500": false
+            }
+        },
+        "vus": {
+            "value": 29,
+            "min": 29,
+            "max": 392
+        },
+        "http_req_failed": {
+            "passes": 451,
+            "fails": 2733206,
+            "thresholds": {
+                "rate<0.05": false
+            },
+            "value": 0.00016498046389872614
+        },
+        "data_received": {
+            "count": 1967885345,
+            "rate": 542105.9063249951
+        },
+        "iterations": {
+            "count": 246189,
+            "rate": 67.81925141692858
+        },
+        "delete_force_batch_success_rate": {
+            "passes": 18777,
+            "fails": 0,
+            "thresholds": {
+                "rate>0.95": false
+            },
+            "value": 1
+        },
+        "http_reqs": {
+            "count": 2733657,
+            "rate": 753.0579001118925
+        },
+        "http_req_tls_handshaking": {
+            "avg": 0,
+            "min": 0,
+            "med": 0,
+            "max": 0,
+            "p(90)": 0,
+            "p(95)": 0
+        },
+        "http_req_blocked": {
+            "max": 51.160547,
+            "p(90)": 0.011342,
+            "p(95)": 0.014494,
+            "avg": 0.008205141121946804,
+            "min": 0.002299,
+            "med": 0.006047
+        },
+        "http_req_duration{expected_response:true}": {
+            "min": 1.288909,
+            "med": 41.815839499999996,
+            "max": 10289.681034,
+            "p(90)": 452.5838315,
+            "p(95)": 1352.85186475,
+            "avg": 374.244411863302
+        },
+        "http_req_waiting": {
+            "min": 0.309312,
+            "med": 41.686865,
+            "max": 10289.531757,
+            "p(90)": 452.48818759999995,
+            "p(95)": 1354.3001955999941,
+            "avg": 374.19620047186334
+        },
+        "http_req_duration": {
+            "avg": 374.3142586196876,
+            "min": 0.370002,
+            "med": 41.810513,
+            "max": 10289.681034,
+            "p(90)": 452.6144545999999,
+            "p(95)": 1354.3767421999896,
+            "thresholds": {
+                "p(99)<2000": true
+            }
+        },
+        "checks": {
+            "passes": 492400,
+            "fails": 0,
+            "value": 1
+        },
+        "delete_force_degraded_rate": {
+            "passes": 0,
+            "fails": 246200,
+            "thresholds": {
+                "rate<0.02": false
+            },
+            "value": 0
+        },
+        "data_sent": {
+            "count": 2150595304,
+            "rate": 592438.1821204113
+        }
+    },
+    "setup_data": {
+        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQiOiJodHRwczovL2dpdGh1Yi5jb20vbWF4aWFvbHUxOTgxL2NyZXRlbSIsImV4cCI6MTc2MjIwNTExNSwiaWF0IjoxNzYyMjAxNTE1LCJpc2FkbWluIjoiMSIsImlzcyI6Imh0dHBzOi8vZ2l0aHViLmNvbS9tYXhpYW9sdTE5ODEvY3JldGVtIiwianRpIjoiand0X24zenYwNGxvb3dvMzY1Iiwib3JpZ19pYXQiOjE3NjIyMDE1MTUsInJvbGUiOiJhZG1pbiIsInNlc3Npb25faWQiOiJzZXNzXzg2YTIyZWY0YzY0ZmExOTQiLCJzdWIiOiJhZG1pbiIsInR5cGUiOiJhY2Nlc3MiLCJ1c2VyX2lkIjoiMyIsInVzZXJfc3RhdHVzIjoxLCJ1c2VybmFtZSI6ImFkbWluIn0.b0tKF2AlktzuLI9JMZzUU2d5lZXcVuh2nNaK8HrB6CY",
+        "baseUrl": "http://192.168.10.8:8088",
+        "dataset": {
+            "basePassword": "Test@1234",
+            "deleteVerifyTimeoutMs": 20000,
+            "seedExtendTemplate": null,
+            "userReadyTimeoutMs": 30000,
+            "verifyDeletion": true,
+            "respawnOnFailure": true,
+            "seedNicknamePrefix": "dforce",
+            "usernamePrefix": "delete-force-user",
+            "emailDomain": "example.com",
+            "maxUsernameLength": 40,
+            "seedExtras": null,
+            "seedLabels": null,
+            "batchSize": 15,
+            "requestTimeout": "60s",
+            "sleepBetween": 0.05
+        },
+        "scenarioMeta": {
+            "scenarioBatchParallel": {
+                "exec": "scenarioBatchParallel",
+                "executor": "constant-arrival-rate",
+                "maxVUs": 128,
+                "preAllocatedVUs": 24,
+                "rate": 36,
+                "timeUnit": "1s",
+                "duration": "60m"
+            },
+            "scenarioSingleBaseline": {
+                "exec": "scenarioSingleBaseline",
+                "executor": "constant-arrival-rate",
+                "maxVUs": 64,
+                "preAllocatedVUs": 8,
+                "rate": 15,
+                "timeUnit": "1s",
+                "duration": "60m"
+            },
+            "scenarioSingleParallel": {
+                "maxVUs": 200,
+                "preAllocatedVUs": 64,
+                "rate": 120,
+                "timeUnit": "1s",
+                "duration": "60m",
+                "exec": "scenarioSingleParallel",
+                "executor": "constant-arrival-rate"
+            }
+        }
+    },
+    "root_group": {
+        "name": "",
+        "path": "",
+        "id": "d41d8cd98f00b204e9800998ecf8427e",
+        "groups": {},
+        "checks": {
+                "delete_http_success": {
+                    "name": "delete_http_success",
+                    "path": "::delete_http_success",
+                    "id": "72d90dbccd57d883464a617cd2605bc7",
+                    "passes": 227423,
+                    "fails": 0
+                },
+                "delete_code_success": {
+                    "passes": 227423,
+                    "fails": 0,
+                    "name": "delete_code_success",
+                    "path": "::delete_code_success",
+                    "id": "4a87a8aa2fe2390aa74b938558fe2969"
+                },
+                "batch_http_success": {
+                    "name": "batch_http_success",
+                    "path": "::batch_http_success",
+                    "id": "b912f021de20510db0ee7f3b7d6d00a3",
+                    "passes": 18777,
+                    "fails": 0
+                },
+                "batch_code_success": {
+                    "fails": 0,
+                    "name": "batch_code_success",
+                    "path": "::batch_code_success",
+                    "id": "724a84b4a36bd1cbf95e0c14b9654e8e",
+                    "passes": 18777
+                }
+            }
+    }
+}

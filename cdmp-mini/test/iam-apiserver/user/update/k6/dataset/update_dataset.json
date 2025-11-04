@@ -6,7 +6,7 @@
     "parallelPutUserCount": 200,
     "profileUserCount": 200,
     "batchUserCount": 80,
-    "batchChunkSize": 20,
+    "batchChunkSize": 10,
     "batchTargetRatio": 0.5,
     "requestTimeout": "60s",
     "sleepBetween": 0.05,
@@ -20,8 +20,8 @@
     "profileUpdatePhone": false,
     "batchToggleStatus": true,
     "maxUsernameLength": 63,
-    "phonePrefix": "1390000",
-    "phoneSuffixLength": 4,
+    "phonePrefix": "147000",
+    "phoneSuffixLength": 5,
     "userReadyTimeoutMs": 60000,
     "batchUpdates": {
         "isAdmin": 1

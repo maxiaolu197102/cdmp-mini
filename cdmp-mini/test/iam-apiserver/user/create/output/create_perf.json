@@ -4,18 +4,18 @@
     "requests": 15,
     "success_rate": 1,
     "error_rate": 0,
-    "duration_ms": 582,
-    "qps": 25.76317727605872,
+    "duration_ms": 624,
+    "qps": 24.027761675840267,
     "error_count": 0,
     "success_count": 15,
     "latency": {
-      "min_ms": 11.131388,
-      "max_ms": 26.941877,
-      "avg_ms": 18.594679,
-      "p50_ms": 17.328407,
-      "p90_ms": 26.152139,
-      "p95_ms": 26.152139,
-      "p99_ms": 26.941877
+      "min_ms": 11.353695,
+      "max_ms": 49.737661,
+      "avg_ms": 21.40909,
+      "p50_ms": 12.447088,
+      "p90_ms": 49.261601,
+      "p95_ms": 49.261601,
+      "p99_ms": 49.737661
     },
     "counters": {
       "cache_checks": 0,
@@ -32,7 +32,7 @@
       "password distribution: complex=8, simple=7",
       "email distribution: corp.internal=5, custom-domain.test=5, example.com=5",
       "phone distribution: domestic=7, international=8",
-      "TPS=25.76"
+      "TPS=24.03"
     ]
   },
   {
@@ -40,18 +40,18 @@
     "requests": 2048,
     "success_rate": 1,
     "error_rate": 0,
-    "duration_ms": 3797,
-    "qps": 539.2724319090415,
+    "duration_ms": 3507,
+    "qps": 583.8453484327675,
     "error_count": 0,
     "success_count": 2048,
     "latency": {
-      "min_ms": 19.610136,
-      "max_ms": 1831.283979,
-      "avg_ms": 114.892618,
-      "p50_ms": 88.110324,
-      "p90_ms": 185.321002,
-      "p95_ms": 238.457651,
-      "p99_ms": 492.625018
+      "min_ms": 20.831137,
+      "max_ms": 411.405227,
+      "avg_ms": 108.692642,
+      "p50_ms": 97.963062,
+      "p90_ms": 183.314537,
+      "p95_ms": 217.558005,
+      "p99_ms": 285.588811
     },
     "counters": {
       "cache_checks": 0,
@@ -69,26 +69,26 @@
       "password distribution: complex=1024, simple=1024",
       "email distribution: corp.internal=683, custom-domain.test=682, example.com=683",
       "phone distribution: domestic=1024, international=1024",
-      "TPS=539.27"
+      "TPS=583.85"
     ]
   },
   {
     "scenario": "baseline/baseline_sustained",
-    "requests": 18699,
+    "requests": 20409,
     "success_rate": 1,
     "error_rate": 0,
-    "duration_ms": 32036,
-    "qps": 583.6753988958015,
+    "duration_ms": 32039,
+    "qps": 636.9884968746427,
     "error_count": 0,
-    "success_count": 18699,
+    "success_count": 20409,
     "latency": {
-      "min_ms": 10.437046,
-      "max_ms": 869.212788,
-      "avg_ms": 51.359923,
-      "p50_ms": 46.693893,
-      "p90_ms": 70.182551,
-      "p95_ms": 78.933551,
-      "p99_ms": 158.781558
+      "min_ms": 14.172758,
+      "max_ms": 176.777904,
+      "avg_ms": 47.030804,
+      "p50_ms": 40.225762,
+      "p90_ms": 78.066099,
+      "p95_ms": 90.343246,
+      "p99_ms": 114.206032
     },
     "counters": {
       "cache_checks": 0,
@@ -102,11 +102,11 @@
       "Load pattern=uniform",
       "持续负载周期约30s，用于观察内存与资源走势",
       "取消ThinkTime，关注高并发持续压力下的稳定性",
-      "username distribution: len_12=6233, len_28=6233, len_45=6233",
-      "password distribution: complex=9349, simple=9350",
-      "email distribution: corp.internal=6233, custom-domain.test=6233, example.com=6233",
-      "phone distribution: domestic=9350, international=9349",
-      "TPS=583.68"
+      "username distribution: len_12=6803, len_28=6803, len_45=6803",
+      "password distribution: complex=10204, simple=10205",
+      "email distribution: corp.internal=6803, custom-domain.test=6803, example.com=6803",
+      "phone distribution: domestic=10205, international=10204",
+      "TPS=636.99"
     ]
   },
   {
@@ -114,18 +114,18 @@
     "requests": 4096,
     "success_rate": 1,
     "error_rate": 0,
-    "duration_ms": 5704,
-    "qps": 717.9867437571113,
+    "duration_ms": 6474,
+    "qps": 632.6139570619226,
     "error_count": 0,
     "success_count": 4096,
     "latency": {
-      "min_ms": 25.825474,
-      "max_ms": 2208.876802,
-      "avg_ms": 353.449893,
-      "p50_ms": 290.152883,
-      "p90_ms": 648.358865,
-      "p95_ms": 811.917522,
-      "p99_ms": 1156.078547
+      "min_ms": 31.876459,
+      "max_ms": 1672.096598,
+      "avg_ms": 399.894663,
+      "p50_ms": 363.739174,
+      "p90_ms": 743.821437,
+      "p95_ms": 903.192289,
+      "p99_ms": 1099.056336
     },
     "counters": {
       "cache_checks": 0,
@@ -137,14 +137,14 @@
     "notes": [
       "峰值流量测试 - 短时间内突发高并发",
       "Load pattern=spike",
-      "p99=1.156078547s above goal 420ms",
-      "TPS 717.99 below aspiration 800.00",
+      "p99=1.099056336s above goal 420ms",
+      "TPS 632.61 below aspiration 800.00",
       "突发负载集中在单阶段，记录真实吞吐即可",
       "username distribution: len_12=1366, len_28=1365, len_45=1365",
       "password distribution: complex=2048, simple=2048",
       "email distribution: corp.internal=1365, custom-domain.test=1365, example.com=1366",
       "phone distribution: domestic=2048, international=2048",
-      "TPS=717.99"
+      "TPS=632.61"
     ]
   },
   {
@@ -152,18 +152,18 @@
     "requests": 10240,
     "success_rate": 1,
     "error_rate": 0,
-    "duration_ms": 13357,
-    "qps": 766.6265599992533,
+    "duration_ms": 15870,
+    "qps": 645.2248665986813,
     "error_count": 0,
     "success_count": 10240,
     "latency": {
-      "min_ms": 24.162346,
-      "max_ms": 3351.314102,
-      "avg_ms": 393.344857,
-      "p50_ms": 276.690025,
-      "p90_ms": 871.154746,
-      "p95_ms": 1082.574163,
-      "p99_ms": 1599.377092
+      "min_ms": 18.779946,
+      "max_ms": 3144.988045,
+      "avg_ms": 469.125346,
+      "p50_ms": 313.101368,
+      "p90_ms": 1050.865618,
+      "p95_ms": 1273.073439,
+      "p99_ms": 1971.451197
     },
     "counters": {
       "cache_checks": 0,
@@ -175,14 +175,14 @@
     "notes": [
       "容量规划测试 - 逐步增加负载直到系统极限",
       "Load pattern=ramp",
-      "p99=1.599377092s above goal 420ms",
-      "TPS 766.63 below aspiration 1000.00",
+      "p99=1.971451197s above goal 420ms",
+      "TPS 645.22 below aspiration 1000.00",
       "分阶段递增并发量，关注系统退化点",
-      "username distribution: len_12=3413, len_28=3414, len_45=3413",
+      "username distribution: len_12=3413, len_28=3413, len_45=3414",
       "password distribution: complex=5120, simple=5120",
-      "email distribution: corp.internal=3414, custom-domain.test=3413, example.com=3413",
+      "email distribution: corp.internal=3413, custom-domain.test=3414, example.com=3413",
       "phone distribution: domestic=5120, international=5120",
-      "TPS=766.63"
+      "TPS=645.22"
     ]
   },
   {
@@ -190,18 +190,18 @@
     "requests": 8192,
     "success_rate": 1,
     "error_rate": 0,
-    "duration_ms": 13015,
-    "qps": 629.3982901568594,
+    "duration_ms": 14464,
+    "qps": 566.3532861327637,
     "error_count": 0,
     "success_count": 8192,
     "latency": {
-      "min_ms": 34.141458,
-      "max_ms": 2827.485511,
-      "avg_ms": 616.822553,
-      "p50_ms": 548.732883,
-      "p90_ms": 1066.759563,
-      "p95_ms": 1343.864894,
-      "p99_ms": 1792.169981
+      "min_ms": 25.868312,
+      "max_ms": 3701.252087,
+      "avg_ms": 712.401566,
+      "p50_ms": 666.219111,
+      "p90_ms": 1411.942885,
+      "p95_ms": 1636.866732,
+      "p99_ms": 2171.559023
     },
     "counters": {
       "cache_checks": 0,
@@ -213,13 +213,13 @@
     "notes": [
       "破坏性测试 - 超过系统最大处理能力",
       "Load pattern=spike",
-      "p99=1.792169981s above goal 420ms",
+      "p99=2.171559023s above goal 420ms",
       "预期观察降级策略和排队行为，允许出现失败",
       "username distribution: len_12=2731, len_28=2730, len_45=2731",
       "password distribution: complex=4096, simple=4096",
       "email distribution: corp.internal=2730, custom-domain.test=2731, example.com=2731",
       "phone distribution: domestic=4096, international=4096",
-      "TPS=629.40"
+      "TPS=566.35"
     ]
   },
   {
@@ -227,18 +227,18 @@
     "requests": 2048,
     "success_rate": 1,
     "error_rate": 0,
-    "duration_ms": 2833,
-    "qps": 722.7030395107786,
+    "duration_ms": 3811,
+    "qps": 537.2790794113341,
     "error_count": 0,
     "success_count": 2048,
     "latency": {
-      "min_ms": 23.521922,
-      "max_ms": 506.590014,
-      "avg_ms": 131.33387,
-      "p50_ms": 112.292009,
-      "p90_ms": 234.977063,
-      "p95_ms": 280.945246,
-      "p99_ms": 372.951512
+      "min_ms": 29.92493,
+      "max_ms": 684.974801,
+      "avg_ms": 177.143664,
+      "p50_ms": 148.27665,
+      "p90_ms": 293.032491,
+      "p95_ms": 451.403952,
+      "p99_ms": 555.760892
     },
     "counters": {
       "cache_checks": 0,
@@ -255,7 +255,7 @@
       "password distribution: complex=1024, simple=1024",
       "email distribution: corp.internal=683, custom-domain.test=682, example.com=683",
       "phone distribution: domestic=1024, international=1024",
-      "TPS=722.70"
+      "TPS=537.28"
     ]
   },
   {
@@ -263,22 +263,22 @@
     "requests": 1024,
     "success_rate": 1,
     "error_rate": 0,
-    "duration_ms": 8993,
-    "qps": 113.86442073265871,
+    "duration_ms": 8506,
+    "qps": 120.37731220381265,
     "error_count": 0,
     "success_count": 1024,
     "latency": {
-      "min_ms": 10.123416,
-      "max_ms": 99.257288,
-      "avg_ms": 21.294767,
-      "p50_ms": 17.018345,
-      "p90_ms": 34.888728,
-      "p95_ms": 45.294894,
-      "p99_ms": 85.051593
+      "min_ms": 9.902843,
+      "max_ms": 371.751862,
+      "avg_ms": 19.649913,
+      "p50_ms": 15.33048,
+      "p90_ms": 28.50582,
+      "p95_ms": 41.923074,
+      "p99_ms": 83.00796
     },
     "counters": {
       "cache_checks": 5120,
-      "cache_hits": 5120,
+      "cache_hits": 5118,
       "degraded": 0,
       "peak_concurrency": 48,
       "stages": 1
@@ -291,9 +291,9 @@
       "password distribution: complex=512, simple=512",
       "email distribution: corp.internal=341, custom-domain.test=341, example.com=342",
       "phone distribution: domestic=512, international=512",
-      "TPS=113.86",
-      "Cache hit rate=100.00%",
-      "Mean wait-for-ready=377.054317ms"
+      "TPS=120.38",
+      "Cache hit rate=99.96%",
+      "Mean wait-for-ready=351.823832ms"
     ]
   },
   {
@@ -301,18 +301,18 @@
     "requests": 1024,
     "success_rate": 1,
     "error_rate": 0,
-    "duration_ms": 1683,
-    "qps": 608.3627542769616,
+    "duration_ms": 1595,
+    "qps": 642.0055688202538,
     "error_count": 0,
     "success_count": 1024,
     "latency": {
-      "min_ms": 13.397732,
-      "max_ms": 385.416233,
-      "avg_ms": 52.174855,
-      "p50_ms": 46.480013,
-      "p90_ms": 83.835802,
-      "p95_ms": 97.434424,
-      "p99_ms": 150.188843
+      "min_ms": 19.198877,
+      "max_ms": 168.98682,
+      "avg_ms": 49.390655,
+      "p50_ms": 40.309096,
+      "p90_ms": 86.872011,
+      "p95_ms": 99.546248,
+      "p99_ms": 119.118746
     },
     "counters": {
       "cache_checks": 0,
@@ -329,7 +329,7 @@
       "password distribution: extreme=1024",
       "email distribution: custom-extreme.test=512, max-length.domain=512",
       "phone distribution: extreme=1024",
-      "TPS=608.36"
+      "TPS=642.01"
     ]
   }
 ]

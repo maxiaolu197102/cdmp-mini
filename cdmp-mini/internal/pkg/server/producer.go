@@ -195,6 +195,13 @@ func (p *UserProducer) emitProducerDeliveryTrace(meta *producerMetadata, msg *sa
 
 const defaultProducerEnqueueTimeout = 500 * time.Millisecond
 
+const (
+	// 放宽异步生产者入队重试的等待范围，避免短时积压直接落盘降级
+	extendedEnqueueTimeoutMultiplier = 3
+	minExtendedEnqueueTimeout        = 8 * time.Second
+	maxExtendedEnqueueTimeout        = 30 * time.Second
+)
+
 var errProducerEnqueueTimeout = stderrors.New("producer enqueue timeout")
 
 func injectTraceHeader(ctx context.Context, msg *sarama.ProducerMessage) {
@@ -251,24 +258,78 @@ func (p *UserProducer) enqueueWithTimeout(ctx context.Context, msg *sarama.Produ
 }
 
 func (p *UserProducer) enqueueOrFallback(ctx context.Context, msg *sarama.ProducerMessage, detail string) error {
-	err := p.enqueueWithTimeout(ctx, msg, 0)
-	if err == nil {
-		return nil
+	timeouts := []time.Duration{0}
+	if extended := p.extendedEnqueueTimeout(); extended > 0 {
+		timeouts = append(timeouts, extended)
 	}
-	if stderrors.Is(err, context.Canceled) || stderrors.Is(err, context.DeadlineExceeded) {
-		return errors.WithCode(code.ErrKafkaFailed, "context cancelled while enqueuing %s: %v", detail, err)
+
+	var (
+		err           error
+		attemptsTried int
+		lastTimeout   time.Duration
+	)
+
+	for idx, wait := range timeouts {
+		attemptsTried = idx + 1
+		actualTimeout := wait
+		if actualTimeout <= 0 {
+			actualTimeout = p.getEnqueueTimeout()
+		}
+		lastTimeout = actualTimeout
+
+		err = p.enqueueWithTimeout(ctx, msg, wait)
+		if err == nil {
+			if idx > 0 {
+				log.Infof("Enqueued %s after extended wait %s (attempt %d)", detail, actualTimeout, attemptsTried)
+			}
+			return nil
+		}
+
+		if stderrors.Is(err, context.Canceled) || stderrors.Is(err, context.DeadlineExceeded) {
+			return errors.WithCode(code.ErrKafkaFailed, "context cancelled while enqueuing %s: %v", detail, err)
+		}
+
+		if err == errProducerEnqueueTimeout && idx+1 < len(timeouts) {
+			log.Warnf("Failed to enqueue %s within %s (attempt %d/%d); retrying with extended timeout %s", detail, actualTimeout, attemptsTried, len(timeouts), timeouts[idx+1])
+			if meta, ok := msg.Metadata.(*producerMetadata); ok {
+				meta.markEnqueued()
+			}
+			continue
+		}
+
+		// 其他错误或已没有更多重试，跳出进入降级逻辑
+		break
 	}
-	if err == errProducerEnqueueTimeout {
-		timeout := p.getEnqueueTimeout()
-		log.Errorf("Failed to enqueue %s within %s. Triggering fallback.", detail, timeout)
-		trace.AddRequestTag(ctx, "async_forward_to", "fallback_storage")
-		p.writeToFallbackFile(msg)
-		return errors.WithCode(code.ErrKafkaFailed, "producer enqueue timeout after %s, message written to fallback", timeout)
-	}
-	log.Errorf("Failed to enqueue %s: %v. Triggering fallback.", detail, err)
+
 	trace.AddRequestTag(ctx, "async_forward_to", "fallback_storage")
+	if err == errProducerEnqueueTimeout {
+		log.Errorf("Failed to enqueue %s within %s after %d attempts. Triggering fallback.", detail, lastTimeout, attemptsTried)
+		p.writeToFallbackFile(msg)
+		return errors.WithCode(code.ErrKafkaFailed, "producer enqueue timeout after %s, message written to fallback", lastTimeout)
+	}
+
+	log.Errorf("Failed to enqueue %s after %d attempts: %v. Triggering fallback.", detail, attemptsTried, err)
 	p.writeToFallbackFile(msg)
 	return errors.WithCode(code.ErrKafkaFailed, "producer enqueue failed (%v), message written to fallback", err)
+}
+
+func (p *UserProducer) extendedEnqueueTimeout() time.Duration {
+	base := p.getEnqueueTimeout()
+	if base <= 0 {
+		base = defaultProducerEnqueueTimeout
+	}
+
+	extended := time.Duration(extendedEnqueueTimeoutMultiplier) * base
+	if extended < minExtendedEnqueueTimeout {
+		extended = minExtendedEnqueueTimeout
+	}
+	if extended > maxExtendedEnqueueTimeout {
+		extended = maxExtendedEnqueueTimeout
+	}
+	if extended <= base {
+		return 0
+	}
+	return extended
 }
 
 func NewUserProducer(

@@ -95,6 +95,7 @@ func (u *User) Compare(pwd string) error {
 // 辅助函数：过滤敏感字段，返回前端可展示的用户信息
 func ConvertToPublicUser(rawUser *User) *PublicUser {
 	return &PublicUser{
+		Metadata:  rawUser.ObjectMeta,
 		ID:        rawUser.ID,
 		Username:  rawUser.Name,
 		Nickname:  rawUser.Nickname,
@@ -108,13 +109,14 @@ func ConvertToPublicUser(rawUser *User) *PublicUser {
 }
 
 type PublicUser struct {
-	ID        uint64
-	Username  string
-	Nickname  string
-	Email     string
-	Phone     string
-	IsAdmin   int
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	Role      string
+	Metadata  metav1.ObjectMeta `json:"metadata"`
+	ID        uint64            `json:"id"`
+	Username  string            `json:"username"`
+	Nickname  string            `json:"nickname"`
+	Email     string            `json:"email"`
+	Phone     string            `json:"phone"`
+	IsAdmin   int               `json:"isAdmin"`
+	CreatedAt time.Time         `json:"createdAt"`
+	UpdatedAt time.Time         `json:"updatedAt"`
+	Role      string            `json:"role"`
 }

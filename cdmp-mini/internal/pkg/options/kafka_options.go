@@ -2,6 +2,7 @@ package options
 
 import (
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/maxiaolu1981/cretem/cdmp-mini/pkg/log"
@@ -40,6 +41,9 @@ type KafkaOptions struct {
 
 	// 消费者worker数量
 	WorkerCount int `json:"workerCount" mapstructure:"workerCount" validate:"min=1"`
+
+	// 每个消费者实例启动多少个 fetcher（Kafka Reader）并发拉取消息
+	FetcherCount int `json:"fetcherCount" mapstructure:"fetcherCount" validate:"min=1"`
 
 	RetryWorkerCount int `json:"retryWorkerCount" mapstructure:"retryWorkerCount" validate:"min=1"`
 
@@ -122,6 +126,7 @@ func NewKafkaOptions() *KafkaOptions {
 		MinBytes:                 60 * 1024,        // 10KB
 		MaxBytes:                 10 * 1024 * 1024, // 10MB
 		WorkerCount:              64,
+		FetcherCount:             4,
 		RetryWorkerCount:         3,
 		EnableMetricsRefresh:     true,
 		MetricsRefreshInterval:   30 * time.Second,
@@ -151,7 +156,7 @@ func NewKafkaOptions() *KafkaOptions {
 		ProducerReturnSuccesses:  true,
 		ProducerReturnErrors:     true,
 		ChannelBufferSize:        1024,
-		ProducerEnqueueTimeout:   4000 * time.Millisecond,
+		ProducerEnqueueTimeout:   10 * time.Second,
 		FallbackRetryEnabled:     true,
 		FallbackRetryInterval:    30 * time.Second,
 		FallbackRetryMaxAttempts: 5,
@@ -171,6 +176,11 @@ func (k *KafkaOptions) Complete() {
 	if envGroup := os.Getenv("KAFKA_CONSUMER_GROUP"); envGroup != "" {
 		k.ConsumerGroup = envGroup
 	}
+	if envFetcher := os.Getenv("KAFKA_FETCHER_COUNT"); envFetcher != "" {
+		if parsed, err := strconv.Atoi(envFetcher); err == nil && parsed > 0 {
+			k.FetcherCount = parsed
+		}
+	}
 
 	// 设置合理的默认值
 	if len(k.Brokers) == 0 {
@@ -184,6 +194,9 @@ func (k *KafkaOptions) Complete() {
 	}
 	if k.WorkerCount <= 0 {
 		k.WorkerCount = 5
+	}
+	if k.FetcherCount <= 0 {
+		k.FetcherCount = 1
 	}
 	if k.MinBytes <= 0 {
 		k.MinBytes = 10 * 1024
@@ -230,12 +243,21 @@ func (k *KafkaOptions) Complete() {
 			k.WorkerCount, k.DesiredPartitions)
 	}
 
+	if k.FetcherCount > k.WorkerCount {
+		log.Warnf("Fetcher数量(%d)超过worker数量(%d)，将自动收敛到worker数量", k.FetcherCount, k.WorkerCount)
+		k.FetcherCount = k.WorkerCount
+	}
+	if k.FetcherCount > k.DesiredPartitions {
+		log.Warnf("Fetcher数量(%d)超过分区数(%d)，将自动收敛到分区数", k.FetcherCount, k.DesiredPartitions)
+		k.FetcherCount = k.DesiredPartitions
+	}
+
 	if k.ChannelBufferSize < 0 {
 		k.ChannelBufferSize = 0
 	}
 
 	if k.ProducerEnqueueTimeout <= 0 {
-		k.ProducerEnqueueTimeout = 500 * time.Millisecond
+		k.ProducerEnqueueTimeout = 2 * time.Second
 	}
 
 	if k.ProducerCompression == "" {
@@ -330,6 +352,9 @@ func (k *KafkaOptions) Validate() []error {
 	// 验证worker数量
 	if k.WorkerCount < 1 {
 		errs = append(errs, field.Invalid(field.NewPath("kafka", "workerCount"), k.WorkerCount, "必须大于0"))
+	}
+	if k.FetcherCount < 1 {
+		errs = append(errs, field.Invalid(field.NewPath("kafka", "fetcherCount"), k.FetcherCount, "必须大于0"))
 	}
 
 	// 验证producer compression codec
@@ -430,6 +455,9 @@ func (k *KafkaOptions) AddFlags(fs *pflag.FlagSet) {
 
 	fs.IntVar(&k.WorkerCount, "kafka.worker-count", k.WorkerCount,
 		"消费者worker数量")
+
+	fs.IntVar(&k.FetcherCount, "kafka.fetcher-count", k.FetcherCount,
+		"每个消费者实例使用的Kafka reader数量，用于并发拉取消息")
 
 	fs.IntVar(&k.BatchChannelCapacity, "kafka.batch-channel-capacity", k.BatchChannelCapacity,
 		"Kafka消费者批处理聚合通道容量（减小可降低内存占用，增大可缓冲突发流量）")

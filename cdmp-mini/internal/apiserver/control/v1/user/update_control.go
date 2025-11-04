@@ -225,10 +225,24 @@ func (u *UserController) Update(ctx *gin.Context) {
 			return err
 		}
 		if existingUser.ObjectMeta.Version != *req.Version {
-			err := errors.WithCode(code.ErrResourceConflict, "用户数据版本不匹配")
-			core.WriteResponse(ctx, err, nil)
-			auditLog("fail", err.Error())
-			return err
+			resultUser := v1.ConvertToPublicUser(existingUser)
+			if resultUser != nil {
+				resultUser.Metadata.Version = existingUser.ObjectMeta.Version
+			}
+			snapshot := gin.H{
+				"update_user":     resultUser,
+				"current_version": existingUser.ObjectMeta.Version,
+				"operator":        common.GetUsername(ctx.Request.Context()),
+				"operation_time":  time.Now().Format(time.RFC3339),
+				"operation_type":  "noop",
+				"code":            code.ErrSuccess,
+				"message":         "用户已被更新，返回最新数据以便客户端重试",
+			}
+			controllerDetails["conflict"] = true
+			controllerDetails["result_version"] = existingUser.ObjectMeta.Version
+			core.WriteResponse(ctx, nil, snapshot)
+			auditLog("success", "version_conflict_return_snapshot")
+			return nil
 		}
 		expected := *req.Version
 		existingUser.ExpectedVersion = &expected
@@ -265,9 +279,17 @@ func (u *UserController) Update(ctx *gin.Context) {
 			return err
 		}
 
+		nextVersion := existingUser.ObjectMeta.Version + 1
+		resultUser := v1.ConvertToPublicUser(existingUser)
+		if resultUser != nil {
+			resultUser.Metadata.Version = nextVersion
+			resultUser.UpdatedAt = time.Now().UTC()
+		}
+
 		// 构建成功数据
 		successData := gin.H{
-			"update_user":    existingUser,
+			"update_user":    resultUser,
+			"next_version":   nextVersion,
 			"operator":       common.GetUsername(ctx.Request.Context()),
 			"operation_time": time.Now().Format(time.RFC3339),
 			"operation_type": "create",
@@ -294,6 +316,7 @@ func (u *UserController) Update(ctx *gin.Context) {
 			summaryFields = append(summaryFields, "logined_at")
 		}
 		controllerDetails["updated_fields"] = summaryFields
+		controllerDetails["result_version"] = nextVersion
 		outcomeMessage = "success"
 		awaitTimeout := 30 * time.Second
 		if u.options != nil && u.options.ServerRunOptions != nil && u.options.ServerRunOptions.CtxTimeout > 0 {

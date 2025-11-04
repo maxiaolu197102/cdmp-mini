@@ -14,6 +14,7 @@ import (
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/store/user"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/logger"
 	moptions "github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/options"
+	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/trace"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/pkg/db"
 	v1 "github.com/maxiaolu1981/cretem/nexuscore/api/apiserver/v1"
 	metav1 "github.com/maxiaolu1981/cretem/nexuscore/component-base/meta/v1"
@@ -55,18 +56,32 @@ type ClusterAwareUserStore struct {
 }
 
 func (c *ClusterAwareUserStore) Get(ctx context.Context, username string, opts metav1.GetOptions, opt *options.Options) (*v1.User, error) {
+	if ForcePrimaryFromContext(ctx) {
+		trace.AddRequestTag(ctx, "user_store_route", "primary")
+		return c.writeStore.Get(ctx, username, opts, opt)
+	}
+	trace.AddRequestTag(ctx, "user_store_route", "replica")
 	return c.readStore.Get(ctx, username, opts, opt) // 读操作用读库
 }
 
 func (c *ClusterAwareUserStore) GetByEmail(ctx context.Context, email string, opt *options.Options) (*v1.User, error) {
+	if ForcePrimaryFromContext(ctx) {
+		return c.writeStore.GetByEmail(ctx, email, opt)
+	}
 	return c.readStore.GetByEmail(ctx, email, opt)
 }
 
 func (c *ClusterAwareUserStore) GetByPhone(ctx context.Context, phone string, opt *options.Options) (*v1.User, error) {
+	if ForcePrimaryFromContext(ctx) {
+		return c.writeStore.GetByPhone(ctx, phone, opt)
+	}
 	return c.readStore.GetByPhone(ctx, phone, opt)
 }
 
 func (c *ClusterAwareUserStore) PreflightConflicts(ctx context.Context, username, email, phone string, opt *options.Options) (map[string]*v1.User, error) {
+	if ForcePrimaryFromContext(ctx) {
+		return c.writeStore.PreflightConflicts(ctx, username, email, phone, opt)
+	}
 	return c.readStore.PreflightConflicts(ctx, username, email, phone, opt)
 }
 

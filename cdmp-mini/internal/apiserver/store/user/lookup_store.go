@@ -73,15 +73,15 @@ func (u *Users) PreflightConflicts(ctx context.Context, username, email, phone s
 	args := make([]interface{}, 0, 3)
 
 	if normalizedName != "" {
-		queries = append(queries, "(SELECT 'username' AS scope, name, email, phone, status FROM `user` WHERE name = ? LIMIT 1)")
+		queries = append(queries, "SELECT 'username' AS scope, sub.name, sub.email, sub.phone, sub.status FROM (SELECT name, email, phone, status FROM `user` WHERE name = ? LIMIT 1) AS sub")
 		args = append(args, normalizedName)
 	}
 	if normalizedEmail != "" {
-		queries = append(queries, "(SELECT 'email' AS scope, name, email, phone, status FROM `user` WHERE email = ? LIMIT 1)")
+		queries = append(queries, "SELECT 'email' AS scope, sub.name, sub.email, sub.phone, sub.status FROM (SELECT name, email, phone, status FROM `user` WHERE email = ? LIMIT 1) AS sub")
 		args = append(args, normalizedEmail)
 	}
 	if normalizedPhone != "" {
-		queries = append(queries, "(SELECT 'phone' AS scope, name, email, phone, status FROM `user` WHERE phone = ? LIMIT 1)")
+		queries = append(queries, "SELECT 'phone' AS scope, sub.name, sub.email, sub.phone, sub.status FROM (SELECT name, email, phone, status FROM `user` WHERE phone = ? LIMIT 1) AS sub")
 		args = append(args, normalizedPhone)
 	}
 
@@ -89,12 +89,12 @@ func (u *Users) PreflightConflicts(ctx context.Context, username, email, phone s
 		return map[string]*v1.User{}, nil
 	}
 
-	sql := strings.Join(queries, " UNION ALL ")
+	query := strings.Join(queries, " UNION ALL ")
 	type conflictRow struct {
 		Scope  string
 		Name   string
-		Email  string
-		Phone  string
+		Email  sql.NullString
+		Phone  sql.NullString
 		Status int32
 	}
 
@@ -103,7 +103,7 @@ func (u *Users) PreflightConflicts(ctx context.Context, username, email, phone s
 		return nil, errors.WithCode(code.ErrDatabase, "获取数据库连接失败: %v", err)
 	}
 
-	rows, err := sqlCore.QueryContext(ctx, sql, args...)
+	rows, err := sqlCore.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, errors.WithCode(code.ErrDatabase, "预检查查询失败: %v", err)
 	}
@@ -126,8 +126,8 @@ func (u *Users) PreflightConflicts(ctx context.Context, username, email, phone s
 		case "username", "email", "phone":
 			result[scope] = &v1.User{
 				ObjectMeta: metav1.ObjectMeta{Name: row.Name},
-				Email:      row.Email,
-				Phone:      row.Phone,
+				Email:      stringOrEmpty(row.Email),
+				Phone:      stringOrEmpty(row.Phone),
 				Status:     int(row.Status),
 			}
 		}
@@ -136,4 +136,11 @@ func (u *Users) PreflightConflicts(ctx context.Context, username, email, phone s
 		return nil, errors.WithCode(code.ErrDatabase, "预检查遍历失败: %v", err)
 	}
 	return result, nil
+}
+
+func stringOrEmpty(v sql.NullString) string {
+	if !v.Valid {
+		return ""
+	}
+	return strings.TrimSpace(v.String)
 }

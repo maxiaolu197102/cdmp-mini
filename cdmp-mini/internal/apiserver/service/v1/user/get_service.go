@@ -104,6 +104,14 @@ func (u *UserService) Get(ctx context.Context, username string, opts metav1.GetO
 			trace.AddRequestTag(ctx, "protection_blacklist_cache_hit", true)
 		default:
 			cacheHitLabel = "hit"
+			if forceCacheRefreshFromContext(ctx) {
+				trace.AddRequestTag(ctx, "cache_positive_bypass", true)
+				if refreshedUser, refreshErr := u.refreshUserCacheFromDB(ctx, username); refreshErr != nil {
+					log.Warnf("正缓存强制刷新失败: username=%s err=%v", username, refreshErr)
+				} else {
+					cachedUser = refreshedUser
+				}
+			}
 		}
 		result = cachedUser
 		return result, nil

@@ -1,0 +1,4 @@
+- [x] Reduce high-cardinality tags in K6 delete_force script (set `params.tags.name`)
+- [ ] Investigate 5m delete_force run: http_req_duration p99 ≈ 8.8s and 29k dropped iterations (consider higher maxVUs or lower rates)
+- [ ] Trace-based analysis: pinpoint Kafka consumption bottleneck (fetch vs. flush-to-MySQL vs. ack) and outline speed-up options
+- [ ] Design batch workflow scenario, collect trace metrics, and evaluate bulk path latency

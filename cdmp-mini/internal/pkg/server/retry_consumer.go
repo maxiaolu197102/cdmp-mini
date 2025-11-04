@@ -403,11 +403,13 @@ func (rc *RetryConsumer) processRetryUpdate(ctx context.Context, msg kafka.Messa
 	if user.Password != "" {
 		updated.Password = user.Password
 	}
-	updated.Nickname = user.Nickname
-	updated.Email = user.Email
-	updated.Phone = user.Phone
-	updated.Status = user.Status
-	updated.IsAdmin = user.IsAdmin
+	if command == v1.UserUpdateCommandFull {
+		updated.Nickname = user.Nickname
+		updated.Email = user.Email
+		updated.Phone = user.Phone
+		updated.Status = user.Status
+		updated.IsAdmin = user.IsAdmin
+	}
 	if !user.LoginedAt.IsZero() {
 		updated.LoginedAt = user.LoginedAt
 	}
@@ -420,6 +422,13 @@ func (rc *RetryConsumer) processRetryUpdate(ctx context.Context, msg kafka.Messa
 	if user.Patch != nil {
 		if err := user.Patch.Apply(&updated); err != nil {
 			return rc.producer.SendToDeadLetterTopic(ctx, msg, "APPLY_PATCH_FAILED: "+err.Error())
+		}
+		// 保持未显式修改的联系信息与原快照一致，避免被零值覆盖
+		if user.Patch.Email == nil {
+			updated.Email = existingSnapshot.Email
+		}
+		if user.Patch.Phone == nil {
+			updated.Phone = existingSnapshot.Phone
 		}
 	}
 	if err := v1.EnsureExtendShadow(&updated.ObjectMeta); err != nil {

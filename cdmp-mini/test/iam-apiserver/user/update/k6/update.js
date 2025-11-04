@@ -32,6 +32,11 @@ const DEFAULT_TAG_VALUE = '_default';
 
 const scenarioSettings = {};
 
+const GLOBAL_SCENARIO_DURATION = resolveGlobalScenarioDuration();
+if (GLOBAL_SCENARIO_DURATION) {
+    console.log(`[config] 使用全局场景时长覆盖: ${GLOBAL_SCENARIO_DURATION}`);
+}
+
 export const options = {
     setupTimeout: '300s',
     thresholds: {
@@ -300,7 +305,7 @@ function buildPutPayload(dataset, state, user) {
         payload.isAdmin = counter % 2 === 0 ? 1 : 0;
     }
     if (dataset.includePhoneUpdates && user.phone) {
-        payload.phone = `${user.phone.slice(0, -dataset.phoneSuffixLength)}${padNumber(counter, dataset.phoneSuffixLength)}`;
+        payload.phone = selectUserPhoneVariant(state, user, 'putPhoneVariants');
     }
     return payload;
 }
@@ -319,7 +324,7 @@ function buildProfilePayload(dataset, state, user) {
         payload.email = `${user.baseEmail}-p${counter}@${dataset.emailDomain}`;
     }
     if (dataset.profileUpdatePhone && user.phone) {
-        payload.phone = `${user.phone.slice(0, -dataset.phoneSuffixLength)}${padNumber(counter + 1000, dataset.phoneSuffixLength)}`;
+        payload.phone = selectUserPhoneVariant(state, user, 'profilePhoneVariants');
     }
     return payload;
 }
@@ -338,6 +343,29 @@ function buildBatchUpdates(dataset, state) {
         updates.status = counter % 2;
     }
     return updates;
+}
+
+function selectUserPhoneVariant(state, user, trackerKey) {
+    if (!user || !user.phone) {
+        return '';
+    }
+    if (!state[trackerKey]) {
+        state[trackerKey] = {};
+    }
+    const tracker = state[trackerKey];
+    const options = [];
+    if (user.altPhone && user.altPhone !== user.phone) {
+        options.push(user.altPhone);
+    }
+    options.push(user.phone);
+    const index = tracker[user.name] || 0;
+    const nextPhone = options[index % options.length];
+    if (options.length > 1) {
+        tracker[user.name] = (index + 1) % options.length;
+    } else {
+        tracker[user.name] = 0;
+    }
+    return nextPhone;
 }
 
 function sendWithAuthRetry(context, tags, executor) {
@@ -445,6 +473,7 @@ function seedUserGroup(context, label, count, tags) {
         let username;
         let payload;
         let phone = '';
+        let altPhone = '';
         for (; ;) {
             username = buildSeedUsername(dataset, label, i, attempt);
             payload = buildSeedPayload(dataset, username, i);
@@ -459,6 +488,7 @@ function seedUserGroup(context, label, count, tags) {
             if (res.status === HTTP_CREATED) {
                 if (dataset.phonePrefix) {
                     commitSeedPhone(dataset, attempt);
+                    altPhone = allocateAltPhoneCandidate(dataset);
                 }
                 waitForUserVisibility(context, username, tags);
                 users.push({
@@ -466,6 +496,7 @@ function seedUserGroup(context, label, count, tags) {
                     version: 1,
                     baseEmail: username.slice(0, 48),
                     phone,
+                    altPhone,
                 });
                 break;
             }
@@ -505,6 +536,24 @@ function commitSeedPhone(dataset, attempt) {
         dataset.phoneSeedCursor = 0;
     }
     dataset.phoneSeedCursor += attempt + 1;
+}
+
+function allocateAltPhoneCandidate(dataset) {
+    if (!dataset.phonePrefix || !Number.isFinite(dataset.phoneSeedAltOffset)) {
+        return '';
+    }
+    if (!Number.isFinite(dataset.phoneSeedAltCursor)) {
+        dataset.phoneSeedAltCursor = 0;
+    }
+    const suffixCapacity = Math.pow(10, dataset.phoneSuffixLength);
+    const suffixIndex = dataset.phoneSeedAltOffset + dataset.phoneSeedAltCursor;
+    if (suffixIndex >= suffixCapacity) {
+        fail(
+            '备用手机号空间耗尽，请增大 phoneSuffixLength 或减少数据集中用户数量'
+        );
+    }
+    dataset.phoneSeedAltCursor += 1;
+    return dataset.phonePrefix + padNumber(suffixIndex, dataset.phoneSuffixLength);
 }
 
 function shouldRetrySeedCreation(status, parsed, dataset) {
@@ -832,7 +881,9 @@ function isDegraded(parsed) {
 
 function scenarioConfig(prefix, defaults) {
     const rate = parsePositiveIntEnv(`${prefix}_RATE`, defaults.rate);
-    const duration = (__ENV[`${prefix}_DURATION`] || defaults.duration).trim();
+    const perScenarioOverride = (__ENV[`${prefix}_DURATION`] || '').trim();
+    const durationOverride = perScenarioOverride || GLOBAL_SCENARIO_DURATION;
+    const duration = (durationOverride || defaults.duration).trim();
     const preAllocatedVUs = parsePositiveIntEnv(`${prefix}_VUS`, defaults.preAllocatedVUs);
     const maxVUs = parsePositiveIntEnv(`${prefix}_MAX_VUS`, defaults.maxVUs);
     const resolved = {
@@ -846,6 +897,20 @@ function scenarioConfig(prefix, defaults) {
     };
     scenarioSettings[defaults.exec] = Object.assign({}, resolved);
     return resolved;
+}
+
+function resolveGlobalScenarioDuration() {
+    const candidates = [
+        (__ENV.K6_DURATION_OVERRIDE || '').trim(),
+        (__ENV.K6_SCENARIO_DURATION || '').trim(),
+        (__ENV.K6_DURATION || '').trim(),
+    ];
+    for (let i = 0; i < candidates.length; i += 1) {
+        if (candidates[i]) {
+            return candidates[i];
+        }
+    }
+    return '';
 }
 
 function obtainToken(baseUrl, options = {}) {
@@ -997,9 +1062,9 @@ function applyRunOffsets(dataset) {
     }
 
     const suffixCapacity = Math.pow(10, dataset.phoneSuffixLength);
-    if (!Number.isFinite(suffixCapacity) || suffixCapacity <= totalSeeds) {
+    if (!Number.isFinite(suffixCapacity) || suffixCapacity <= totalSeeds * 2) {
         fail(
-            `phoneSuffixLength=${dataset.phoneSuffixLength} 无法支撑 ${totalSeeds} 个种子用户，` +
+            `phoneSuffixLength=${dataset.phoneSuffixLength} 无法支撑 ${totalSeeds} 个种子用户及其备用手机号，` +
             '请增大 phoneSuffixLength 或减少数据集中用户数量'
         );
     }
@@ -1009,7 +1074,7 @@ function applyRunOffsets(dataset) {
     const minOffset = 1; // 避免以 0000 开头与历史数据冲突
     let candidate = preferred < minOffset ? minOffset : preferred;
 
-    const maxOffset = suffixCapacity - totalSeeds;
+    const maxOffset = suffixCapacity - totalSeeds * 2;
     if (candidate > maxOffset) {
         candidate = maxOffset;
     }
@@ -1020,6 +1085,8 @@ function applyRunOffsets(dataset) {
 
     dataset.phoneSeedOffset = candidate;
     dataset.phoneSeedCursor = 0;
+    dataset.phoneSeedAltOffset = candidate + totalSeeds;
+    dataset.phoneSeedAltCursor = 0;
     console.log(
         `[setup] phoneSeedOffset=${dataset.phoneSeedOffset} capacity=${suffixCapacity} totalSeeds=${totalSeeds}`
     );

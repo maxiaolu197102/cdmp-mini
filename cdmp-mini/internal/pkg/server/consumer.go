@@ -35,20 +35,22 @@ import (
 )
 
 type UserConsumer struct {
-	reader     *kafka.Reader
-	db         *gorm.DB
-	sqlxDB     *sqlx.DB
-	redis      *storage.RedisCluster
-	producer   *UserProducer
-	topic      string
-	groupID    string
-	instanceID int // 新增：实例ID
-	opts       *options.KafkaOptions
+	readers     []*kafka.Reader
+	db          *gorm.DB
+	sqlxDB      *sqlx.DB
+	redis       *storage.RedisCluster
+	producer    *UserProducer
+	topic       string
+	groupID     string
+	instanceID  int // 新增：实例ID
+	opts        *options.KafkaOptions
+	markerCache *pendingMarkerCache
 	// 移除本地保护状态，全部走redis全局key
 	// 主控选举相关
 	isMaster      bool
 	poolReporter  poolStatsReporter
 	poolComponent string
+	fetcherCount  int
 }
 
 type deleteMessage struct {
@@ -61,7 +63,95 @@ type pendingMarkerMetadata struct {
 	Degraded bool   `json:"degraded"`
 }
 
+type consumerJob struct {
+	msg       kafka.Message
+	workerID  int
+	readerIdx int
+}
+
+type consumerAck struct {
+	message   kafka.Message
+	workerID  int
+	readerIdx int
+	err       error
+}
+
+type consumerBatchItem struct {
+	op        string
+	message   kafka.Message
+	readerIdx int
+}
+
 const cacheNullSentinel = "rate_limit_prevention"
+
+const pendingMarkerCacheWindow = 500 * time.Millisecond
+const batchChannelFreeSlotDivisor = 8
+
+type markerCacheEntry struct {
+	exists      bool
+	value       string
+	hasTTL      bool
+	expireAt    time.Time
+	cacheExpiry time.Time
+}
+
+func (e markerCacheEntry) remainingTTL(now time.Time) time.Duration {
+	if !e.hasTTL {
+		return 0
+	}
+	remaining := e.expireAt.Sub(now)
+	if remaining <= 0 {
+		return 0
+	}
+	return remaining
+}
+
+type pendingMarkerCache struct {
+	mu      sync.RWMutex
+	entries map[string]markerCacheEntry
+}
+
+func newPendingMarkerCache() *pendingMarkerCache {
+	return &pendingMarkerCache{entries: make(map[string]markerCacheEntry)}
+}
+
+func (c *pendingMarkerCache) Get(key string) (markerCacheEntry, bool) {
+	if c == nil {
+		return markerCacheEntry{}, false
+	}
+	c.mu.RLock()
+	entry, ok := c.entries[key]
+	c.mu.RUnlock()
+	if !ok {
+		return markerCacheEntry{}, false
+	}
+	now := time.Now()
+	if now.After(entry.cacheExpiry) || (entry.hasTTL && now.After(entry.expireAt)) {
+		c.mu.Lock()
+		delete(c.entries, key)
+		c.mu.Unlock()
+		return markerCacheEntry{}, false
+	}
+	return entry, true
+}
+
+func (c *pendingMarkerCache) Set(key string, entry markerCacheEntry) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.entries[key] = entry
+	c.mu.Unlock()
+}
+
+func (c *pendingMarkerCache) Delete(key string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	delete(c.entries, key)
+	c.mu.Unlock()
+}
 
 var (
 	userMessagePool = sync.Pool{
@@ -173,10 +263,15 @@ func sanitizeTraceKey(component string) string {
 }
 
 func NewUserConsumer(opts *options.KafkaOptions, topic, groupID string, instanceIndex int, db *gorm.DB, redis *storage.RedisCluster) *UserConsumer {
-	groupInstanceID := buildGroupInstanceID(opts.InstanceID, groupID, instanceIndex)
+	fetcherCount := opts.FetcherCount
+	if fetcherCount <= 0 {
+		fetcherCount = 1
+	}
 
-	consumer := &UserConsumer{
-		reader: kafka.NewReader(kafka.ReaderConfig{
+	readers := make([]*kafka.Reader, 0, fetcherCount)
+	for fetcherIdx := 0; fetcherIdx < fetcherCount; fetcherIdx++ {
+		groupInstanceID := buildGroupInstanceID(opts.InstanceID, groupID, instanceIndex*fetcherCount+fetcherIdx)
+		reader := kafka.NewReader(kafka.ReaderConfig{
 			Brokers: opts.Brokers,
 			Topic:   topic,
 			GroupID: groupID,
@@ -196,7 +291,12 @@ func NewUserConsumer(opts *options.KafkaOptions, topic, groupID string, instance
 			MaxAttempts:    opts.MaxRetries,
 			ReadBackoffMin: time.Millisecond * 100,
 			ReadBackoffMax: time.Millisecond * 1000,
-		}),
+		})
+		readers = append(readers, reader)
+	}
+
+	consumer := &UserConsumer{
+		readers:       readers,
 		db:            db,
 		redis:         redis,
 		topic:         topic,
@@ -204,7 +304,9 @@ func NewUserConsumer(opts *options.KafkaOptions, topic, groupID string, instance
 		opts:          opts,
 		poolComponent: groupID,
 		// 新增：实例ID赋值
-		instanceID: instanceIndex,
+		instanceID:   instanceIndex,
+		fetcherCount: fetcherCount,
+		markerCache:  newPendingMarkerCache(),
 	}
 	if sqlCore, err := db.DB(); err != nil {
 		log.Errorf("initialize sqlx db failed: %v", err)
@@ -293,59 +395,47 @@ func (c *UserConsumer) StartConsuming(ctx context.Context, workerCount int, read
 	ctx, span := trace.StartSpan(ctx, "kafka-consumer", "start_consuming")
 	trace.AddRequestTag(ctx, "topic", c.topic)
 	trace.AddRequestTag(ctx, "group", c.groupID)
+	trace.AddRequestTag(ctx, "reader_count", len(c.readers))
 	defer trace.EndSpan(span, "success", "", map[string]interface{}{})
 
-	// job 用于在 fetcher 与 worker 之间传递消息
-	type job struct {
-		msg      kafka.Message
-		workerID int
-	}
+	jobs := make(chan consumerJob, 2048)
+	acks := make(chan consumerAck, 2048)
 
-	type ackResult struct {
-		message  kafka.Message
-		workerID int
-		err      error
-	}
-
-	jobs := make(chan *job, 2048) // 提升通道容量，支持高并发
-	acks := make(chan ackResult, 2048)
 	readyOnce := sync.Once{}
 	signalReady := func() {
 		if ready != nil {
-			readyOnce.Do(func() {
-				ready.Done()
-			})
+			readyOnce.Do(func() { ready.Done() })
 		}
 	}
+
 	ctx, dispatcherSpan := trace.StartSpan(ctx, "kafka-consumer", "dispatch_loop")
 	defer func() {
 		trace.EndSpan(dispatcherSpan, "success", "", nil)
 		signalReady()
 	}()
 
-	// 启动 worker 池，只负责处理业务，不直接调用 FetchMessage/CommitMessages
-	var workerWg sync.WaitGroup
 	// worker数量与分区数动态匹配，保证每个分区有独立worker
+	var workerWg sync.WaitGroup
 	partitionCount := c.opts.DesiredPartitions
 	actualWorkerCount := workerCount
 	if partitionCount > 0 && workerCount < partitionCount {
 		actualWorkerCount = partitionCount
 	}
+	if actualWorkerCount <= 0 {
+		actualWorkerCount = 1
+	}
+
 	for i := 0; i < actualWorkerCount; i++ {
 		workerWg.Add(1)
 		go func(workerID int) {
 			defer workerWg.Done()
-			for j := range jobs {
-				// 记录开始时间
-				operation := c.getOperationFromHeaders(j.msg.Headers)
-				messageKey := string(j.msg.Key)
+			for job := range jobs {
+				operation := c.getOperationFromHeaders(job.msg.Headers)
+				messageKey := string(job.msg.Key)
 				processStart := time.Now()
 
-				// 构建异步 trace 上下文
-				msgCtx, msgSpan := c.startAsyncTraceContext(ctx, j.msg, operation, workerID)
-
-				// 处理消息（带重试的业务处理）
-				err := c.processMessageWithRetry(msgCtx, j.msg, 3)
+				msgCtx, msgSpan := c.startAsyncTraceContext(ctx, job.msg, operation, workerID)
+				err := c.processMessageWithRetry(msgCtx, job.msg, 3)
 
 				businessCode := strconv.Itoa(code.ErrSuccess)
 				status := "success"
@@ -370,9 +460,10 @@ func (c *UserConsumer) StartConsuming(ctx context.Context, workerCount int, read
 				}
 				spanDetails := map[string]interface{}{
 					"topic":       c.topic,
-					"partition":   j.msg.Partition,
-					"offset":      j.msg.Offset,
+					"partition":   job.msg.Partition,
+					"offset":      job.msg.Offset,
 					"worker_id":   workerID,
+					"reader_idx":  job.readerIdx,
 					"operation":   operation,
 					"message_key": messageKey,
 				}
@@ -386,10 +477,9 @@ func (c *UserConsumer) StartConsuming(ctx context.Context, workerCount int, read
 				trace.RecordOutcome(msgCtx, businessCode, message, status, 0)
 				trace.Complete(msgCtx)
 
-				// 在本地记录指标（worker 负责记录处理耗时/成功/失败）
-				c.recordConsumerMetrics(operation, messageKey, processStart, err, j.workerID)
+				c.recordConsumerMetrics(operation, messageKey, processStart, err, job.workerID)
 
-				ack := ackResult{message: j.msg, workerID: j.workerID, err: err}
+				ack := consumerAck{message: job.msg, workerID: job.workerID, readerIdx: job.readerIdx, err: err}
 				select {
 				case acks <- ack:
 				case <-ctx.Done():
@@ -406,7 +496,7 @@ func (c *UserConsumer) StartConsuming(ctx context.Context, workerCount int, read
 		type partitionState struct {
 			nextOffset int64
 		}
-		pending := make(map[int]map[int64]ackResult)
+		pending := make(map[int]map[int64]consumerAck)
 		states := make(map[int]*partitionState)
 		for ack := range acks {
 			if ack.err != nil {
@@ -420,11 +510,10 @@ func (c *UserConsumer) StartConsuming(ctx context.Context, workerCount int, read
 				states[partition] = state
 			}
 			if ack.message.Offset < state.nextOffset {
-				// 已经提交过的偏移，忽略重复确认
 				continue
 			}
 			if _, ok := pending[partition]; !ok {
-				pending[partition] = make(map[int64]ackResult)
+				pending[partition] = make(map[int64]consumerAck)
 			}
 			pending[partition][ack.message.Offset] = ack
 			for {
@@ -433,7 +522,7 @@ func (c *UserConsumer) StartConsuming(ctx context.Context, workerCount int, read
 				if !ok {
 					break
 				}
-				if err := c.commitWithRetry(ctx, ready.message, ready.workerID); err != nil {
+				if err := c.commitWithRetry(ctx, ready.message, ready.workerID, ready.readerIdx); err != nil {
 					log.Errorf("Fetcher: 提交偏移失败 partition=%d offset=%d err=%v", partition, ready.message.Offset, err)
 					break
 				}
@@ -443,326 +532,466 @@ func (c *UserConsumer) StartConsuming(ctx context.Context, workerCount int, read
 		}
 	}()
 
-	// fetcher: 负责从 Kafka 拉取消息，并在 worker 处理完成后提交偏移量
-	fetchLoopDone := make(chan struct{})
+	batchCapacity := c.opts.BatchChannelCapacity
+	if batchCapacity <= 0 {
+		batchCapacity = 1024
+	}
+	batchCh := make(chan consumerBatchItem, batchCapacity)
+
+	var batchWg sync.WaitGroup
+	batchWg.Add(1)
 	go func() {
-		defer close(fetchLoopDone)
-		nextWorker := 0
-		// 批量聚合支持: 针对 create/update/delete，使用一个批量缓存由 worker 执行批量DB写
-		type batchItem struct {
-			op  string
-			msg kafka.Message
-		}
+		defer batchWg.Done()
+		c.runBatchAggregator(ctx, batchCh, acks)
+	}()
 
-		// 单独的批处理队列 (用于批量DB写) — 由一个轻量 goroutine 管理定时刷新
-		batchCapacity := c.opts.BatchChannelCapacity
-		if batchCapacity <= 0 {
-			batchCapacity = 1024
+	var fetchWg sync.WaitGroup
+	for idx, reader := range c.readers {
+		if reader == nil {
+			continue
 		}
-		batchCh := make(chan batchItem, batchCapacity)
-		defer close(batchCh)
+		fetchWg.Add(1)
+		go func(readerIdx int, r *kafka.Reader) {
+			defer fetchWg.Done()
+			c.runFetchLoop(ctx, readerIdx, r, jobs, batchCh, actualWorkerCount)
+		}(idx, reader)
+	}
 
-		maxBatchBound := c.opts.MaxDBBatchSize
-		if maxBatchBound < 1 {
-			maxBatchBound = 100
+	signalReady()
+
+	fetchWg.Wait()
+	close(batchCh)
+	close(jobs)
+	workerWg.Wait()
+	batchWg.Wait()
+	close(acks)
+	commitWg.Wait()
+}
+
+func (c *UserConsumer) runBatchAggregator(ctx context.Context, batchCh <-chan consumerBatchItem, acks chan<- consumerAck) {
+	if batchCh == nil {
+		return
+	}
+
+	aggCtx, span := trace.StartSpan(ctx, "kafka-consumer", "batch_aggregator")
+	trace.AddRequestTag(aggCtx, "topic", c.topic)
+	trace.AddRequestTag(aggCtx, "group", c.groupID)
+	ctx = aggCtx
+
+	status := "success"
+	statusCode := strconv.Itoa(code.ErrSuccess)
+	var processedCreates, processedDeletes, processedUpdates int
+
+	defer func() {
+		details := map[string]any{
+			"create_count":    processedCreates,
+			"delete_count":    processedDeletes,
+			"update_count":    processedUpdates,
+			"buffer_capacity": cap(batchCh),
 		}
-		minBatchBound := c.opts.MinDBBatchSize
-		if minBatchBound < 1 || minBatchBound > maxBatchBound {
-			minBatchBound = maxBatchBound / 2
-			if minBatchBound < 1 {
-				minBatchBound = 1
+		if err := ctx.Err(); err != nil && status == "success" {
+			status = "error"
+			statusCode = strconv.Itoa(code.ErrUnknown)
+			details["error"] = err.Error()
+		}
+		trace.EndSpan(span, status, statusCode, details)
+	}()
+
+	maxBatchBound := c.opts.MaxDBBatchSize
+	if maxBatchBound < 1 {
+		maxBatchBound = 100
+	}
+	minBatchBound := c.opts.MinDBBatchSize
+	if minBatchBound < 1 || minBatchBound > maxBatchBound {
+		minBatchBound = maxBatchBound / 2
+		if minBatchBound < 1 {
+			minBatchBound = 1
+		}
+	}
+
+	minTimeout := c.opts.MinBatchTimeout
+	if minTimeout <= 0 {
+		minTimeout = 40 * time.Millisecond
+	}
+	maxTimeout := c.opts.MaxBatchTimeout
+	if maxTimeout <= 0 {
+		maxTimeout = 200 * time.Millisecond
+	}
+	if maxTimeout < minTimeout {
+		maxTimeout = minTimeout
+	}
+	baseTimeout := c.opts.BatchTimeout
+	if baseTimeout <= 0 {
+		baseTimeout = minTimeout
+	}
+	if baseTimeout < minTimeout {
+		baseTimeout = minTimeout
+	} else if baseTimeout > maxTimeout {
+		baseTimeout = maxTimeout
+	}
+
+	currentTimeout := baseTimeout
+	ticker := time.NewTicker(currentTimeout)
+	defer ticker.Stop()
+
+	currentBatchLimit := maxBatchBound
+	batchWorkerID := -1
+
+	ackMessages := func(msgs []kafka.Message, readers []int) bool {
+		for i, m := range msgs {
+			readerIdx := -1
+			if i < len(readers) {
+				readerIdx = readers[i]
+			}
+			select {
+			case acks <- consumerAck{message: m, workerID: batchWorkerID, readerIdx: readerIdx, err: nil}:
+			case <-ctx.Done():
+				status = "error"
+				statusCode = strconv.Itoa(code.ErrUnknown)
+				return false
 			}
 		}
+		return true
+	}
 
-		minTimeout := c.opts.MinBatchTimeout
-		if minTimeout <= 0 {
-			minTimeout = 40 * time.Millisecond
+	adjustParams := func(pending int) {
+		if pending < 0 {
+			pending = 0
 		}
-		maxTimeout := c.opts.MaxBatchTimeout
-		if maxTimeout <= 0 {
-			maxTimeout = 200 * time.Millisecond
-		}
-		if maxTimeout < minTimeout {
-			maxTimeout = minTimeout
-		}
-		baseTimeout := c.opts.BatchTimeout
-		if baseTimeout <= 0 {
-			baseTimeout = minTimeout
-		}
-		if baseTimeout < minTimeout {
-			baseTimeout = minTimeout
-		} else if baseTimeout > maxTimeout {
-			baseTimeout = maxTimeout
+		capacity := cap(batchCh)
+		targetLimit := maxBatchBound
+		targetTimeout := baseTimeout
+
+		if c.opts.LagProtected || (capacity > 0 && pending >= capacity*3/4) {
+			targetLimit = minBatchBound
+			targetTimeout = minTimeout
+		} else if capacity > 0 && pending >= capacity/2 {
+			mid := (minBatchBound + maxBatchBound) / 2
+			if mid < minBatchBound {
+				mid = minBatchBound
+			}
+			targetLimit = mid
+			if baseTimeout > minTimeout {
+				targetTimeout = baseTimeout - (baseTimeout-minTimeout)/2
+			} else {
+				targetTimeout = minTimeout
+			}
+		} else if capacity > 0 && pending <= capacity/4 && !c.opts.LagProtected {
+			extra := baseTimeout + (maxTimeout-baseTimeout)/2
+			if extra > maxTimeout {
+				extra = maxTimeout
+			}
+			targetTimeout = extra
+			targetLimit = maxBatchBound
 		}
 
-		batchPool := sync.Pool{
-			New: func() any {
-				return make([]kafka.Message, 0, maxBatchBound)
-			},
+		if targetLimit < minBatchBound {
+			targetLimit = minBatchBound
+		} else if targetLimit > maxBatchBound {
+			targetLimit = maxBatchBound
 		}
-		getBatch := func(batch []kafka.Message) []kafka.Message {
-			if batch != nil {
-				return batch
-			}
-			return batchPool.Get().([]kafka.Message)[:0]
+
+		if targetTimeout < minTimeout {
+			targetTimeout = minTimeout
+		} else if targetTimeout > maxTimeout {
+			targetTimeout = maxTimeout
 		}
-		releaseBatch := func(batch []kafka.Message) []kafka.Message {
-			if batch == nil {
-				return nil
-			}
-			for i := range batch {
-				batch[i] = kafka.Message{}
-			}
-			batchPool.Put(batch[:0])
+
+		if targetLimit != currentBatchLimit {
+			currentBatchLimit = targetLimit
+		}
+		if targetTimeout != currentTimeout {
+			ticker.Reset(targetTimeout)
+			currentTimeout = targetTimeout
+		}
+	}
+
+	batchPool := sync.Pool{
+		New: func() any {
+			return make([]kafka.Message, 0, maxBatchBound)
+		},
+	}
+	getBatch := func(batch []kafka.Message) []kafka.Message {
+		if batch != nil {
+			return batch
+		}
+		return batchPool.Get().([]kafka.Message)[:0]
+	}
+	releaseBatch := func(batch []kafka.Message) []kafka.Message {
+		if batch == nil {
 			return nil
 		}
+		for i := range batch {
+			batch[i] = kafka.Message{}
+		}
+		batchPool.Put(batch[:0])
+		return nil
+	}
 
-		// 批量缓冲与提交 goroutine
-		go func() {
-			currentTimeout := baseTimeout
-			ticker := time.NewTicker(currentTimeout)
-			defer ticker.Stop()
+	var (
+		createBatchMsgs    []kafka.Message
+		createBatchReaders []int
+		deleteBatchMsgs    []kafka.Message
+		deleteBatchReaders []int
+		updateBatchMsgs    []kafka.Message
+		updateBatchReaders []int
+	)
 
-			currentBatchLimit := maxBatchBound
-			batchWorkerID := -1
-			ackMessages := func(batch []kafka.Message) bool {
-				for _, m := range batch {
-					select {
-					case acks <- ackResult{message: m, workerID: batchWorkerID, err: nil}:
-					case <-ctx.Done():
-						return false
-					}
-				}
-				return true
+	flush := func() bool {
+		if len(createBatchMsgs) > 0 {
+			c.batchCreateToDB(ctx, createBatchMsgs)
+			if !ackMessages(createBatchMsgs, createBatchReaders) {
+				return false
 			}
-			adjustParams := func(pending int) {
-				if pending < 0 {
-					pending = 0
-				}
-				capacity := cap(batchCh)
-				targetLimit := maxBatchBound
-				targetTimeout := baseTimeout
+			processedCreates += len(createBatchMsgs)
+		}
+		createBatchMsgs = releaseBatch(createBatchMsgs)
+		createBatchReaders = createBatchReaders[:0]
 
-				if c.opts.LagProtected || (capacity > 0 && pending >= capacity*3/4) {
-					targetLimit = minBatchBound
-					targetTimeout = minTimeout
-				} else if capacity > 0 && pending >= capacity/2 {
-					mid := (minBatchBound + maxBatchBound) / 2
-					if mid < minBatchBound {
-						mid = minBatchBound
-					}
-					targetLimit = mid
-					if baseTimeout > minTimeout {
-						targetTimeout = baseTimeout - (baseTimeout-minTimeout)/2
-					} else {
-						targetTimeout = minTimeout
-					}
-				} else if capacity > 0 && pending <= capacity/4 && !c.opts.LagProtected {
-					extra := baseTimeout + (maxTimeout-baseTimeout)/2
-					if extra > maxTimeout {
-						extra = maxTimeout
-					}
-					targetTimeout = extra
-					targetLimit = maxBatchBound
-				}
-
-				if targetLimit < minBatchBound {
-					targetLimit = minBatchBound
-				} else if targetLimit > maxBatchBound {
-					targetLimit = maxBatchBound
-				}
-
-				if targetTimeout < minTimeout {
-					targetTimeout = minTimeout
-				} else if targetTimeout > maxTimeout {
-					targetTimeout = maxTimeout
-				}
-
-				if targetLimit != currentBatchLimit {
-					currentBatchLimit = targetLimit
-				}
-				if targetTimeout != currentTimeout {
-					ticker.Reset(targetTimeout)
-					currentTimeout = targetTimeout
-				}
+		if len(deleteBatchMsgs) > 0 {
+			c.batchDeleteFromDB(ctx, deleteBatchMsgs)
+			if !ackMessages(deleteBatchMsgs, deleteBatchReaders) {
+				return false
 			}
+			processedDeletes += len(deleteBatchMsgs)
+		}
+		deleteBatchMsgs = releaseBatch(deleteBatchMsgs)
+		deleteBatchReaders = deleteBatchReaders[:0]
 
-			var (
-				createBatch []kafka.Message
-				deleteBatch []kafka.Message
-				updateBatch []kafka.Message
-			)
-
-			flush := func() {
-				if len(createBatch) > 0 {
-					c.batchCreateToDB(ctx, createBatch)
-					if !ackMessages(createBatch) {
-						return
-					}
-				}
-				createBatch = releaseBatch(createBatch)
-
-				if len(deleteBatch) > 0 {
-					c.batchDeleteFromDB(ctx, deleteBatch)
-					if !ackMessages(deleteBatch) {
-						return
-					}
-				}
-				deleteBatch = releaseBatch(deleteBatch)
-
-				if len(updateBatch) > 0 {
-					c.batchUpdateToDB(ctx, updateBatch)
-					if !ackMessages(updateBatch) {
-						return
-					}
-				}
-				updateBatch = releaseBatch(updateBatch)
-				adjustParams(len(batchCh))
+		if len(updateBatchMsgs) > 0 {
+			c.batchUpdateToDB(ctx, updateBatchMsgs)
+			if !ackMessages(updateBatchMsgs, updateBatchReaders) {
+				return false
 			}
+			processedUpdates += len(updateBatchMsgs)
+		}
+		updateBatchMsgs = releaseBatch(updateBatchMsgs)
+		updateBatchReaders = updateBatchReaders[:0]
 
-			for {
-				adjustParams(len(batchCh))
-				select {
-				case bi, ok := <-batchCh:
-					if !ok {
-						flush()
-						return
-					}
-					switch bi.op {
-					case OperationCreate:
-						createBatch = getBatch(createBatch)
-						createBatch = append(createBatch, bi.msg)
-						if len(createBatch) >= currentBatchLimit {
-							c.batchCreateToDB(ctx, createBatch)
-							if !ackMessages(createBatch) {
-								return
-							}
-							createBatch = releaseBatch(createBatch)
-						}
-					case OperationDelete:
-						deleteBatch = getBatch(deleteBatch)
-						deleteBatch = append(deleteBatch, bi.msg)
-						if len(deleteBatch) >= currentBatchLimit {
-							c.batchDeleteFromDB(ctx, deleteBatch)
-							if !ackMessages(deleteBatch) {
-								return
-							}
-							deleteBatch = releaseBatch(deleteBatch)
-						}
-					case OperationUpdate:
-						updateBatch = getBatch(updateBatch)
-						updateBatch = append(updateBatch, bi.msg)
-						if len(updateBatch) >= currentBatchLimit {
-							c.batchUpdateToDB(ctx, updateBatch)
-							if !ackMessages(updateBatch) {
-								return
-							}
-							updateBatch = releaseBatch(updateBatch)
-						}
-					default:
-						// ignore others for batching
-					}
-				case <-ticker.C:
-					flush()
-				case <-ctx.Done():
-					flush()
-					return
-				}
-			}
-		}()
+		adjustParams(len(batchCh))
+		return true
+	}
 
-		for {
-			select {
-			case <-ctx.Done():
+	for {
+		adjustParams(len(batchCh))
+		select {
+		case bi, ok := <-batchCh:
+			if !ok {
+				flush()
 				return
+			}
+			switch bi.op {
+			case OperationCreate:
+				createBatchMsgs = append(getBatch(createBatchMsgs), bi.message)
+				createBatchReaders = append(createBatchReaders, bi.readerIdx)
+				if len(createBatchMsgs) >= currentBatchLimit {
+					if !flush() {
+						return
+					}
+				}
+			case OperationDelete:
+				deleteBatchMsgs = append(getBatch(deleteBatchMsgs), bi.message)
+				deleteBatchReaders = append(deleteBatchReaders, bi.readerIdx)
+				if len(deleteBatchMsgs) >= currentBatchLimit {
+					if !flush() {
+						return
+					}
+				}
+			case OperationUpdate:
+				updateBatchMsgs = append(getBatch(updateBatchMsgs), bi.message)
+				updateBatchReaders = append(updateBatchReaders, bi.readerIdx)
+				if len(updateBatchMsgs) >= currentBatchLimit {
+					if !flush() {
+						return
+					}
+				}
 			default:
+				// 忽略不支持批量的操作
 			}
+		case <-ticker.C:
+			if !flush() {
+				return
+			}
+		case <-ctx.Done():
+			status = "error"
+			statusCode = strconv.Itoa(code.ErrUnknown)
+			flush()
+			return
+		}
+	}
+}
 
-			// ====== 完全无限速，无日志 ======
-			stats := c.reader.Stats()
-			lag := stats.Lag
-			if lag == 0 {
-				select {
-				case <-time.After(5 * time.Millisecond):
-				case <-ctx.Done():
-					return
-				}
-			}
-			// ====== 结束 ======
+func (c *UserConsumer) runFetchLoop(ctx context.Context, readerIdx int, reader *kafka.Reader, jobs chan<- consumerJob, batchCh chan<- consumerBatchItem, workerCount int) {
+	loopCtx, span := trace.StartSpan(ctx, "kafka-consumer", "fetch_loop")
+	trace.AddRequestTag(loopCtx, "reader_idx", readerIdx)
+	status := "success"
+	statusCode := strconv.Itoa(code.ErrSuccess)
+	processed := 0
+	defer func() {
+		details := map[string]any{"processed": processed}
+		trace.EndSpan(span, status, statusCode, details)
+	}()
 
-			// FetchMessage 带重试：与之前逻辑保持一致
-			var msg kafka.Message
-			var fetchErr error
-			for retry := 0; retry < c.opts.MaxRetries; retry++ {
-				msg, fetchErr = c.reader.FetchMessage(ctx)
-				if fetchErr == nil {
-					break
-				}
-				if stderrs.Is(fetchErr, context.Canceled) || stderrs.Is(fetchErr, context.DeadlineExceeded) {
-					log.Warnf("Fetcher: 上下文已取消，停止获取消息")
-					return
-				}
-				log.Warnf("Fetcher: 获取消息失败 (重试 %d/%d): %v", retry+1, c.opts.MaxRetries, fetchErr)
-				backoff := time.Second * time.Duration(1<<uint(retry))
-				select {
-				case <-time.After(backoff):
-				case <-ctx.Done():
-					log.Warnf("Fetcher: 重试期间上下文取消")
-					return
-				}
+	if workerCount <= 0 {
+		workerCount = 1
+	}
+
+	nextWorker := readerIdx % workerCount
+	batchNearFull := func() bool {
+		if batchCh == nil {
+			return true
+		}
+		capacity := cap(batchCh)
+		if capacity <= 0 {
+			return false
+		}
+		current := len(batchCh)
+		freeSlots := capacity - current
+		margin := capacity / batchChannelFreeSlotDivisor
+		if margin < 1 {
+			margin = 1
+		}
+		return freeSlots <= margin
+	}
+
+	tryEnqueueCreateBatch := func(item consumerBatchItem) bool {
+		if batchCh == nil {
+			return false
+		}
+		if batchNearFull() {
+			return false
+		}
+		select {
+		case batchCh <- item:
+			return true
+		default:
+			return false
+		}
+	}
+
+	for {
+		select {
+		case <-loopCtx.Done():
+			status = "error"
+			statusCode = strconv.Itoa(code.ErrUnknown)
+			trace.AddRequestTag(loopCtx, "loop_cancelled", true)
+			return
+		default:
+		}
+
+		stats := reader.Stats()
+		if stats.Lag == 0 {
+			select {
+			case <-time.After(5 * time.Millisecond):
+			case <-loopCtx.Done():
+				status = "error"
+				statusCode = strconv.Itoa(code.ErrUnknown)
+				trace.AddRequestTag(loopCtx, "loop_cancelled", true)
+				return
 			}
-			if fetchErr != nil {
-				log.Errorf("Fetcher: 获取消息最终失败: %v", fetchErr)
-				// 在 fetch 失败时短暂停顿，避免紧循环
-				select {
-				case <-time.After(500 * time.Millisecond):
-				case <-ctx.Done():
-					return
+		}
+
+		var (
+			msg      kafka.Message
+			fetchErr error
+		)
+		for retry := 0; retry < c.opts.MaxRetries; retry++ {
+			attemptCtx, attemptSpan := trace.StartSpan(loopCtx, "kafka-consumer", "fetch_attempt")
+			retryNum := retry + 1
+			trace.AddRequestTag(attemptCtx, "attempt", retryNum)
+			trace.AddRequestTag(attemptCtx, "reader_idx", readerIdx)
+			trace.AddRequestTag(attemptCtx, "lag", stats.Lag)
+			msg, fetchErr = reader.FetchMessage(attemptCtx)
+			if fetchErr == nil {
+				details := map[string]any{
+					"attempt":   retryNum,
+					"partition": msg.Partition,
+					"offset":    msg.Offset,
 				}
+				trace.EndSpan(attemptSpan, "success", strconv.Itoa(code.ErrSuccess), details)
+				processed++
+				break
+			}
+			if stderrs.Is(fetchErr, context.Canceled) || stderrs.Is(fetchErr, context.DeadlineExceeded) {
+				log.Warnf("Fetcher %d: 上下文已取消，停止获取消息", readerIdx)
+				trace.EndSpan(attemptSpan, "error", strconv.Itoa(code.ErrUnknown), map[string]any{
+					"attempt": retryNum,
+					"error":   fetchErr.Error(),
+				})
+				status = "error"
+				statusCode = strconv.Itoa(code.ErrUnknown)
+				return
+			}
+			trace.EndSpan(attemptSpan, "error", strconv.Itoa(code.ErrUnknown), map[string]any{
+				"attempt": retryNum,
+				"error":   fetchErr.Error(),
+			})
+			log.Warnf("Fetcher %d: 获取消息失败 (重试 %d/%d): %v", readerIdx, retry+1, c.opts.MaxRetries, fetchErr)
+			backoff := time.Second * time.Duration(1<<uint(retry))
+			select {
+			case <-time.After(backoff):
+			case <-loopCtx.Done():
+				log.Warnf("Fetcher %d: 重试期间上下文取消", readerIdx)
+				return
+			}
+		}
+		if fetchErr != nil {
+			log.Errorf("Fetcher %d: 获取消息最终失败: %v", readerIdx, fetchErr)
+			trace.AddRequestTag(loopCtx, "fetch_failure", fetchErr.Error())
+			select {
+			case <-time.After(500 * time.Millisecond):
+			case <-loopCtx.Done():
+				status = "error"
+				statusCode = strconv.Itoa(code.ErrUnknown)
+				trace.AddRequestTag(loopCtx, "loop_cancelled", true)
+				return
+			}
+			continue
+		}
+
+		op := c.getOperationFromHeaders(msg.Headers)
+		if op == OperationCreate {
+			batchItem := consumerBatchItem{op: op, message: msg, readerIdx: readerIdx}
+			if tryEnqueueCreateBatch(batchItem) {
 				continue
 			}
+		}
 
-			// dispatch to worker
-			j := &job{msg: msg, workerID: nextWorker}
-			// ...existing code... // 移除队列长度监控，确保无限流
-			select {
-			case jobs <- j:
-				// dispatched
-			case <-ctx.Done():
-				return
-			case <-time.After(10 * time.Millisecond):
-				// 如果 worker 队列阻塞，尝试把消息放到批量通道以触发批量写（降低延迟）
-				op := c.getOperationFromHeaders(msg.Headers)
-				if op == OperationCreate || op == OperationDelete || op == OperationUpdate {
-					select {
-					case batchCh <- batchItem{op: op, msg: msg}:
-					default:
-						// 如果批量通道也满了，则继续等待正常 dispatch
-						select {
-						case jobs <- j:
-						case <-ctx.Done():
-							return
-						}
-					}
+		job := consumerJob{msg: msg, workerID: nextWorker, readerIdx: readerIdx}
+		select {
+		case jobs <- job:
+		case <-loopCtx.Done():
+			return
+		case <-time.After(10 * time.Millisecond):
+			if op == OperationCreate {
+				batchItem := consumerBatchItem{op: op, message: msg, readerIdx: readerIdx}
+				if tryEnqueueCreateBatch(batchItem) {
 					continue
 				}
 			}
-
-			// round-robin
-			nextWorker = (nextWorker + 1) % actualWorkerCount
-
+			if op == OperationDelete || op == OperationUpdate {
+				batchItem := consumerBatchItem{op: op, message: msg, readerIdx: readerIdx}
+				select {
+				case batchCh <- batchItem:
+					continue
+				default:
+					select {
+					case jobs <- job:
+					case <-loopCtx.Done():
+						return
+					}
+				}
+			} else {
+				select {
+				case jobs <- job:
+				case <-loopCtx.Done():
+					return
+				}
+			}
 		}
-	}()
 
-	// 在 worker 与 fetcher 启动后标记就绪
-	signalReady()
-
-	// 等待 fetcher 结束（通常由 ctx 取消触发），然后关闭 jobs 并等待 workers 退出
-	<-fetchLoopDone
-	close(jobs)
-	workerWg.Wait()
-	close(acks)
-	commitWg.Wait()
+		nextWorker = (nextWorker + 1) % workerCount
+	}
 }
 
 // 消息调度 - 已弃用
@@ -773,33 +1002,47 @@ func (c *UserConsumer) StartConsuming(ctx context.Context, workerCount int, read
 // ...old worker and processSingleMessage removed. Use StartConsuming with the new fetcher+worker flow.
 
 // commitWithRetry 尝试提交消息偏移，遇到临时错误会重试
-func (c *UserConsumer) commitWithRetry(ctx context.Context, msg kafka.Message, workerID int) error {
+func (c *UserConsumer) commitWithRetry(ctx context.Context, msg kafka.Message, workerID int, readerIdx int) error {
+	reader := c.readerForIndex(readerIdx)
+	if reader == nil {
+		if len(c.readers) == 0 {
+			return fmt.Errorf("commit failed: no kafka reader available")
+		}
+		reader = c.readers[0]
+	}
+
+	spanCtx, span := trace.StartSpan(ctx, "kafka-consumer", "commit_offset")
+	trace.AddRequestTag(spanCtx, "reader_idx", readerIdx)
+	trace.AddRequestTag(spanCtx, "partition", msg.Partition)
+	trace.AddRequestTag(spanCtx, "offset", msg.Offset)
+	trace.AddRequestTag(spanCtx, "worker_id", workerID)
+
 	maxAttempts := 3
 	var lastErr error
 	for i := 0; i < maxAttempts; i++ {
-		if err := c.reader.CommitMessages(ctx, msg); err != nil {
+		if err := reader.CommitMessages(spanCtx, msg); err != nil {
 			lastErr = err
 			metrics.ConsumerProcessingErrors.WithLabelValues(c.topic, c.groupID, "commit", "commit_error").Inc()
-			// record commit failure metric (partition as string)
 			metrics.ConsumerCommitFailures.WithLabelValues(c.topic, c.groupID, fmt.Sprintf("%d", msg.Partition)).Inc()
-			log.Warnf("Worker %d: 提交偏移量失败 (尝试 %d/%d): topic=%s partition=%d offset=%d err=%v",
-				workerID, i+1, maxAttempts, msg.Topic, msg.Partition, msg.Offset, err)
-			// 指数退避
+			log.Warnf("Worker %d: 提交偏移量失败 (reader=%d 尝试 %d/%d): topic=%s partition=%d offset=%d err=%v",
+				workerID, readerIdx, i+1, maxAttempts, msg.Topic, msg.Partition, msg.Offset, err)
 			wait := time.Duration(100*(1<<uint(i))) * time.Millisecond
 			select {
 			case <-time.After(wait):
 				continue
-			case <-ctx.Done():
-				return ctx.Err()
+			case <-spanCtx.Done():
+				trace.EndSpan(span, "error", strconv.Itoa(code.ErrUnknown), map[string]any{"error": spanCtx.Err()})
+				return spanCtx.Err()
 			}
 		} else {
-			// record commit success metric
 			metrics.ConsumerCommitSuccess.WithLabelValues(c.topic, c.groupID, fmt.Sprintf("%d", msg.Partition)).Inc()
-
+			trace.EndSpan(span, "success", strconv.Itoa(code.ErrSuccess), nil)
 			return nil
 		}
 	}
-	log.Errorf("Worker %d: 提交偏移量最终失败: %v", workerID, lastErr)
+
+	trace.EndSpan(span, "error", strconv.Itoa(code.ErrUnknown), map[string]any{"error": lastErr.Error()})
+	log.Errorf("Worker %d: 提交偏移量最终失败 (reader=%d): %v", workerID, readerIdx, lastErr)
 	return lastErr
 }
 
@@ -1444,6 +1687,12 @@ func (c *UserConsumer) getPendingCreateMarker(ctx context.Context, username stri
 	if key == "" {
 		return false, "", 0, 0, 0, nil
 	}
+	if cached, ok := c.markerCache.Get(trimmed); ok {
+		trace.AddRequestTag(ctx, "pending_marker_cache_hit", true)
+		now := time.Now()
+		return cached.exists, cached.value, cached.remainingTTL(now), 0, 0, nil
+	}
+	trace.AddRequestTag(ctx, "pending_marker_cache_hit", false)
 
 	getStart := time.Now()
 	value, err := c.redis.GetKey(ctx, key)
@@ -1456,6 +1705,11 @@ func (c *UserConsumer) getPendingCreateMarker(ctx context.Context, username stri
 	trace.AddRequestTag(ctx, "pending_marker_get_ms", getDuration.Milliseconds())
 	if err != nil {
 		if err == redis.Nil {
+			c.markerCache.Set(trimmed, markerCacheEntry{
+				exists:      false,
+				hasTTL:      false,
+				cacheExpiry: time.Now().Add(pendingMarkerCacheWindow),
+			})
 			return false, "", 0, getDuration, 0, nil
 		}
 		trace.AddRequestTag(ctx, "pending_marker_get_error", err.Error())
@@ -1473,10 +1727,24 @@ func (c *UserConsumer) getPendingCreateMarker(ctx context.Context, username stri
 	trace.AddRequestTag(ctx, "pending_marker_ttl_lookup_ms", ttlDuration.Milliseconds())
 	if ttlErr != nil {
 		if ttlErr == storage.ErrKeyNotFound {
+			now := time.Now()
+			entry := markerCacheEntry{
+				exists:      true,
+				hasTTL:      false,
+				cacheExpiry: now.Add(pendingMarkerCacheWindow),
+			}
+			c.markerCache.Set(trimmed, entry)
 			return true, value, 0, getDuration, ttlDuration, nil
 		}
 		trace.AddRequestTag(ctx, "pending_marker_ttl_error", ttlErr.Error())
 		log.Debugf("获取 pending 标记TTL失败: key=%s err=%v", key, ttlErr)
+		now := time.Now()
+		entry := markerCacheEntry{
+			exists:      true,
+			hasTTL:      false,
+			cacheExpiry: now.Add(pendingMarkerCacheWindow),
+		}
+		c.markerCache.Set(trimmed, entry)
 		return true, value, 0, getDuration, ttlDuration, nil
 	}
 
@@ -1484,6 +1752,22 @@ func (c *UserConsumer) getPendingCreateMarker(ctx context.Context, username stri
 	if ttlSeconds > 0 {
 		ttl = time.Duration(ttlSeconds) * time.Second
 	}
+	now := time.Now()
+	cacheExpiry := now.Add(pendingMarkerCacheWindow)
+	entry := markerCacheEntry{
+		exists:      true,
+		value:       value,
+		hasTTL:      ttl > 0,
+		expireAt:    now.Add(ttl),
+		cacheExpiry: cacheExpiry,
+	}
+	if ttl <= 0 {
+		entry.hasTTL = false
+		entry.expireAt = time.Time{}
+	} else if entry.expireAt.Before(cacheExpiry) {
+		entry.cacheExpiry = entry.expireAt
+	}
+	c.markerCache.Set(trimmed, entry)
 	return true, value, ttl, getDuration, ttlDuration, nil
 }
 
@@ -1522,6 +1806,7 @@ func (c *UserConsumer) clearPendingCreateMarker(ctx context.Context, username st
 	if key == "" {
 		return 0, nil
 	}
+	c.markerCache.Delete(trimmed)
 	deleteStart := time.Now()
 	deleted, err := c.redis.DeleteKey(ctx, key)
 	deleteDuration := time.Since(deleteStart)
@@ -1596,8 +1881,19 @@ func ensureUserInstanceID(user *v1.User) {
 }
 
 func (c *UserConsumer) deleteUserFromDB(ctx context.Context, username string) error {
+	spanCtx, span := trace.StartSpan(ctx, "kafka-consumer", "delete_user_db")
+	trace.AddRequestTag(spanCtx, "username", username)
+	ctx = spanCtx
+	status := "success"
+	statusCode := strconv.Itoa(code.ErrSuccess)
+	defer func() {
+		trace.EndSpan(span, status, statusCode, map[string]any{"username": username})
+	}()
 	db, err := c.ensureSQLX()
 	if err != nil {
+		status = "error"
+		statusCode = strconv.Itoa(code.ErrUnknown)
+		trace.AddRequestTag(ctx, "delete_db_prepare_error", err.Error())
 		return fmt.Errorf("获取数据库连接失败: %w", err)
 	}
 
@@ -1606,19 +1902,48 @@ func (c *UserConsumer) deleteUserFromDB(ctx context.Context, username string) er
 		username,
 	)
 	if execErr != nil {
+		status = "error"
+		statusCode = strconv.Itoa(code.ErrUnknown)
+		trace.AddRequestTag(ctx, "delete_db_error", execErr.Error())
 		return execErr
 	}
 	affected, affErr := res.RowsAffected()
 	if affErr != nil {
+		status = "error"
+		statusCode = strconv.Itoa(code.ErrUnknown)
+		trace.AddRequestTag(ctx, "delete_db_affect_error", affErr.Error())
 		return affErr
 	}
 	if affected == 0 {
-		return errors.WithCode(code.ErrUserNotFound, "用户没有发现")
+		status = "error"
+		statusCode = strconv.Itoa(code.ErrUserNotFound)
+		errNotFound := errors.WithCode(code.ErrUserNotFound, "用户没有发现")
+		trace.AddRequestTag(ctx, "delete_db_not_found", true)
+		return errNotFound
 	}
 	return nil
 }
 
 func (c *UserConsumer) updateUserInDB(ctx context.Context, user *v1.User, expectedVersion *uint64) error {
+	spanCtx, span := trace.StartSpan(ctx, "kafka-consumer", "update_user_db")
+	trace.AddRequestTag(spanCtx, "username", user.Name)
+	if expectedVersion != nil {
+		trace.AddRequestTag(spanCtx, "expected_version", *expectedVersion)
+	}
+	ctx = spanCtx
+	status := "success"
+	statusCode := strconv.Itoa(code.ErrSuccess)
+	attempts := 0
+	var execDuration time.Duration
+	defer func() {
+		details := map[string]any{
+			"attempts": attempts,
+		}
+		if execDuration > 0 {
+			details["last_exec_ms"] = execDuration.Milliseconds()
+		}
+		trace.EndSpan(span, status, statusCode, details)
+	}()
 	user.Email = usercache.NormalizeEmail(user.Email)
 	user.Phone = usercache.NormalizePhone(user.Phone)
 
@@ -1628,6 +1953,9 @@ func (c *UserConsumer) updateUserInDB(ctx context.Context, user *v1.User, expect
 
 	db, err := c.ensureSQLX()
 	if err != nil {
+		status = "error"
+		statusCode = strconv.Itoa(code.ErrUnknown)
+		trace.AddRequestTag(ctx, "update_db_prepare_error", err.Error())
 		return fmt.Errorf("获取数据库连接失败: %w", err)
 	}
 
@@ -1668,9 +1996,11 @@ func (c *UserConsumer) updateUserInDB(ctx context.Context, user *v1.User, expect
 		duration time.Duration
 	)
 	for attempt := 1; attempt <= dbWriteMaxRetries; attempt++ {
+		attempts = attempt
 		start := time.Now()
 		res, execErr = db.ExecContext(ctx, queryBuilder.String(), args...)
 		duration = time.Since(start)
+		execDuration = duration
 		metrics.BusinessProcessingTime.WithLabelValues("consumer", "update_user_db").Observe(duration.Seconds())
 		trace.AddRequestTag(ctx, "update_db_ms", duration.Milliseconds())
 		if execErr == nil {
@@ -1678,6 +2008,13 @@ func (c *UserConsumer) updateUserInDB(ctx context.Context, user *v1.User, expect
 		}
 		metrics.BusinessFailures.WithLabelValues("consumer", "update_user_db", "db_exec_error").Inc()
 		if attempt == dbWriteMaxRetries || !isRetryableDBWriteError(execErr) {
+			status = "error"
+			if c := errors.GetCode(execErr); c != 0 {
+				statusCode = strconv.Itoa(c)
+			} else {
+				statusCode = strconv.Itoa(code.ErrUnknown)
+			}
+			trace.AddRequestTag(ctx, "update_db_error", execErr.Error())
 			return fmt.Errorf("数据库更新失败: %w", execErr)
 		}
 		log.Warnw("用户更新SQL检测到死锁/锁等待，准备重试", "username", user.Name, "attempt", attempt, "error", execErr)
@@ -1688,10 +2025,16 @@ func (c *UserConsumer) updateUserInDB(ctx context.Context, user *v1.User, expect
 		affected, affErr := res.RowsAffected()
 		if affErr != nil {
 			metrics.BusinessFailures.WithLabelValues("consumer", "update_user_db", "rows_affected_error").Inc()
+			status = "error"
+			statusCode = strconv.Itoa(code.ErrUnknown)
+			trace.AddRequestTag(ctx, "update_db_rows_error", affErr.Error())
 			return fmt.Errorf("获取更新影响行数失败: %w", affErr)
 		}
 		if affected == 0 {
 			metrics.BusinessFailures.WithLabelValues("consumer", "update_user_db", "version_conflict").Inc()
+			status = "error"
+			statusCode = strconv.Itoa(code.ErrResourceConflict)
+			trace.AddRequestTag(ctx, "update_db_version_conflict", true)
 			return errors.WithCode(code.ErrResourceConflict, "用户数据版本冲突")
 		}
 	}
@@ -2000,54 +2343,103 @@ func convertToTime(value interface{}) (time.Time, error) {
 // 辅助函数
 // processMessageWithRetry 带重试的消息处理
 func (c *UserConsumer) processMessageWithRetry(ctx context.Context, msg kafka.Message, maxRetries int) error {
+	retryCtx, retrySpan := trace.StartSpan(ctx, "kafka-consumer", "process_with_retry")
+	trace.AddRequestTag(retryCtx, "max_retries", maxRetries)
+	trace.AddRequestTag(retryCtx, "partition", msg.Partition)
+	trace.AddRequestTag(retryCtx, "offset", msg.Offset)
+	if len(msg.Key) > 0 {
+		trace.AddRequestTag(retryCtx, "message_key", string(msg.Key))
+	}
 
+	status := "success"
+	statusCode := strconv.Itoa(code.ErrSuccess)
+	finalDetails := map[string]any{
+		"max_retries": maxRetries,
+	}
+	attemptsUsed := 0
 	var lastErr error
+
+	defer func() {
+		finalDetails["attempts_used"] = attemptsUsed
+		if lastErr != nil {
+			finalDetails["error"] = lastErr.Error()
+		}
+		trace.EndSpan(retrySpan, status, statusCode, finalDetails)
+	}()
+
 	component := c.poolComponent
 	if component == "" {
 		component = c.groupID
 	}
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		c.poolReporter.report(ctx, component)
+		attemptsUsed = attempt
+		attemptCtx, attemptSpan := trace.StartSpan(retryCtx, "kafka-consumer", "process_attempt")
+		trace.AddRequestTag(attemptCtx, "attempt", attempt)
 
-		err := c.processMessage(ctx, msg)
+		c.poolReporter.report(attemptCtx, component)
+
+		err := c.processMessage(attemptCtx, msg)
 		if err == nil {
-
-			return nil // 处理成功,跳出循环
+			trace.EndSpan(attemptSpan, "success", strconv.Itoa(code.ErrSuccess), map[string]any{"attempt": attempt})
+			trace.AddRequestTag(retryCtx, "retry_outcome", "success")
+			trace.AddRequestTag(retryCtx, "retry_attempts", attempt)
+			return nil
 		}
 
 		lastErr = err
+		errorCode := code.ErrUnknown
+		if c := errors.GetCode(err); c != 0 {
+			errorCode = c
+		}
+		trace.EndSpan(attemptSpan, "error", strconv.Itoa(errorCode), map[string]any{
+			"attempt": attempt,
+			"error":   err.Error(),
+		})
 
-		// 检查错误类型
 		if !shouldRetry(err) {
-			log.Warn("进入不可重试处理流程...")
-			return nil //认为处理完成
+			trace.AddRequestTag(retryCtx, "retry_outcome", "non_retryable")
+			finalDetails["non_retryable"] = true
+			return nil
 		}
 
-		// 可重试错误：记录日志并等待重试
 		log.Warnf("消息处理失败，准备重试 (尝试 %d/%d): %v", attempt, maxRetries, err)
 
 		if attempt < maxRetries {
-			// 指数退避，但有上限
 			backoff := c.calculateBackoff(attempt)
 			log.Warnf("等待 %v 后进行第%d次重试", backoff, attempt+1)
 			select {
 			case <-time.After(backoff):
-				// 继续重试
-			case <-ctx.Done():
-				return fmt.Errorf("重试期间上下文取消: %v", ctx.Err())
+			case <-attemptCtx.Done():
+				status = "error"
+				statusCode = strconv.Itoa(code.ErrUnknown)
+				finalDetails["context_cancelled"] = true
+				return fmt.Errorf("重试期间上下文取消: %v", attemptCtx.Err())
 			}
 		}
 	}
 
-	// 重试次数用尽，发送到重试主题
 	log.Errorf("消息处理重试次数用尽: %v", lastErr)
-	retryErr := c.sendToRetry(ctx, msg, fmt.Sprintf("重试次数用尽: %v", lastErr))
+	trace.AddRequestTag(retryCtx, "retry_outcome", "exhausted")
+	status = "degraded"
+	if lastErr != nil {
+		if c := errors.GetCode(lastErr); c != 0 {
+			statusCode = strconv.Itoa(c)
+		} else {
+			statusCode = strconv.Itoa(code.ErrUnknown)
+		}
+	}
+	finalDetails["exhausted_retries"] = true
+	retryErr := c.sendToRetry(retryCtx, msg, fmt.Sprintf("重试次数用尽: %v", lastErr))
 	if retryErr != nil {
+		status = "error"
+		statusCode = strconv.Itoa(code.ErrUnknown)
+		finalDetails["retry_publish_error"] = retryErr.Error()
 		return fmt.Errorf("发送重试主题失败: %v (原错误: %v)", retryErr, lastErr)
 	}
 
-	return nil // 重试主题发送成功，认为处理完成
+	finalDetails["forwarded_to_retry"] = true
+	return nil
 }
 
 // calculateBackoff 计算指数退避延迟时间
@@ -2272,6 +2664,13 @@ func isRecoverableError(errStr string) bool {
 }
 
 func (c *UserConsumer) setUserCache(ctx context.Context, user *v1.User, previous *v1.User) error {
+	cacheCtx, span := trace.StartSpan(ctx, "kafka-consumer", "set_user_cache")
+	trace.AddRequestTag(cacheCtx, "username", user.Name)
+	ctx = cacheCtx
+	status := "success"
+	statusCode := strconv.Itoa(code.ErrSuccess)
+	pipelineCount := 0
+	contactChanged := false
 	var (
 		writeStart      time.Time
 		operationErr    error
@@ -2280,6 +2679,20 @@ func (c *UserConsumer) setUserCache(ctx context.Context, user *v1.User, previous
 		writeDuration   time.Duration
 	)
 	totalStart := time.Now()
+	defer func() {
+		details := map[string]any{
+			"username":        user.Name,
+			"pipeline_items":  pipelineCount,
+			"contact_changed": contactChanged,
+			"wrote_cache":     wroteCache,
+		}
+		if operationErr != nil {
+			details["error"] = operationErr.Error()
+			status = "degraded"
+			statusCode = strconv.Itoa(code.ErrUnknown)
+		}
+		trace.EndSpan(span, status, statusCode, details)
+	}()
 	defer func() {
 		if wroteCache {
 			observed := writeDuration
@@ -2318,7 +2731,7 @@ func (c *UserConsumer) setUserCache(ctx context.Context, user *v1.User, previous
 	}
 	newEmail := usercache.NormalizeEmail(user.Email)
 	newPhone := usercache.NormalizePhone(user.Phone)
-	contactChanged := previous == nil || prevEmail != newEmail || prevPhone != newPhone
+	contactChanged = previous == nil || prevEmail != newEmail || prevPhone != newPhone
 
 	if contactChanged {
 		if previous != nil {
@@ -2328,6 +2741,7 @@ func (c *UserConsumer) setUserCache(ctx context.Context, user *v1.User, previous
 	}
 
 	prepareDuration = time.Since(totalStart)
+	pipelineCount = len(pipelineItems)
 	if len(pipelineItems) > 0 {
 		writeStart = time.Now()
 		wroteCache = true
@@ -2429,7 +2843,34 @@ func (c *UserConsumer) clearNegativeCache(ctx context.Context, username string) 
 }
 
 func (c *UserConsumer) purgeUserState(ctx context.Context, username string, userID uint64, snapshot *v1.User) {
+	spanCtx, span := trace.StartSpan(ctx, "kafka-consumer", "purge_user_state")
+	trace.AddRequestTag(spanCtx, "username", username)
+	if userID != 0 {
+		trace.AddRequestTag(spanCtx, "user_id", userID)
+	}
+	ctx = spanCtx
+
+	cacheError := false
+	sessionError := false
+	defer func() {
+		details := map[string]any{
+			"username":      username,
+			"has_snapshot":  snapshot != nil,
+			"user_id":       userID,
+			"cache_error":   cacheError,
+			"session_error": sessionError,
+		}
+		status := "success"
+		statusCode := strconv.Itoa(code.ErrSuccess)
+		if cacheError || sessionError {
+			status = "degraded"
+			statusCode = strconv.Itoa(code.ErrUnknown)
+		}
+		trace.EndSpan(span, status, statusCode, details)
+	}()
+
 	if err := c.deleteUserCache(ctx, username); err != nil {
+		cacheError = true
 		log.Errorw("缓存删除失败", "username", username, "error", err)
 	}
 
@@ -2442,6 +2883,7 @@ func (c *UserConsumer) purgeUserState(ctx context.Context, username string, user
 	}
 
 	if err := cleanupUserSessions(ctx, c.redis, userID); err != nil {
+		sessionError = true
 		log.Errorw("刷新令牌清理失败", "username", username, "userID", userID, "error", err)
 		return
 	}
@@ -2568,6 +3010,26 @@ func (c *UserConsumer) batchCreateToDB(ctx context.Context, msgs []kafka.Message
 	if len(msgs) == 0 {
 		return
 	}
+	batchCtx, span := trace.StartSpan(ctx, "kafka-consumer", "batch_create_db")
+	trace.AddRequestTag(batchCtx, "batch_size", len(msgs))
+	trace.AddRequestTag(batchCtx, "topic", c.topic)
+	ctx = batchCtx
+
+	status := "success"
+	statusCode := strconv.Itoa(code.ErrSuccess)
+	successful := 0
+	var opErr error
+	defer func() {
+		details := map[string]any{
+			"batch_size":    len(msgs),
+			"success_count": successful,
+		}
+		if opErr != nil {
+			details["error"] = opErr.Error()
+		}
+		trace.EndSpan(span, status, statusCode, details)
+	}()
+
 	start := time.Now()
 	metrics.BusinessOperationsTotal.WithLabelValues("consumer", "batch_create", "kafka").Inc()
 	metrics.BusinessInProgress.WithLabelValues("consumer", "batch_create").Inc()
@@ -2605,10 +3067,6 @@ func (c *UserConsumer) batchCreateToDB(ctx context.Context, msgs []kafka.Message
 	if len(users) == 0 {
 		return
 	}
-	var (
-		opErr      error
-		successful int
-	)
 	for i := range users {
 
 		created, err := c.createUserInDB(ctx, &users[i], false)
@@ -2645,6 +3103,14 @@ func (c *UserConsumer) batchCreateToDB(ctx context.Context, msgs []kafka.Message
 		errorRate := 0.0
 		metrics.BusinessErrorRate.WithLabelValues("consumer", "batch_create").Set(errorRate)
 	}
+	if opErr != nil {
+		status = "degraded"
+		if c := errors.GetCode(opErr); c != 0 {
+			statusCode = strconv.Itoa(c)
+		} else {
+			statusCode = strconv.Itoa(code.ErrUnknown)
+		}
+	}
 }
 
 // batchDeleteFromDB 批量删除用户（按 username）
@@ -2653,6 +3119,27 @@ func (c *UserConsumer) batchDeleteFromDB(ctx context.Context, msgs []kafka.Messa
 	if len(msgs) == 0 {
 		return
 	}
+	batchCtx, span := trace.StartSpan(ctx, "kafka-consumer", "batch_delete_db")
+	trace.AddRequestTag(batchCtx, "batch_size", len(msgs))
+	trace.AddRequestTag(batchCtx, "topic", c.topic)
+	ctx = batchCtx
+
+	status := "success"
+	statusCode := strconv.Itoa(code.ErrSuccess)
+	usernamesCount := 0
+	cleanedCount := 0
+	var opErr error
+	defer func() {
+		details := map[string]any{
+			"batch_size":     len(msgs),
+			"usernames":      usernamesCount,
+			"cleaned_states": cleanedCount,
+		}
+		if opErr != nil {
+			details["error"] = opErr.Error()
+		}
+		trace.EndSpan(span, status, statusCode, details)
+	}()
 	start := time.Now()
 	metrics.BusinessOperationsTotal.WithLabelValues("consumer", "batch_delete", "kafka").Inc()
 	metrics.BusinessInProgress.WithLabelValues("consumer", "batch_delete").Inc()
@@ -2661,7 +3148,6 @@ func (c *UserConsumer) batchDeleteFromDB(ctx context.Context, msgs []kafka.Messa
 	cleanupTargets := make(map[string]uint64)
 	snapshots := make(map[string]*v1.User)
 	snapshotStorage := make([]v1.User, 0, len(usernames))
-	var opErr error
 	for _, m := range msgs {
 		deleteRequest := deleteMessagePool.Get().(*deleteMessage)
 		if err := jsonCodec.Unmarshal(m.Value, deleteRequest); err != nil {
@@ -2682,6 +3168,7 @@ func (c *UserConsumer) batchDeleteFromDB(ctx context.Context, msgs []kafka.Messa
 	if len(usernames) == 0 {
 		return
 	}
+	usernamesCount = len(usernames)
 	db, err := c.ensureSQLX()
 	if err != nil {
 		log.Errorf("批量删除获取数据库连接失败: %v", err)
@@ -2744,6 +3231,7 @@ func (c *UserConsumer) batchDeleteFromDB(ctx context.Context, msgs []kafka.Messa
 			}
 			for _, username := range usernames {
 				c.purgeUserState(ctx, username, cleanupTargets[username], snapshots[username])
+				cleanedCount++
 			}
 		}
 	}
@@ -2756,6 +3244,14 @@ func (c *UserConsumer) batchDeleteFromDB(ctx context.Context, msgs []kafka.Messa
 	} else {
 		errorRate := 0.0
 		metrics.BusinessErrorRate.WithLabelValues("consumer", "batch_delete").Set(errorRate)
+	}
+	if opErr != nil {
+		status = "degraded"
+		if c := errors.GetCode(opErr); c != 0 {
+			statusCode = strconv.Itoa(c)
+		} else {
+			statusCode = strconv.Itoa(code.ErrUnknown)
+		}
 	}
 }
 
@@ -2773,10 +3269,23 @@ func (c *UserConsumer) SetProducer(producer *UserProducer) {
 }
 
 func (c *UserConsumer) Close() error {
-	if c.reader != nil {
-		return c.reader.Close()
+	var firstErr error
+	for _, reader := range c.readers {
+		if reader == nil {
+			continue
+		}
+		if err := reader.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
-	return nil
+	return firstErr
+}
+
+func (c *UserConsumer) readerForIndex(idx int) *kafka.Reader {
+	if idx < 0 || idx >= len(c.readers) {
+		return nil
+	}
+	return c.readers[idx]
 }
 
 // batchUpdateToDB 批量更新用户（按 username）
@@ -2785,6 +3294,27 @@ func (c *UserConsumer) batchUpdateToDB(ctx context.Context, msgs []kafka.Message
 	if len(msgs) == 0 {
 		return
 	}
+	batchCtx, span := trace.StartSpan(ctx, "kafka-consumer", "batch_update_db")
+	trace.AddRequestTag(batchCtx, "batch_size", len(msgs))
+	trace.AddRequestTag(batchCtx, "topic", c.topic)
+	ctx = batchCtx
+
+	status := "success"
+	statusCode := strconv.Itoa(code.ErrSuccess)
+	processedIntents := 0
+	updatedCount := 0
+	var opErr error
+	defer func() {
+		details := map[string]any{
+			"batch_size":    len(msgs),
+			"processed":     processedIntents,
+			"updated_count": updatedCount,
+		}
+		if opErr != nil {
+			details["error"] = opErr.Error()
+		}
+		trace.EndSpan(span, status, statusCode, details)
+	}()
 	start := time.Now()
 	metrics.BusinessOperationsTotal.WithLabelValues("consumer", "batch_update", "kafka").Inc()
 	metrics.BusinessInProgress.WithLabelValues("consumer", "batch_update").Inc()
@@ -2877,11 +3407,10 @@ func (c *UserConsumer) batchUpdateToDB(ctx context.Context, msgs []kafka.Message
 		log.Errorf("批量更新快照Rows错误: %v", err)
 	}
 
-	var opErr error
-	var updatedCount int
 	updateSQL := "UPDATE `user` SET email = ?, password = ?, status = ?, updatedAt = ?, extendShadow = ?, nickname = ?, phone = ? WHERE name = ?"
 	for i := range intents {
 		intent := &intents[i]
+		processedIntents++
 		u := intent.user
 		existingSnapshot := snapshotMap[intent.username]
 		if existingSnapshot == nil {
@@ -2932,5 +3461,13 @@ func (c *UserConsumer) batchUpdateToDB(ctx context.Context, msgs []kafka.Message
 	} else {
 		errorRate := 0.0
 		metrics.BusinessErrorRate.WithLabelValues("consumer", "batch_update").Set(errorRate)
+	}
+	if opErr != nil {
+		status = "degraded"
+		if c := errors.GetCode(opErr); c != 0 {
+			statusCode = strconv.Itoa(c)
+		} else {
+			statusCode = strconv.Itoa(code.ErrUnknown)
+		}
 	}
 }
