@@ -13,6 +13,7 @@ import (
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/store/interfaces"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/code"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/dbscan"
+	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/metrics"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/pkg/log"
 	v1 "github.com/maxiaolu1981/cretem/nexuscore/api/apiserver/v1"
 	"github.com/maxiaolu1981/cretem/nexuscore/errors"
@@ -110,28 +111,42 @@ func (u *Users) executeSingleGet(ctx context.Context, username string) (*v1.User
 
 	sqlCore, err := u.ensureSQLCore()
 	if err != nil {
-		return nil, errors.WithCode(code.ErrDatabase, "获取数据库连接失败: %v", err)
+		wrappedErr := errors.WithCode(code.ErrDatabase, "获取数据库连接失败: %v", err)
+		metrics.RecordDatabaseQuery("user_store", "get_by_name", 0, wrappedErr)
+		return nil, wrappedErr
 	}
+
+	start := time.Now()
+	var metricErr error
+	defer func() {
+		metrics.RecordDatabaseQuery("user_store", "get_by_name", time.Since(start), metricErr)
+	}()
 
 	query := "SELECT id, instanceID, name, nickname, password, email, phone, status, isAdmin, createdAt, updatedAt, loginedAt, version FROM `user` WHERE name = ? LIMIT 1"
 	rows, err := sqlCore.QueryContext(ctx, query, username)
 	if err != nil {
+		metricErr = err
 		return nil, err
 	}
 	defer rows.Close()
 	if !rows.Next() {
 		if rows.Err() != nil {
+			metricErr = rows.Err()
 			return nil, rows.Err()
 		}
+		metricErr = gorm.ErrRecordNotFound
 		return nil, gorm.ErrRecordNotFound
 	}
 	user, scanErr := dbscan.ScanUserAuth(rows)
 	if scanErr != nil {
+		metricErr = scanErr
 		return nil, scanErr
 	}
 
 	if user.Status == 0 {
-		return nil, errors.WithCode(code.ErrUserDisabled, "用户已失效")
+		disabledErr := errors.WithCode(code.ErrUserDisabled, "用户已失效")
+		metricErr = disabledErr
+		return nil, disabledErr
 	}
 	return user, nil
 }

@@ -1,0 +1,444 @@
+{
+    "root_group": {
+        "groups": {},
+        "checks": {
+                "invalid_http_status": {
+                    "name": "invalid_http_status",
+                    "path": "::invalid_http_status",
+                    "id": "8edc60285dbce3e0ab08d4a08e857f27",
+                    "passes": 1199,
+                    "fails": 0
+                },
+                "invalid_code": {
+                    "name": "invalid_code",
+                    "path": "::invalid_code",
+                    "id": "b76c7bbcdae4c82b8b02b70a5717b20e",
+                    "passes": 1199,
+                    "fails": 0
+                },
+                "delete_http_success": {
+                    "passes": 5064,
+                    "fails": 0,
+                    "name": "delete_http_success",
+                    "path": "::delete_http_success",
+                    "id": "72d90dbccd57d883464a617cd2605bc7"
+                },
+                "delete_code_success": {
+                    "name": "delete_code_success",
+                    "path": "::delete_code_success",
+                    "id": "4a87a8aa2fe2390aa74b938558fe2969",
+                    "passes": 5064,
+                    "fails": 0
+                },
+                "batch_http_success": {
+                    "fails": 0,
+                    "name": "batch_http_success",
+                    "path": "::batch_http_success",
+                    "id": "b912f021de20510db0ee7f3b7d6d00a3",
+                    "passes": 418
+                },
+                "batch_code_success": {
+                    "name": "batch_code_success",
+                    "path": "::batch_code_success",
+                    "id": "724a84b4a36bd1cbf95e0c14b9654e8e",
+                    "passes": 418,
+                    "fails": 0
+                }
+            },
+        "name": "",
+        "path": "",
+        "id": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "metrics": {
+        "http_req_connecting": {
+            "p(95)": 0,
+            "avg": 0.0004462147359718921,
+            "min": 0,
+            "med": 0,
+            "max": 3.88861,
+            "p(90)": 0
+        },
+        "delete_force_degraded_rate": {
+            "passes": 0,
+            "fails": 6681,
+            "thresholds": {
+                "rate<0.02": false
+            },
+            "value": 0
+        },
+        "iterations": {
+            "count": 6681,
+            "rate": 104.71096981738388
+        },
+        "http_req_blocked": {
+            "avg": 0.00922621199752003,
+            "min": 0.002724,
+            "med": 0.0076714999999999995,
+            "max": 4.113984,
+            "p(90)": 0.011642,
+            "p(95)": 0.013538
+        },
+        "http_req_waiting": {
+            "avg": 12.963589306809922,
+            "min": 0.276234,
+            "med": 6.3041325,
+            "max": 161.359737,
+            "p(90)": 30.615562000000004,
+            "p(95)": 43.2942818
+        },
+        "data_received": {
+            "count": 41904639,
+            "rate": 656769.2545333584
+        },
+        "http_req_duration": {
+            "min": 0.393293,
+            "med": 6.4420345,
+            "max": 166.316301,
+            "p(90)": 30.828500800000004,
+            "p(95)": 43.54101769999996,
+            "avg": 13.111392074351437,
+            "thresholds": {
+                "p(99)<2000": false
+            }
+        },
+        "iteration_duration": {
+            "avg": 775.3386784593631,
+            "min": 52.161,
+            "med": 609.797989,
+            "max": 24442.22005,
+            "p(90)": 739.906128,
+            "p(95)": 3957.754735
+        },
+        "http_req_failed": {
+            "passes": 1319,
+            "fails": 56743,
+            "thresholds": {
+                "rate<0.05": false
+            },
+            "value": 0.022717095518583582
+        },
+        "checks": {
+            "passes": 13362,
+            "fails": 0,
+            "value": 1
+        },
+        "delete_force_batch_latency": {
+            "med": 22.886870000000002,
+            "max": 126.067113,
+            "p(90)": 76.73054330000001,
+            "p(95)": 91.62196044999999,
+            "avg": 35.01223702392343,
+            "min": 9.371125,
+            "thresholds": {
+                "p(95)<700": false
+            }
+        },
+        "vus_max": {
+            "max": 120,
+            "value": 120,
+            "min": 95
+        },
+        "http_req_duration{expected_response:true}": {
+            "avg": 13.269862369384642,
+            "min": 1.801214,
+            "med": 6.586381,
+            "max": 166.316301,
+            "p(90)": 31.088984800000006,
+            "p(95)": 43.83622529999995
+        },
+        "dropped_iterations": {
+            "count": 8022,
+            "rate": 125.72839393429928
+        },
+        "delete_force_single_latency": {
+            "med": 4.182385,
+            "max": 118.305775,
+            "p(90)": 15.378489599999998,
+            "p(95)": 21.14360875,
+            "avg": 7.074249939375989,
+            "min": 1.850047,
+            "thresholds": {
+                "p(95)<500": false
+            }
+        },
+        "http_req_tls_handshaking": {
+            "avg": 0,
+            "min": 0,
+            "med": 0,
+            "max": 0,
+            "p(90)": 0,
+            "p(95)": 0
+        },
+        "vus": {
+            "value": 4,
+            "min": 4,
+            "max": 117
+        },
+        "delete_force_batch_success_rate": {
+            "passes": 418,
+            "fails": 0,
+            "thresholds": {
+                "rate>0.95": false
+            },
+            "value": 1
+        },
+        "http_reqs": {
+            "count": 58062,
+            "rate": 910.0027435319478
+        },
+        "http_req_receiving": {
+            "med": 0.07707800000000001,
+            "max": 44.143262,
+            "p(90)": 0.1234559,
+            "p(95)": 0.14754224999999996,
+            "avg": 0.10686843389824698,
+            "min": 0.020706
+        },
+        "delete_force_single_success_rate": {
+            "passes": 5064,
+            "fails": 0,
+            "thresholds": {
+                "rate>0.97": false
+            },
+            "value": 1
+        },
+        "http_req_sending": {
+            "avg": 0.040934333643346886,
+            "min": 0.008361,
+            "med": 0.0284025,
+            "max": 30.529236,
+            "p(90)": 0.0471748,
+            "p(95)": 0.05796895
+        },
+        "delete_force_invalid_payload_rejected_rate": {
+            "passes": 1199,
+            "fails": 0,
+            "thresholds": {
+                "rate>0.95": false
+            },
+            "value": 1
+        },
+        "data_sent": {
+            "count": 50612791,
+            "rate": 793251.6735181198
+        }
+    },
+    "setup_data": {
+        "dataset": {
+            "seedExtendTemplate": null,
+            "sleepBetween": 0.05,
+            "batchSize": 15,
+            "seedNicknamePrefix": "dforce",
+            "verifyDeletion": true,
+            "maxUsernameLength": 40,
+            "seedLabels": null,
+            "usernamePrefix": "delete-force-user",
+            "cases": [
+                {
+                    "description": "管理员可成功删除现有用户并验证数据一致性与审计记录",
+                    "duration_ms": 416,
+                    "http_status": 200,
+                    "message": "用户强制删除成功",
+                    "name": "delete_existing_user",
+                    "notes": [
+                        "管理员可成功删除现有用户并验证数据一致性与审计记录"
+                    ],
+                    "success": true,
+                    "checks": {
+                        "post_validation": true,
+                        "response": true
+                    },
+                    "code": 100001
+                },
+                {
+                    "duration_ms": 5,
+                    "name": "delete_nonexistent_user",
+                    "code": 100001,
+                    "http_status": 200,
+                    "message": "用户强制删除成功",
+                    "notes": [
+                        "删除不存在的用户应返回404并保持幂等"
+                    ],
+                    "success": true,
+                    "checks": {
+                        "post_validation": true,
+                        "response": true
+                    },
+                    "description": "删除不存在的用户应返回404并保持幂等"
+                },
+                {
+                    "http_status": 400,
+                    "message": "[code: 110004] 用户名不合法:名称部分必须由字母、数字、'-'、'_'或'.'组成，且首尾必须为字母或数字（例如：'MyName'，或'my.name'，或'123-abc'，用于验证的正则表达式：'([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]'）",
+                    "name": "invalid_username",
+                    "success": true,
+                    "code": 110004,
+                    "description": "非法用户名应触发参数校验失败",
+                    "notes": [
+                        "非法用户名应触发参数校验失败"
+                    ],
+                    "checks": {
+                        "response": true
+                    },
+                    "duration_ms": 1
+                },
+                {
+                    "description": "批量删除成功路径",
+                    "http_status": 200,
+                    "message": "用户删除成功",
+                    "name": "batch_delete_success",
+                    "notes": [
+                        "批量删除应全部删除目标账号"
+                    ],
+                    "checks": {
+                        "users_removed": true,
+                        "deleted_set_match": true,
+                        "response": true
+                    },
+                    "code": 100001,
+                    "duration_ms": 1688,
+                    "success": true
+                },
+                {
+                    "checks": {
+                        "limit_enforced": true
+                    },
+                    "duration_ms": 1,
+                    "http_status": 400,
+                    "success": true,
+                    "code": 110101,
+                    "description": "超出批量删除数量限制应直接拒绝",
+                    "message": "[code: 110101] 一次最多删除100个用户",
+                    "name": "batch_delete_over_limit",
+                    "notes": [
+                        "验证最大批量删除限制"
+                    ]
+                },
+                {
+                    "checks": {
+                        "invalid_parameter": true
+                    },
+                    "code": 110004,
+                    "http_status": 400,
+                    "message": "[code: 110004] 请通过以下方式传入用户名列表：\n1. ?names=user1&names=user2（推荐）\n2. ?names=user1,user2,user3",
+                    "notes": [
+                        "空数据集删除应提示错误"
+                    ],
+                    "description": "缺少用户名参数时返回参数错误",
+                    "duration_ms": 1,
+                    "name": "batch_delete_missing_names",
+                    "success": true
+                },
+                {
+                    "checks": {
+                        "idempotent": true
+                    },
+                    "description": "并发删除同一用户应保持幂等",
+                    "duration_ms": 632,
+                    "name": "concurrent_delete_same_user",
+                    "notes": [
+                        "验证并发删除冲突处理"
+                    ],
+                    "success": true
+                },
+                {
+                    "http_status": 403,
+                    "message": "[code: 100207] 非管理员无权限访问此接口",
+                    "notes": [
+                        "权限控制应阻止越权删除"
+                    ],
+                    "name": "permission_enforced",
+                    "success": true,
+                    "checks": {
+                        "permission_denied": true,
+                        "victim_intact": true
+                    },
+                    "code": 100207,
+                    "description": "普通用户不允许执行物理删除",
+                    "duration_ms": 863
+                },
+                {
+                    "message": "用户强制删除成功",
+                    "name": "token_revocation_after_delete",
+                    "success": true,
+                    "description": "删除后会话与登录应立即失效",
+                    "notes": [
+                        "验证事务回滚与关联数据清理"
+                    ],
+                    "checks": {
+                        "login_blocked": true,
+                        "response": true,
+                        "token_revoked": true,
+                        "user_removed": true
+                    },
+                    "code": 100001,
+                    "duration_ms": 850,
+                    "http_status": 200
+                },
+                {
+                    "checks": {
+                        "other_user_intact": true,
+                        "response": true,
+                        "target_removed": true
+                    },
+                    "code": 100001,
+                    "description": "只删除目标用户不影响其他账号",
+                    "duration_ms": 1472,
+                    "http_status": 200,
+                    "message": "用户强制删除成功",
+                    "success": true,
+                    "name": "precise_delete_scope",
+                    "notes": [
+                        "验证精确删除范围"
+                    ]
+                }
+            ],
+            "seedExtras": null,
+            "userReadyTimeoutMs": 30000,
+            "basePassword": "Test@1234",
+            "deleteVerifyTimeoutMs": 20000,
+            "emailDomain": "example.com",
+            "requestTimeout": "60s",
+            "respawnOnFailure": true
+        },
+        "scenarioMeta": {
+            "scenarioSingleInvalidPayload": {
+                "duration": "1m",
+                "exec": "scenarioSingleInvalidPayload",
+                "executor": "constant-arrival-rate",
+                "maxVUs": 6,
+                "preAllocatedVUs": 2,
+                "rate": 20,
+                "timeUnit": "1s"
+            },
+            "scenarioSingleParallel": {
+                "duration": "1m",
+                "exec": "scenarioSingleParallel",
+                "executor": "constant-arrival-rate",
+                "maxVUs": 64,
+                "preAllocatedVUs": 32,
+                "rate": 160,
+                "timeUnit": "1s"
+            },
+            "scenarioBatchParallel": {
+                "timeUnit": "1s",
+                "duration": "1m",
+                "exec": "scenarioBatchParallel",
+                "executor": "constant-arrival-rate",
+                "maxVUs": 36,
+                "preAllocatedVUs": 12,
+                "rate": 40
+            },
+            "scenarioSingleBaseline": {
+                "exec": "scenarioSingleBaseline",
+                "executor": "constant-arrival-rate",
+                "maxVUs": 16,
+                "preAllocatedVUs": 4,
+                "rate": 25,
+                "timeUnit": "1s",
+                "duration": "1m"
+            }
+        },
+        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQiOiJodHRwczovL2dpdGh1Yi5jb20vbWF4aWFvbHUxOTgxL2NyZXRlbSIsImV4cCI6MTc2MjQxNTE0MSwiaWF0IjoxNzYyNDExNTQxLCJpc2FkbWluIjoiMSIsImlzcyI6Imh0dHBzOi8vZ2l0aHViLmNvbS9tYXhpYW9sdTE5ODEvY3JldGVtIiwianRpIjoiand0X2x5MG1uajk5d3BuMHZ3Iiwib3JpZ19pYXQiOjE3NjI0MTE1NDEsInJvbGUiOiJhZG1pbiIsInNlc3Npb25faWQiOiJzZXNzX2U2ZjMxZjBiYmQ5NjI5ZmMiLCJzdWIiOiJhZG1pbiIsInR5cGUiOiJhY2Nlc3MiLCJ1c2VyX2lkIjoiMyIsInVzZXJfc3RhdHVzIjoxLCJ1c2VybmFtZSI6ImFkbWluIn0.FPsMyLnA9yoA5JRXQesUjEbREBUXFvKwhOB6adtZWS8",
+        "baseUrl": "http://192.168.10.8:8088"
+    }
+}

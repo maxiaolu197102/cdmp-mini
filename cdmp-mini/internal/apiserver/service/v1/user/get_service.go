@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/options"
+	storectx "github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/store"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/code"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/metrics"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/trace"
@@ -42,6 +43,10 @@ func (u *UserService) Get(ctx context.Context, username string, opts metav1.GetO
 	spanDetails := map[string]interface{}{
 		"target_user": username,
 		"cache_key":   cacheKey,
+	}
+
+	if forceCacheRefreshFromContext(ctx) {
+		ctx = storectx.WithForcePrimary(ctx)
 	}
 
 	if blocked, blkErr := u.isUserBlacklisted(ctx, username); blkErr != nil {

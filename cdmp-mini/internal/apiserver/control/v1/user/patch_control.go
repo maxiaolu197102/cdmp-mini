@@ -119,7 +119,7 @@ func (u *UserController) handleTargetedPatch(ctx *gin.Context, opts targetedPatc
 	outcomeStatus := "success"
 	outcomeCode := strconv.Itoa(code.ErrSuccess)
 	outcomeMessage := ""
-	outcomeHTTP := http.StatusAccepted
+	outcomeHTTP := http.StatusOK
 	auditLog := func(outcome, message string) {
 		event := audit.BuildEventFromRequest(ctx.Request)
 		event.Action = opts.AuditAction
@@ -265,7 +265,7 @@ func (u *UserController) handleTargetedPatch(ctx *gin.Context, opts targetedPatc
 		if payload.ExpectedVersion != nil {
 			successData["expectedVersion"] = *payload.ExpectedVersion
 		}
-		outcomeMessage = "accepted"
+		outcomeMessage = "success"
 		awaitTimeout := 30 * time.Second
 		if u.options != nil && u.options.ServerRunOptions != nil && u.options.ServerRunOptions.CtxTimeout > 0 {
 			awaitTimeout = u.options.ServerRunOptions.CtxTimeout
@@ -388,7 +388,7 @@ func (u *UserController) PatchCollection(ctx *gin.Context) {
 	outcomeStatus := "success"
 	outcomeCode := strconv.Itoa(code.ErrSuccess)
 	outcomeMessage := ""
-	outcomeHTTP := http.StatusAccepted
+	outcomeHTTP := http.StatusOK
 	auditLog := func(outcome, message string) {
 		event := audit.BuildEventFromRequest(ctx.Request)
 		event.Action = "user.patch_batch"
@@ -485,8 +485,8 @@ func (u *UserController) PatchCollection(ctx *gin.Context) {
 			"updated_fields": patchFieldSummary(req.Updates),
 			"code":           code.ErrSuccess,
 		}
-		outcomeHTTP = http.StatusAccepted
-		outcomeMessage = "accepted"
+		outcomeHTTP = http.StatusOK
+		outcomeMessage = "success"
 		awaitTimeout := 30 * time.Second
 		if u.options != nil && u.options.ServerRunOptions != nil && u.options.ServerRunOptions.CtxTimeout > 0 {
 			awaitTimeout = u.options.ServerRunOptions.CtxTimeout

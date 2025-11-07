@@ -116,42 +116,43 @@ type KafkaOptions struct {
 // NewKafkaOptions 创建带有默认值的Kafka配置
 func NewKafkaOptions() *KafkaOptions {
 	return &KafkaOptions{
-		Brokers:                  []string{"192.168.10.8:9092", "192.168.10.8:9093", "192.168.10.8:9094"},
-		Topic:                    "default-topic",
-		ConsumerGroup:            "default-consumer-group",
-		RequiredAcks:             1, // leader确认
-		BatchSize:                80,
-		BatchTimeout:             60 * time.Millisecond,
-		MaxRetries:               4,
-		MinBytes:                 60 * 1024,        // 10KB
-		MaxBytes:                 10 * 1024 * 1024, // 10MB
-		WorkerCount:              64,
-		FetcherCount:             4,
-		RetryWorkerCount:         3,
-		EnableMetricsRefresh:     true,
-		MetricsRefreshInterval:   30 * time.Second,
-		EnableSSL:                false,
-		SSLCertFile:              "",
-		BaseRetryDelay:           5 * time.Second,
-		MaxRetryDelay:            2 * time.Minute,
-		AutoCreateTopic:          true,
-		DesiredPartitions:        64, // 默认按照现有 64 个分区并发消费
-		AutoExpandPartitions:     true,
-		ProducerMaxInFlight:      40000,
-		LagScaleThreshold:        10000,            // 默认滞后阈值
-		LagCheckInterval:         30 * time.Second, // 默认滞后检查间隔
-		MaxDBBatchSize:           230,              // 默认批量写DB大小
-		BatchChannelCapacity:     1024,
-		MinDBBatchSize:           120,
-		MinBatchTimeout:          40 * time.Millisecond,
-		MaxBatchTimeout:          200 * time.Millisecond,
-		InstanceID:               "", // 新增字段默认值为空，建议启动时赋值
-		StartingRate:             10000,
-		MinRate:                  10000,
-		MaxRate:                  20000,
-		AdjustPeriod:             2 * time.Second,
-		FlushFrequency:           200 * time.Millisecond,
-		FlushMaxMessages:         1024,
+		Brokers:                []string{"192.168.10.8:9092", "192.168.10.8:9093", "192.168.10.8:9094"},
+		Topic:                  "default-topic",
+		ConsumerGroup:          "default-consumer-group",
+		RequiredAcks:           1, // leader确认
+		BatchSize:              80,
+		BatchTimeout:           60 * time.Millisecond,
+		MaxRetries:             4,
+		MinBytes:               60 * 1024,        // 10KB
+		MaxBytes:               10 * 1024 * 1024, // 10MB
+		WorkerCount:            64,
+		FetcherCount:           4,
+		RetryWorkerCount:       3,
+		EnableMetricsRefresh:   true,
+		MetricsRefreshInterval: 30 * time.Second,
+		EnableSSL:              false,
+		SSLCertFile:            "",
+		BaseRetryDelay:         5 * time.Second,
+		MaxRetryDelay:          2 * time.Minute,
+		AutoCreateTopic:        true,
+		DesiredPartitions:      64, // 默认按照现有 64 个分区并发消费
+		AutoExpandPartitions:   true,
+		ProducerMaxInFlight:    40000,
+		LagScaleThreshold:      10000,            // 默认滞后阈值
+		LagCheckInterval:       30 * time.Second, // 默认滞后检查间隔
+		MaxDBBatchSize:         230,              // 默认批量写DB大小
+		BatchChannelCapacity:   1024,
+		MinDBBatchSize:         120,
+		MinBatchTimeout:        40 * time.Millisecond,
+		MaxBatchTimeout:        200 * time.Millisecond,
+		InstanceID:             "", // 新增字段默认值为空，建议启动时赋值
+		StartingRate:           10000,
+		MinRate:                10000,
+		MaxRate:                20000,
+		AdjustPeriod:           2 * time.Second,
+		// 默认关闭基于时间的 flush，仅依靠批量阈值触发，避免 200ms 定时器带来的额外 ACK 延迟
+		FlushFrequency:           0,
+		FlushMaxMessages:         256,
 		ProducerCompression:      "snappy",
 		ProducerReturnSuccesses:  true,
 		ProducerReturnErrors:     true,

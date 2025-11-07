@@ -19,7 +19,6 @@
       "askForPassword": true
     }
   ],
-  
   // =============================================
   // 环境变量配置 - 用于测试和调试
   // =============================================
@@ -38,7 +37,6 @@
     "SERVER_BIND_ADDRESS": "0.0.0.0",
     "DEBUG_MODE": "true"
   },
-  
   // =============================================
   // 代码折叠配置
   // =============================================
@@ -47,7 +45,6 @@
   "editor.foldingImportsByDefault": true,
   "editor.foldingStrategy": "auto",
   "editor.showFoldingControls": "always",
-  
   // 语言特定的折叠配置
   "[go]": {
     "editor.foldingStrategy": "indentation",
@@ -66,7 +63,6 @@
   "[java]": {
     "editor.foldingImportsByDefault": true
   },
-  
   // =============================================
   // 通用开发配置
   // =============================================
@@ -88,17 +84,17 @@
   "editor.matchBrackets": "always",
   "editor.bracketPairColorization.enabled": true,
   "editor.codeLens": true,
-  
   // =============================================
   // Go 语言特定配置
   // =============================================
   "go.useLanguageServer": true,
   "go.lintOnSave": "file",
   "go.formatTool": "gofmt",
-  "go.testFlags": ["-v"],
+  "go.testFlags": [
+    "-v"
+  ],
   "go.coverOnSave": false,
   "go.autocompleteUnimportedPackages": true,
-  
   // =============================================
   // 终端配置
   // =============================================
@@ -108,7 +104,6 @@
   "terminal.integrated.confirmOnKill": "never",
   "terminal.integrated.allowChords": false,
   "terminal.integrated.sendKeybindingsToShell": false,
-  
   // =============================================
   // 任务配置
   // =============================================
@@ -117,7 +112,6 @@
   "task.quickOpen.skip": false,
   "task.saveBeforeRun": "always",
   "task.allowAutomaticTasks": "on",
-  
   // =============================================
   // 扩展特定配置
   // =============================================
@@ -134,5 +128,8 @@
     "background": "#ffffff",
     "icon": "checklist",
     "iconColour": "#ff0000"
-  }
+  },
+  // 在 settings.json 中添加
+  "github.copilot.chat.terminal.executeCommand": "always",
+  "github.copilot.chat.terminal.selectionExecuteCommand": "always"
 }

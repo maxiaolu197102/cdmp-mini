@@ -1,0 +1,708 @@
+运行 k6: k6 run --summary-export /home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/output/history/delete_force_k6_20251106-203403.json /home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js
+
+         /\      Grafana   /‾‾/  
+    /\  /  \     |\  __   /  /   
+   /  \/    \    | |/ /  /   ‾‾\ 
+  /          \   |   (  |  (‾)  |
+ / __________ \  |_|\_\  \_____/ 
+
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+     execution: local
+        script: /home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js
+        output: -
+
+     scenarios: (100.00%) 4 scenarios, 122 max VUs, 1m30s max duration (incl. graceful stop):
+              * delete_force_batch_parallel: 40.00 iterations/s for 1m0s (maxVUs: 12-36, exec: scenarioBatchParallel, gracefulStop: 30s)
+              * delete_force_single_baseline: 25.00 iterations/s for 1m0s (maxVUs: 4-16, exec: scenarioSingleBaseline, gracefulStop: 30s)
+              * delete_force_single_invalid_payload: 20.00 iterations/s for 1m0s (maxVUs: 2-6, exec: scenarioSingleInvalidPayload, gracefulStop: 30s)
+              * delete_force_single_parallel: 160.00 iterations/s for 1m0s (maxVUs: 32-64, exec: scenarioSingleParallel, gracefulStop: 30s)
+
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=warning msg="Insufficient VUs, reached 64 active VUs and cannot initialize more" executor=constant-arrival-rate scenario=delete_force_single_parallel
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:03+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:04+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:04+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:04+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+
+running (0m01.0s), 104/107 VUs, 20 complete and 0 interrupted iterations
+delete_force_batch_parallel      [   2% ] 24/25 VUs  0m00.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [   2% ] 13/14 VUs  0m00.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [   2% ] 3/4 VUs    0m00.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [   2% ] 64/64 VUs  0m00.9s/1m0s  160.00 iters/s
+time="2025-11-06T20:34:04+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:04+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:04+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:04+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:04+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:04+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:04+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:04+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:04+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:04+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:04+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:04+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:04+08:00" level=warning msg="Insufficient VUs, reached 16 active VUs and cannot initialize more" executor=constant-arrival-rate scenario=delete_force_single_baseline
+time="2025-11-06T20:34:04+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:04+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+time="2025-11-06T20:34:04+08:00" level=warning msg="Insufficient VUs, reached 36 active VUs and cannot initialize more" executor=constant-arrival-rate scenario=delete_force_batch_parallel
+
+running (0m02.0s), 107/121 VUs, 124 complete and 0 interrupted iterations
+delete_force_batch_parallel      [   3% ] 36/36 VUs  0m01.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [   3% ] 11/16 VUs  0m01.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [   3% ] 1/5 VUs    0m01.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [   3% ] 59/64 VUs  0m01.9s/1m0s  160.00 iters/s
+
+running (0m03.0s), 117/121 VUs, 219 complete and 0 interrupted iterations
+delete_force_batch_parallel      [   5% ] 36/36 VUs  0m02.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [   5% ] 15/16 VUs  0m02.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [   5% ] 2/5 VUs    0m02.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [   5% ] 64/64 VUs  0m02.9s/1m0s  160.00 iters/s
+
+running (0m04.0s), 112/121 VUs, 316 complete and 0 interrupted iterations
+delete_force_batch_parallel      [   7% ] 36/36 VUs  0m03.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [   7% ] 14/16 VUs  0m03.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [   7% ] 1/5 VUs    0m03.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [   7% ] 61/64 VUs  0m03.9s/1m0s  160.00 iters/s
+time="2025-11-06T20:34:08+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+
+running (0m05.0s), 122/122 VUs, 392 complete and 0 interrupted iterations
+delete_force_batch_parallel      [   8% ] 36/36 VUs  0m04.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [   8% ] 16/16 VUs  0m04.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [   8% ] 6/6 VUs    0m04.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [   8% ] 64/64 VUs  0m04.9s/1m0s  160.00 iters/s
+time="2025-11-06T20:34:08+08:00" level=warning msg="Insufficient VUs, reached 6 active VUs and cannot initialize more" executor=constant-arrival-rate scenario=delete_force_single_invalid_payload
+
+running (0m06.0s), 122/122 VUs, 392 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  10% ] 36/36 VUs  0m05.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  10% ] 16/16 VUs  0m05.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  10% ] 6/6 VUs    0m05.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  10% ] 64/64 VUs  0m05.9s/1m0s  160.00 iters/s
+
+running (0m07.0s), 122/122 VUs, 392 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  12% ] 36/36 VUs  0m06.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  12% ] 16/16 VUs  0m06.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  12% ] 6/6 VUs    0m06.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  12% ] 64/64 VUs  0m06.9s/1m0s  160.00 iters/s
+
+running (0m08.0s), 122/122 VUs, 392 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  13% ] 36/36 VUs  0m07.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  13% ] 16/16 VUs  0m07.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  13% ] 6/6 VUs    0m07.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  13% ] 64/64 VUs  0m07.9s/1m0s  160.00 iters/s
+
+running (0m09.0s), 122/122 VUs, 392 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  15% ] 36/36 VUs  0m08.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  15% ] 16/16 VUs  0m08.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  15% ] 6/6 VUs    0m08.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  15% ] 64/64 VUs  0m08.9s/1m0s  160.00 iters/s
+
+running (0m10.0s), 114/122 VUs, 506 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  17% ] 36/36 VUs  0m09.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  17% ] 14/16 VUs  0m09.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  17% ] 1/6 VUs    0m09.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  17% ] 63/64 VUs  0m09.9s/1m0s  160.00 iters/s
+
+running (0m11.0s), 116/122 VUs, 595 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  18% ] 36/36 VUs  0m10.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  18% ] 14/16 VUs  0m10.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  18% ] 2/6 VUs    0m10.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  18% ] 64/64 VUs  0m10.9s/1m0s  160.00 iters/s
+
+running (0m12.0s), 117/122 VUs, 690 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  20% ] 36/36 VUs  0m11.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  20% ] 16/16 VUs  0m11.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  20% ] 1/6 VUs    0m11.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  20% ] 64/64 VUs  0m11.9s/1m0s  160.00 iters/s
+
+running (0m13.0s), 116/122 VUs, 782 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  22% ] 36/36 VUs  0m12.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  22% ] 15/16 VUs  0m12.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  22% ] 1/6 VUs    0m12.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  22% ] 64/64 VUs  0m12.9s/1m0s  160.00 iters/s
+
+running (0m14.0s), 116/122 VUs, 873 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  23% ] 36/36 VUs  0m13.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  23% ] 15/16 VUs  0m13.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  23% ] 1/6 VUs    0m13.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  23% ] 64/64 VUs  0m13.9s/1m0s  160.00 iters/s
+
+running (0m15.0s), 122/122 VUs, 942 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  25% ] 36/36 VUs  0m14.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  25% ] 16/16 VUs  0m14.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  25% ] 6/6 VUs    0m14.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  25% ] 64/64 VUs  0m14.9s/1m0s  160.00 iters/s
+
+running (0m16.0s), 122/122 VUs, 942 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  27% ] 36/36 VUs  0m15.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  27% ] 16/16 VUs  0m15.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  27% ] 6/6 VUs    0m15.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  27% ] 64/64 VUs  0m15.9s/1m0s  160.00 iters/s
+
+running (0m17.0s), 122/122 VUs, 942 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  28% ] 36/36 VUs  0m16.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  28% ] 16/16 VUs  0m16.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  28% ] 6/6 VUs    0m16.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  28% ] 64/64 VUs  0m16.9s/1m0s  160.00 iters/s
+
+running (0m18.0s), 122/122 VUs, 942 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  30% ] 36/36 VUs  0m17.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  30% ] 16/16 VUs  0m17.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  30% ] 6/6 VUs    0m17.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  30% ] 64/64 VUs  0m17.9s/1m0s  160.00 iters/s
+
+running (0m19.0s), 122/122 VUs, 942 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  32% ] 36/36 VUs  0m18.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  32% ] 16/16 VUs  0m18.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  32% ] 6/6 VUs    0m18.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  32% ] 64/64 VUs  0m18.9s/1m0s  160.00 iters/s
+
+running (0m20.0s), 113/122 VUs, 1011 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  33% ] 36/36 VUs  0m19.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  33% ] 12/16 VUs  0m19.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  33% ] 1/6 VUs    0m19.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  33% ] 64/64 VUs  0m19.9s/1m0s  160.00 iters/s
+
+running (0m21.0s), 116/122 VUs, 1109 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  35% ] 35/36 VUs  0m20.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  35% ] 16/16 VUs  0m20.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  35% ] 1/6 VUs    0m20.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  35% ] 64/64 VUs  0m20.9s/1m0s  160.00 iters/s
+
+running (0m22.0s), 119/122 VUs, 1203 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  37% ] 36/36 VUs  0m21.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  37% ] 16/16 VUs  0m21.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  37% ] 3/6 VUs    0m21.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  37% ] 64/64 VUs  0m21.9s/1m0s  160.00 iters/s
+
+running (0m23.0s), 115/122 VUs, 1280 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  38% ] 36/36 VUs  0m22.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  38% ] 14/16 VUs  0m22.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  38% ] 1/6 VUs    0m22.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  38% ] 64/64 VUs  0m22.9s/1m0s  160.00 iters/s
+
+running (0m24.0s), 117/122 VUs, 1383 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  40% ] 36/36 VUs  0m23.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  40% ] 16/16 VUs  0m23.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  40% ] 1/6 VUs    0m23.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  40% ] 64/64 VUs  0m23.9s/1m0s  160.00 iters/s
+
+running (0m25.0s), 122/122 VUs, 1465 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  42% ] 36/36 VUs  0m24.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  42% ] 16/16 VUs  0m24.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  42% ] 6/6 VUs    0m24.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  42% ] 64/64 VUs  0m24.9s/1m0s  160.00 iters/s
+
+running (0m26.0s), 122/122 VUs, 1465 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  43% ] 36/36 VUs  0m25.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  43% ] 16/16 VUs  0m25.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  43% ] 6/6 VUs    0m25.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  43% ] 64/64 VUs  0m25.9s/1m0s  160.00 iters/s
+
+running (0m27.0s), 122/122 VUs, 1465 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  45% ] 36/36 VUs  0m26.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  45% ] 16/16 VUs  0m26.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  45% ] 6/6 VUs    0m26.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  45% ] 64/64 VUs  0m26.9s/1m0s  160.00 iters/s
+
+running (0m28.0s), 122/122 VUs, 1465 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  47% ] 36/36 VUs  0m27.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  47% ] 16/16 VUs  0m27.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  47% ] 6/6 VUs    0m27.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  47% ] 64/64 VUs  0m27.9s/1m0s  160.00 iters/s
+
+running (0m29.0s), 122/122 VUs, 1465 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  48% ] 36/36 VUs  0m28.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  48% ] 16/16 VUs  0m28.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  48% ] 6/6 VUs    0m28.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  48% ] 64/64 VUs  0m28.9s/1m0s  160.00 iters/s
+
+running (0m30.0s), 108/122 VUs, 1571 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  50% ] 36/36 VUs  0m29.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  50% ] 16/16 VUs  0m29.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  50% ] 1/6 VUs    0m29.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  50% ] 55/64 VUs  0m29.9s/1m0s  160.00 iters/s
+
+running (0m31.0s), 115/122 VUs, 1656 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  52% ] 36/36 VUs  0m30.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  52% ] 16/16 VUs  0m30.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  52% ] 1/6 VUs    0m30.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  52% ] 62/64 VUs  0m30.9s/1m0s  160.00 iters/s
+
+running (0m32.0s), 114/122 VUs, 1766 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  53% ] 35/36 VUs  0m31.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  53% ] 14/16 VUs  0m31.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  53% ] 1/6 VUs    0m31.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  53% ] 64/64 VUs  0m31.9s/1m0s  160.00 iters/s
+
+running (0m33.0s), 116/122 VUs, 1869 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  55% ] 36/36 VUs  0m32.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  55% ] 15/16 VUs  0m32.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  55% ] 1/6 VUs    0m32.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  55% ] 64/64 VUs  0m32.9s/1m0s  160.00 iters/s
+
+running (0m34.0s), 118/122 VUs, 1969 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  57% ] 36/36 VUs  0m33.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  57% ] 15/16 VUs  0m33.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  57% ] 3/6 VUs    0m33.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  57% ] 64/64 VUs  0m33.9s/1m0s  160.00 iters/s
+
+running (0m35.0s), 122/122 VUs, 2015 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  58% ] 36/36 VUs  0m34.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  58% ] 16/16 VUs  0m34.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  58% ] 6/6 VUs    0m34.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  58% ] 64/64 VUs  0m34.9s/1m0s  160.00 iters/s
+
+running (0m36.0s), 122/122 VUs, 2015 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  60% ] 36/36 VUs  0m35.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  60% ] 16/16 VUs  0m35.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  60% ] 6/6 VUs    0m35.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  60% ] 64/64 VUs  0m35.9s/1m0s  160.00 iters/s
+
+running (0m37.0s), 122/122 VUs, 2015 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  62% ] 36/36 VUs  0m36.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  62% ] 16/16 VUs  0m36.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  62% ] 6/6 VUs    0m36.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  62% ] 64/64 VUs  0m36.9s/1m0s  160.00 iters/s
+
+running (0m38.0s), 122/122 VUs, 2015 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  63% ] 36/36 VUs  0m37.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  63% ] 16/16 VUs  0m37.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  63% ] 6/6 VUs    0m37.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  63% ] 64/64 VUs  0m37.9s/1m0s  160.00 iters/s
+
+running (0m39.0s), 122/122 VUs, 2015 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  65% ] 36/36 VUs  0m38.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  65% ] 16/16 VUs  0m38.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  65% ] 6/6 VUs    0m38.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  65% ] 64/64 VUs  0m38.9s/1m0s  160.00 iters/s
+
+running (0m40.0s), 117/122 VUs, 2088 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  67% ] 36/36 VUs  0m39.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  67% ] 16/16 VUs  0m39.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  67% ] 1/6 VUs    0m39.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  67% ] 64/64 VUs  0m39.9s/1m0s  160.00 iters/s
+
+running (0m41.0s), 116/122 VUs, 2195 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  68% ] 36/36 VUs  0m40.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  68% ] 15/16 VUs  0m40.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  68% ] 1/6 VUs    0m40.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  68% ] 64/64 VUs  0m40.9s/1m0s  160.00 iters/s
+
+running (0m42.0s), 115/122 VUs, 2299 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  70% ] 36/36 VUs  0m41.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  70% ] 15/16 VUs  0m41.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  70% ] 1/6 VUs    0m41.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  70% ] 63/64 VUs  0m41.9s/1m0s  160.00 iters/s
+
+running (0m43.0s), 115/122 VUs, 2403 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  72% ] 36/36 VUs  0m42.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  72% ] 15/16 VUs  0m42.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  72% ] 1/6 VUs    0m42.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  72% ] 63/64 VUs  0m42.9s/1m0s  160.00 iters/s
+
+running (0m44.0s), 117/122 VUs, 2517 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  73% ] 36/36 VUs  0m43.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  73% ] 16/16 VUs  0m43.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  73% ] 1/6 VUs    0m43.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  73% ] 64/64 VUs  0m43.9s/1m0s  160.00 iters/s
+
+running (0m45.0s), 122/122 VUs, 2592 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  75% ] 36/36 VUs  0m44.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  75% ] 16/16 VUs  0m44.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  75% ] 6/6 VUs    0m44.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  75% ] 64/64 VUs  0m44.9s/1m0s  160.00 iters/s
+
+running (0m46.0s), 122/122 VUs, 2592 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  77% ] 36/36 VUs  0m45.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  77% ] 16/16 VUs  0m45.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  77% ] 6/6 VUs    0m45.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  77% ] 64/64 VUs  0m45.9s/1m0s  160.00 iters/s
+
+running (0m47.0s), 122/122 VUs, 2592 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  78% ] 36/36 VUs  0m46.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  78% ] 16/16 VUs  0m46.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  78% ] 6/6 VUs    0m46.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  78% ] 64/64 VUs  0m46.9s/1m0s  160.00 iters/s
+
+running (0m48.0s), 122/122 VUs, 2592 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  80% ] 36/36 VUs  0m47.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  80% ] 16/16 VUs  0m47.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  80% ] 6/6 VUs    0m47.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  80% ] 64/64 VUs  0m47.9s/1m0s  160.00 iters/s
+
+running (0m49.0s), 122/122 VUs, 2592 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  82% ] 36/36 VUs  0m48.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  82% ] 16/16 VUs  0m48.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  82% ] 6/6 VUs    0m48.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  82% ] 64/64 VUs  0m48.9s/1m0s  160.00 iters/s
+
+running (0m50.0s), 117/122 VUs, 2670 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  83% ] 36/36 VUs  0m49.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  83% ] 15/16 VUs  0m49.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  83% ] 2/6 VUs    0m49.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  83% ] 64/64 VUs  0m49.9s/1m0s  160.00 iters/s
+
+running (0m51.0s), 114/122 VUs, 2775 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  85% ] 36/36 VUs  0m50.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  85% ] 14/16 VUs  0m50.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  85% ] 1/6 VUs    0m50.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  85% ] 63/64 VUs  0m50.9s/1m0s  160.00 iters/s
+
+running (0m52.0s), 116/122 VUs, 2888 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  87% ] 36/36 VUs  0m51.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  87% ] 15/16 VUs  0m51.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  87% ] 1/6 VUs    0m51.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  87% ] 64/64 VUs  0m51.9s/1m0s  160.00 iters/s
+
+running (0m53.0s), 115/122 VUs, 2996 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  88% ] 36/36 VUs  0m52.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  88% ] 15/16 VUs  0m52.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  88% ] 1/6 VUs    0m52.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  88% ] 63/64 VUs  0m52.9s/1m0s  160.00 iters/s
+
+running (0m54.0s), 117/122 VUs, 3080 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  90% ] 36/36 VUs  0m53.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  90% ] 16/16 VUs  0m53.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  90% ] 1/6 VUs    0m53.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  90% ] 64/64 VUs  0m53.9s/1m0s  160.00 iters/s
+
+running (0m55.0s), 122/122 VUs, 3140 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  92% ] 36/36 VUs  0m54.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  92% ] 16/16 VUs  0m54.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  92% ] 6/6 VUs    0m54.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  92% ] 64/64 VUs  0m54.9s/1m0s  160.00 iters/s
+
+running (0m56.0s), 122/122 VUs, 3140 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  93% ] 36/36 VUs  0m55.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  93% ] 16/16 VUs  0m55.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  93% ] 6/6 VUs    0m55.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  93% ] 64/64 VUs  0m55.9s/1m0s  160.00 iters/s
+
+running (0m57.0s), 122/122 VUs, 3140 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  95% ] 36/36 VUs  0m56.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  95% ] 16/16 VUs  0m56.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  95% ] 6/6 VUs    0m56.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  95% ] 64/64 VUs  0m56.9s/1m0s  160.00 iters/s
+
+running (0m58.0s), 122/122 VUs, 3140 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  97% ] 36/36 VUs  0m57.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  97% ] 16/16 VUs  0m57.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  97% ] 6/6 VUs    0m57.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  97% ] 64/64 VUs  0m57.9s/1m0s  160.00 iters/s
+
+running (0m59.0s), 122/122 VUs, 3140 complete and 0 interrupted iterations
+delete_force_batch_parallel      [  98% ] 36/36 VUs  0m58.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [  98% ] 16/16 VUs  0m58.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [  98% ] 6/6 VUs    0m58.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [  98% ] 64/64 VUs  0m58.9s/1m0s  160.00 iters/s
+
+running (1m00.0s), 106/122 VUs, 3202 complete and 0 interrupted iterations
+delete_force_batch_parallel      [ 100% ] 35/36 VUs  0m59.9s/1m0s  40.00 iters/s
+delete_force_single_baseline     [ 100% ] 12/16 VUs  0m59.9s/1m0s  25.00 iters/s
+delete_force_single_invalid...   [ 100% ] 1/6 VUs    0m59.9s/1m0s  20.00 iters/s
+delete_force_single_parallel     [ 100% ] 58/64 VUs  0m59.9s/1m0s  160.00 iters/s
+
+running (1m00.1s), 108/122 VUs, 3211 complete and 0 interrupted iterations
+delete_force_batch_parallel    ↓ [ 100% ] 36/36 VUs  1m0s  40.00 iters/s
+delete_force_single_baseline   ↓ [ 100% ] 14/16 VUs  1m0s  25.00 iters/s
+delete_force_single_invalid... ↓ [ 100% ] 2/6 VUs    1m0s  20.00 iters/s
+delete_force_single_parallel   ↓ [ 100% ] 64/64 VUs  1m0s  160.00 iters/s
+
+running (1m00.4s), 087/122 VUs, 3232 complete and 0 interrupted iterations
+delete_force_batch_parallel    ↓ [ 100% ] 36/36 VUs  1m0s  40.00 iters/s
+delete_force_single_baseline   ↓ [ 100% ] 14/16 VUs  1m0s  25.00 iters/s
+delete_force_single_invalid... ✓ [ 100% ] 0/6 VUs    1m0s  20.00 iters/s
+delete_force_single_parallel   ↓ [ 100% ] 64/64 VUs  1m0s  160.00 iters/s
+
+running (1m01.0s), 059/122 VUs, 3260 complete and 0 interrupted iterations
+delete_force_batch_parallel    ↓ [ 100% ] 36/36 VUs  1m0s  40.00 iters/s
+delete_force_single_baseline   ↓ [ 100% ] 14/16 VUs  1m0s  25.00 iters/s
+delete_force_single_invalid... ✓ [ 100% ] 0/6 VUs    1m0s  20.00 iters/s
+delete_force_single_parallel   ↓ [ 100% ] 64/64 VUs  1m0s  160.00 iters/s
+
+running (1m02.0s), 055/122 VUs, 3264 complete and 0 interrupted iterations
+delete_force_batch_parallel    ↓ [ 100% ] 36/36 VUs  1m0s  40.00 iters/s
+delete_force_single_baseline   ↓ [ 100% ] 14/16 VUs  1m0s  25.00 iters/s
+delete_force_single_invalid... ✓ [ 100% ] 0/6 VUs    1m0s  20.00 iters/s
+delete_force_single_parallel   ↓ [ 100% ] 64/64 VUs  1m0s  160.00 iters/s
+
+running (1m03.0s), 051/122 VUs, 3268 complete and 0 interrupted iterations
+delete_force_batch_parallel    ↓ [ 100% ] 36/36 VUs  1m0s  40.00 iters/s
+delete_force_single_baseline   ↓ [ 100% ] 14/16 VUs  1m0s  25.00 iters/s
+delete_force_single_invalid... ✓ [ 100% ] 0/6 VUs    1m0s  20.00 iters/s
+delete_force_single_parallel   ↓ [ 100% ] 64/64 VUs  1m0s  160.00 iters/s
+time="2025-11-06T20:35:06+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-vu46-c5-rv0x1a4wcc9z 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createDeleteTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:326:26(67))\n\tat ensureSingleTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:304:38(17))\n\tat runSingleDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:222:38(24))\n\tat scenarioSingleParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:195:28(17))\n" executor=constant-arrival-rate scenario=delete_force_single_parallel source=stacktrace
+time="2025-11-06T20:35:06+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-vu12-c5-erv19c4ea4ub 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createDeleteTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:326:26(67))\n\tat ensureSingleTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:304:38(17))\n\tat runSingleDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:222:38(24))\n\tat scenarioSingleBaseline (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:186:28(17))\n" executor=constant-arrival-rate scenario=delete_force_single_baseline source=stacktrace
+time="2025-11-06T20:35:06+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-vu95-c9-rv3o2n0qr3i6 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:342:30(89))\n\tat ensureBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:313:39(26))\n\tat runBatchDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:251:39(24))\n\tat scenarioBatchParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:204:27(17))\n" executor=constant-arrival-rate scenario=delete_force_batch_parallel source=stacktrace
+time="2025-11-06T20:35:06+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-u99-c10-rvbw2r0wvnrm 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:342:30(89))\n\tat ensureBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:313:39(26))\n\tat runBatchDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:251:39(24))\n\tat scenarioBatchParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:204:27(17))\n" executor=constant-arrival-rate scenario=delete_force_batch_parallel source=stacktrace
+time="2025-11-06T20:35:06+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-vu69-c4-rv6f1x3zikwr 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createDeleteTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:326:26(67))\n\tat ensureSingleTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:304:38(17))\n\tat runSingleDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:222:38(24))\n\tat scenarioSingleParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:195:28(17))\n" executor=constant-arrival-rate scenario=delete_force_single_parallel source=stacktrace
+time="2025-11-06T20:35:06+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-vu36-c3-rv7v100nbo4u 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:342:30(89))\n\tat ensureBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:313:39(26))\n\tat runBatchDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:251:39(24))\n\tat scenarioBatchParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:204:27(17))\n" executor=constant-arrival-rate scenario=delete_force_batch_parallel source=stacktrace
+
+running (1m04.0s), 041/122 VUs, 3278 complete and 0 interrupted iterations
+delete_force_batch_parallel    ↓ [ 100% ] 36/36 VUs  1m0s  40.00 iters/s
+delete_force_single_baseline   ↓ [ 100% ] 14/16 VUs  1m0s  25.00 iters/s
+delete_force_single_invalid... ✓ [ 100% ] 0/6 VUs    1m0s  20.00 iters/s
+delete_force_single_parallel   ↓ [ 100% ] 64/64 VUs  1m0s  160.00 iters/s
+time="2025-11-06T20:35:07+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-vu72-c2-rvie2016ng0j 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createDeleteTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:326:26(67))\n\tat ensureSingleTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:304:38(17))\n\tat runSingleDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:222:38(24))\n\tat scenarioSingleParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:195:28(17))\n" executor=constant-arrival-rate scenario=delete_force_single_parallel source=stacktrace
+time="2025-11-06T20:35:07+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-u31-c11-ervhhv0omyce 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:342:30(89))\n\tat ensureBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:313:39(26))\n\tat runBatchDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:251:39(24))\n\tat scenarioBatchParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:204:27(17))\n" executor=constant-arrival-rate scenario=delete_force_batch_parallel source=stacktrace
+time="2025-11-06T20:35:07+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-vu82-c4-rvqd2a39zj4a 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createDeleteTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:326:26(67))\n\tat ensureSingleTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:304:38(17))\n\tat runSingleDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:222:38(24))\n\tat scenarioSingleParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:195:28(17))\n" executor=constant-arrival-rate scenario=delete_force_single_parallel source=stacktrace
+time="2025-11-06T20:35:07+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-vu57-c6-rvm11l5puhp5 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createDeleteTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:326:26(67))\n\tat ensureSingleTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:304:38(17))\n\tat runSingleDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:222:38(24))\n\tat scenarioSingleParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:195:28(17))\n" executor=constant-arrival-rate scenario=delete_force_single_parallel source=stacktrace
+time="2025-11-06T20:35:07+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-u22-c14-ervn9m0txthy 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:342:30(89))\n\tat ensureBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:313:39(26))\n\tat runBatchDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:251:39(24))\n\tat scenarioBatchParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:204:27(17))\n" executor=constant-arrival-rate scenario=delete_force_batch_parallel source=stacktrace
+time="2025-11-06T20:35:07+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-vu18-c5-ervmji46w3z0 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createDeleteTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:326:26(67))\n\tat ensureSingleTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:304:38(17))\n\tat runSingleDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:222:38(24))\n\tat scenarioSingleParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:195:28(17))\n" executor=constant-arrival-rate scenario=delete_force_single_parallel source=stacktrace
+time="2025-11-06T20:35:07+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-u73-c11-rvke2108nmkw 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:342:30(89))\n\tat ensureBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:313:39(26))\n\tat runBatchDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:251:39(24))\n\tat scenarioBatchParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:204:27(17))\n" executor=constant-arrival-rate scenario=delete_force_batch_parallel source=stacktrace
+time="2025-11-06T20:35:07+08:00" level=error msg="GoError: 等待用户 delete-force-user-sc-vu1-c5-ervmd14vkh68 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createDeleteTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:326:26(67))\n\tat ensureSingleTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:304:38(17))\n\tat runSingleDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:222:38(24))\n\tat scenarioSingleParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:195:28(17))\n" executor=constant-arrival-rate scenario=delete_force_single_parallel source=stacktrace
+time="2025-11-06T20:35:07+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-vu78-c6-rw0e26015v7i 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:342:30(89))\n\tat ensureBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:313:39(26))\n\tat runBatchDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:251:39(24))\n\tat scenarioBatchParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:204:27(17))\n" executor=constant-arrival-rate scenario=delete_force_batch_parallel source=stacktrace
+time="2025-11-06T20:35:07+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-u110-c6-rw0v320gr2m7 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:342:30(89))\n\tat ensureBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:313:39(26))\n\tat runBatchDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:251:39(24))\n\tat scenarioBatchParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:204:27(17))\n" executor=constant-arrival-rate scenario=delete_force_batch_parallel source=stacktrace
+time="2025-11-06T20:35:07+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-u11-c13-ervp6b0l08kj 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:342:30(89))\n\tat ensureBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:313:39(26))\n\tat runBatchDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:251:39(24))\n\tat scenarioBatchParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:204:27(17))\n" executor=constant-arrival-rate scenario=delete_force_batch_parallel source=stacktrace
+time="2025-11-06T20:35:07+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-vu71-c5-rvrr1z46jq0u 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createDeleteTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:326:26(67))\n\tat ensureSingleTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:304:38(17))\n\tat runSingleDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:222:38(24))\n\tat scenarioSingleParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:195:28(17))\n" executor=constant-arrival-rate scenario=delete_force_single_parallel source=stacktrace
+time="2025-11-06T20:35:07+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-vu54-c6-rvt51i5i56nc 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createDeleteTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:326:26(67))\n\tat ensureSingleTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:304:38(17))\n\tat runSingleDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:222:38(24))\n\tat scenarioSingleParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:195:28(17))\n" executor=constant-arrival-rate scenario=delete_force_single_parallel source=stacktrace
+
+running (1m05.0s), 028/122 VUs, 3291 complete and 0 interrupted iterations
+delete_force_batch_parallel    ↓ [ 100% ] 36/36 VUs  1m0s  40.00 iters/s
+delete_force_single_baseline   ↓ [ 100% ] 14/16 VUs  1m0s  25.00 iters/s
+delete_force_single_invalid... ✓ [ 100% ] 0/6 VUs    1m0s  20.00 iters/s
+delete_force_single_parallel   ↓ [ 100% ] 64/64 VUs  1m0s  160.00 iters/s
+
+running (1m06.0s), 028/122 VUs, 3291 complete and 0 interrupted iterations
+delete_force_batch_parallel    ↓ [ 100% ] 36/36 VUs  1m0s  40.00 iters/s
+delete_force_single_baseline   ↓ [ 100% ] 14/16 VUs  1m0s  25.00 iters/s
+delete_force_single_invalid... ✓ [ 100% ] 0/6 VUs    1m0s  20.00 iters/s
+delete_force_single_parallel   ↓ [ 100% ] 64/64 VUs  1m0s  160.00 iters/s
+
+running (1m07.0s), 028/122 VUs, 3291 complete and 0 interrupted iterations
+delete_force_batch_parallel    ↓ [ 100% ] 36/36 VUs  1m0s  40.00 iters/s
+delete_force_single_baseline   ↓ [ 100% ] 14/16 VUs  1m0s  25.00 iters/s
+delete_force_single_invalid... ✓ [ 100% ] 0/6 VUs    1m0s  20.00 iters/s
+delete_force_single_parallel   ↓ [ 100% ] 64/64 VUs  1m0s  160.00 iters/s
+
+running (1m08.0s), 028/122 VUs, 3291 complete and 0 interrupted iterations
+delete_force_batch_parallel    ↓ [ 100% ] 36/36 VUs  1m0s  40.00 iters/s
+delete_force_single_baseline   ↓ [ 100% ] 14/16 VUs  1m0s  25.00 iters/s
+delete_force_single_invalid... ✓ [ 100% ] 0/6 VUs    1m0s  20.00 iters/s
+delete_force_single_parallel   ↓ [ 100% ] 64/64 VUs  1m0s  160.00 iters/s
+
+running (1m09.0s), 028/122 VUs, 3291 complete and 0 interrupted iterations
+delete_force_batch_parallel    ↓ [ 100% ] 36/36 VUs  1m0s  40.00 iters/s
+delete_force_single_baseline   ↓ [ 100% ] 14/16 VUs  1m0s  25.00 iters/s
+delete_force_single_invalid... ✓ [ 100% ] 0/6 VUs    1m0s  20.00 iters/s
+delete_force_single_parallel   ↓ [ 100% ] 64/64 VUs  1m0s  160.00 iters/s
+time="2025-11-06T20:35:12+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-u107-c7-rzkb2z065dbp 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:342:30(89))\n\tat ensureBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:313:39(26))\n\tat runBatchDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:251:39(24))\n\tat scenarioBatchParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:204:27(17))\n" executor=constant-arrival-rate scenario=delete_force_batch_parallel source=stacktrace
+time="2025-11-06T20:35:12+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-u101-c2-rtmx2t072yxm 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:342:30(89))\n\tat ensureBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:313:39(26))\n\tat runBatchDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:251:39(24))\n\tat scenarioBatchParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:204:27(17))\n" executor=constant-arrival-rate scenario=delete_force_batch_parallel source=stacktrace
+time="2025-11-06T20:35:12+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-vu74-c6-rzlq225a3hd2 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createDeleteTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:326:26(67))\n\tat ensureSingleTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:304:38(17))\n\tat runSingleDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:222:38(24))\n\tat scenarioSingleBaseline (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:186:28(17))\n" executor=constant-arrival-rate scenario=delete_force_single_baseline source=stacktrace
+time="2025-11-06T20:35:12+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-vu30-c2-erstyu04w1un 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:342:30(89))\n\tat ensureBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:313:39(26))\n\tat runBatchDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:251:39(24))\n\tat scenarioBatchParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:204:27(17))\n" executor=constant-arrival-rate scenario=delete_force_batch_parallel source=stacktrace
+time="2025-11-06T20:35:12+08:00" level=error msg="GoError: 等待用户 delete-force-user-sc-vu2-c8-erzo127lyktj 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createDeleteTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:326:26(67))\n\tat ensureSingleTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:304:38(17))\n\tat runSingleDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:222:38(24))\n\tat scenarioSingleParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:195:28(17))\n" executor=constant-arrival-rate scenario=delete_force_single_parallel source=stacktrace
+time="2025-11-06T20:35:12+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-vu88-c7-erznp2g63d0k 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createDeleteTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:326:26(67))\n\tat ensureSingleTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:304:38(17))\n\tat runSingleDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:222:38(24))\n\tat scenarioSingleParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:195:28(17))\n" executor=constant-arrival-rate scenario=delete_force_single_parallel source=stacktrace
+time="2025-11-06T20:35:12+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-vu93-c7-rzoq2l61i4ys 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createDeleteTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:326:26(67))\n\tat ensureSingleTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:304:38(17))\n\tat runSingleDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:222:38(24))\n\tat scenarioSingleParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:195:28(17))\n" executor=constant-arrival-rate scenario=delete_force_single_parallel source=stacktrace
+time="2025-11-06T20:35:12+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-vu32-c7-erzlyw6n9dmj 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createDeleteTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:326:26(67))\n\tat ensureSingleTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:304:38(17))\n\tat runSingleDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:222:38(24))\n\tat scenarioSingleParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:195:28(17))\n" executor=constant-arrival-rate scenario=delete_force_single_parallel source=stacktrace
+time="2025-11-06T20:35:12+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-vu50-c7-rzlq1e69sr87 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createDeleteTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:326:26(67))\n\tat ensureSingleTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:304:38(17))\n\tat runSingleDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:222:38(24))\n\tat scenarioSingleParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:195:28(17))\n" executor=constant-arrival-rate scenario=delete_force_single_parallel source=stacktrace
+time="2025-11-06T20:35:12+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-105-c14-rzro2x0h31gg 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:342:30(89))\n\tat ensureBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:313:39(26))\n\tat runBatchDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:251:39(24))\n\tat scenarioBatchParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:204:27(17))\n" executor=constant-arrival-rate scenario=delete_force_batch_parallel source=stacktrace
+
+running (1m10.0s), 018/122 VUs, 3301 complete and 0 interrupted iterations
+delete_force_batch_parallel    ↓ [ 100% ] 36/36 VUs  1m0s  40.00 iters/s
+delete_force_single_baseline   ↓ [ 100% ] 14/16 VUs  1m0s  25.00 iters/s
+delete_force_single_invalid... ✓ [ 100% ] 0/6 VUs    1m0s  20.00 iters/s
+delete_force_single_parallel   ↓ [ 100% ] 64/64 VUs  1m0s  160.00 iters/s
+time="2025-11-06T20:35:13+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-u112-c9-rzys340gvkep 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:342:30(89))\n\tat ensureBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:313:39(26))\n\tat runBatchDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:251:39(24))\n\tat scenarioBatchParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:204:27(17))\n" executor=constant-arrival-rate scenario=delete_force_batch_parallel source=stacktrace
+time="2025-11-06T20:35:13+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-u106-c4-s06u2y31wqt6 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createDeleteTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:326:26(67))\n\tat ensureSingleTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:304:38(17))\n\tat runSingleDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:222:38(24))\n\tat scenarioSingleBaseline (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:186:28(17))\n" executor=constant-arrival-rate scenario=delete_force_single_baseline source=stacktrace
+time="2025-11-06T20:35:13+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-vu40-c6-s0er145ir59l 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createDeleteTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:326:26(67))\n\tat ensureSingleTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:304:38(17))\n\tat runSingleDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:222:38(24))\n\tat scenarioSingleParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:195:28(17))\n" executor=constant-arrival-rate scenario=delete_force_single_parallel source=stacktrace
+time="2025-11-06T20:35:13+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-vu94-c5-s0f42m4zuqs6 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createDeleteTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:326:26(67))\n\tat ensureSingleTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:304:38(17))\n\tat runSingleDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:222:38(24))\n\tat scenarioSingleParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:195:28(17))\n" executor=constant-arrival-rate scenario=delete_force_single_parallel source=stacktrace
+time="2025-11-06T20:35:13+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-vu35-c4-es0gvz3b7ygw 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createDeleteTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:326:26(67))\n\tat ensureSingleTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:304:38(17))\n\tat runSingleDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:222:38(24))\n\tat scenarioSingleParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:195:28(17))\n" executor=constant-arrival-rate scenario=delete_force_single_parallel source=stacktrace
+time="2025-11-06T20:35:13+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-vu52-c9-s0fn1g89f7q3 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createDeleteTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:326:26(67))\n\tat ensureSingleTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:304:38(17))\n\tat runSingleDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:222:38(24))\n\tat scenarioSingleParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:195:28(17))\n" executor=constant-arrival-rate scenario=delete_force_single_parallel source=stacktrace
+time="2025-11-06T20:35:13+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-vu37-c7-s0dw11666y3z 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createDeleteTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:326:26(67))\n\tat ensureSingleTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:304:38(17))\n\tat runSingleDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:222:38(24))\n\tat scenarioSingleParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:195:28(17))\n" executor=constant-arrival-rate scenario=delete_force_single_parallel source=stacktrace
+
+running (1m11.0s), 011/122 VUs, 3308 complete and 0 interrupted iterations
+delete_force_batch_parallel    ↓ [ 100% ] 36/36 VUs  1m0s  40.00 iters/s
+delete_force_single_baseline   ↓ [ 100% ] 14/16 VUs  1m0s  25.00 iters/s
+delete_force_single_invalid... ✓ [ 100% ] 0/6 VUs    1m0s  20.00 iters/s
+delete_force_single_parallel   ↓ [ 100% ] 64/64 VUs  1m0s  160.00 iters/s
+time="2025-11-06T20:35:14+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-vu19-c8-es15cj7yaagg 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createDeleteTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:326:26(67))\n\tat ensureSingleTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:304:38(17))\n\tat runSingleDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:222:38(24))\n\tat scenarioSingleParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:195:28(17))\n" executor=constant-arrival-rate scenario=delete_force_single_parallel source=stacktrace
+time="2025-11-06T20:35:14+08:00" level=error msg="GoError: 等待用户 delete-force-user-sc-vu4-c9-es0u848x4dbq 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createDeleteTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:326:26(67))\n\tat ensureSingleTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:304:38(17))\n\tat runSingleDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:222:38(24))\n\tat scenarioSingleParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:195:28(17))\n" executor=constant-arrival-rate scenario=delete_force_single_parallel source=stacktrace
+time="2025-11-06T20:35:14+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-115-c18-s13p371232qc 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:342:30(89))\n\tat ensureBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:313:39(26))\n\tat runBatchDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:251:39(24))\n\tat scenarioBatchParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:204:27(17))\n" executor=constant-arrival-rate scenario=delete_force_batch_parallel source=stacktrace
+time="2025-11-06T20:35:14+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-119-c17-s0u03b19lgmr 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:342:30(89))\n\tat ensureBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:313:39(26))\n\tat runBatchDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:251:39(24))\n\tat scenarioBatchParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:204:27(17))\n" executor=constant-arrival-rate scenario=delete_force_batch_parallel source=stacktrace
+time="2025-11-06T20:35:14+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-vu70-c6-s0zf1y5g07f1 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createDeleteTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:326:26(67))\n\tat ensureSingleTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:304:38(17))\n\tat runSingleDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:222:38(24))\n\tat scenarioSingleParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:195:28(17))\n" executor=constant-arrival-rate scenario=delete_force_single_parallel source=stacktrace
+time="2025-11-06T20:35:14+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-vu81-c6-s19p295bvh73 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createDeleteTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:326:26(67))\n\tat ensureSingleTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:304:38(17))\n\tat runSingleDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:222:38(24))\n\tat scenarioSingleBaseline (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:186:28(17))\n" executor=constant-arrival-rate scenario=delete_force_single_baseline source=stacktrace
+time="2025-11-06T20:35:14+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-vu7-c10-es18479ghge7 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createDeleteTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:326:26(67))\n\tat ensureSingleTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:304:38(17))\n\tat runSingleDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:222:38(24))\n\tat scenarioSingleParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:195:28(17))\n" executor=constant-arrival-rate scenario=delete_force_single_parallel source=stacktrace
+time="2025-11-06T20:35:14+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-108-c18-s167301o2v2h 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:342:30(89))\n\tat ensureBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:313:39(26))\n\tat runBatchDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:251:39(24))\n\tat scenarioBatchParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:204:27(17))\n" executor=constant-arrival-rate scenario=delete_force_batch_parallel source=stacktrace
+time="2025-11-06T20:35:15+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-u62-c12-s1l71q0ncz61 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:342:30(89))\n\tat ensureBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:313:39(26))\n\tat runBatchDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:251:39(24))\n\tat scenarioBatchParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:204:27(17))\n" executor=constant-arrival-rate scenario=delete_force_batch_parallel source=stacktrace
+time="2025-11-06T20:35:15+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-u98-c14-s1d62q01p6z3 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:342:30(89))\n\tat ensureBatchTargets (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:313:39(26))\n\tat runBatchDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:251:39(24))\n\tat scenarioBatchParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:204:27(17))\n" executor=constant-arrival-rate scenario=delete_force_batch_parallel source=stacktrace
+time="2025-11-06T20:35:15+08:00" level=error msg="GoError: 等待用户 delete-force-user-s-u38-c10-s1do129s408t 可见超时\n\tat go.k6.io/k6/internal/js/modules/k6.(*K6).Fail-fm (native)\n\tat waitForUserVisibility (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:394:9(62))\n\tat createDeleteTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:326:26(67))\n\tat ensureSingleTarget (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:304:38(17))\n\tat runSingleDeleteScenario (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:222:38(24))\n\tat scenarioSingleParallel (file:///home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/delete_force/k6/delete_force.js:195:28(17))\n" executor=constant-arrival-rate scenario=delete_force_single_parallel source=stacktrace
+time="2025-11-06T20:35:15+08:00" level=info msg="[config] 使用全局场景时长覆盖: 1m" source=console
+
+
+  █ THRESHOLDS 
+
+    delete_force_batch_latency
+    ✓ 'p(95)<700' p(95)=84.06ms
+
+    delete_force_batch_success_rate
+    ✓ 'rate>0.95' rate=100.00%
+
+    delete_force_degraded_rate
+    ✓ 'rate<0.02' rate=0.00%
+
+    delete_force_invalid_payload_rejected_rate
+    ✓ 'rate>0.95' rate=100.00%
+
+    delete_force_single_latency
+    ✓ 'p(95)<500' p(95)=31.27ms
+
+    delete_force_single_success_rate
+    ✓ 'rate>0.97' rate=100.00%
+
+    http_req_duration
+    ✗ 'p(99)<2000' p(99)=4.66s
+
+    http_req_failed
+    ✗ 'rate<0.05' rate=12.02%
+
+
+  █ TOTAL RESULTS 
+
+    checks_total.......: 6544    90.958773/s
+    checks_succeeded...: 100.00% 6544 out of 6544
+    checks_failed......: 0.00%   0 out of 6544
+
+    ✓ invalid_http_status
+    ✓ invalid_code
+    ✓ delete_http_success
+    ✓ delete_code_success
+    ✓ batch_http_success
+    ✓ batch_code_success
+
+    CUSTOM
+    delete_force_batch_latency...................: avg=35.1ms   min=10.86ms  med=25.48ms  max=178.04ms p(90)=63.49ms p(95)=84.06ms 
+    delete_force_batch_success_rate..............: 100.00% 122 out of 122
+    delete_force_degraded_rate...................: 0.00%   0 out of 3272
+    delete_force_invalid_payload_rejected_rate...: 100.00% 666 out of 666
+    delete_force_single_latency..................: avg=15.44ms  min=1.85ms   med=4.44ms   max=4.91s    p(90)=21.15ms p(95)=31.27ms 
+    delete_force_single_success_rate.............: 100.00% 2484 out of 2484
+
+    HTTP
+    http_req_duration............................: avg=132.72ms min=906.23µs med=5.63ms   max=8.72s    p(90)=39.34ms p(95)=115.42ms
+      { expected_response:true }.................: avg=124.31ms min=1.17ms   med=6.07ms   max=8.72s    p(90)=40.62ms p(95)=113.97ms
+    http_req_failed..............................: 12.02%  3631 out of 30197
+    http_reqs....................................: 30197   419.725255/s
+
+    EXECUTION
+    dropped_iterations...........................: 11384   158.232682/s
+    iteration_duration...........................: avg=2.25s    min=52.42ms  med=610.51ms max=1m11s    p(90)=5.2s    p(95)=6.67s   
+    iterations...................................: 3319    46.132666/s
+    vus..........................................: 11      min=11            max=122
+    vus_max......................................: 122     min=107           max=122
+
+    NETWORK
+    data_received................................: 21 MB   291 kB/s
+    data_sent....................................: 22 MB   311 kB/s
+
+
+
+
+running (1m11.9s), 000/122 VUs, 3319 complete and 0 interrupted iterations
+delete_force_batch_parallel    ✓ [ 100% ] 00/36 VUs  1m0s  40.00 iters/s
+delete_force_single_baseline   ✓ [ 100% ] 00/16 VUs  1m0s  25.00 iters/s
+delete_force_single_invalid... ✓ [ 100% ] 0/6 VUs    1m0s  20.00 iters/s
+delete_force_single_parallel   ✓ [ 100% ] 00/64 VUs  1m0s  160.00 iters/s
+time="2025-11-06T20:35:18+08:00" level=error msg="thresholds on metrics 'http_req_duration, http_req_failed' have been crossed"

@@ -9,11 +9,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/code"
 	"github.com/maxiaolu1981/cretem/nexuscore/errors"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
 // -------------------------- 1. 先声明所有指标变量（仅声明，不初始化）--------------------------
+const defaultSlowQueryThreshold = 200 * time.Millisecond
+
 var (
 	// 生产者指标
 	ProducerAttempts      *prometheus.CounterVec
@@ -32,6 +35,10 @@ var (
 	// initialization moved to init()
 	// ProducerDeliveryLatency 记录生产者消息从入队到Broker确认的耗时
 	ProducerDeliveryLatency *prometheus.HistogramVec
+	// ProducerEnqueueWaitLatency 记录生产者消息在入队前的排队等待时间
+	ProducerEnqueueWaitLatency *prometheus.HistogramVec
+	// ProducerBrokerAckLatency 记录Broker确认耗时
+	ProducerBrokerAckLatency *prometheus.HistogramVec
 
 	// 业务处理指标
 	BusinessProcessingTime *prometheus.HistogramVec
@@ -74,10 +81,9 @@ var (
 	ConsumerPartitionsNoOwner *prometheus.GaugeVec
 
 	// 数据库操作指标
-	// DatabaseQueryDuration    *prometheus.HistogramVec
-	// DatabaseQueryErrors      *prometheus.CounterVec
-	// DatabaseConnectionsInUse *prometheus.GaugeVec
-	// DatabaseConnectionsWait  *prometheus.CounterVec
+	DatabaseQueryDuration *prometheus.HistogramVec
+	DatabaseQueryErrors   *prometheus.CounterVec
+	DatabaseSlowQueries   *prometheus.CounterVec
 
 	DatabasePoolOpenConnections     *prometheus.GaugeVec
 	DatabasePoolInUse               *prometheus.GaugeVec
@@ -375,6 +381,24 @@ func init() {
 		[]string{"topic", "operation", "result"},
 	)
 
+	ProducerEnqueueWaitLatency = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "kafka_producer_enqueue_wait_seconds",
+			Help:    "Time a Kafka producer message waits before entering the async channel",
+			Buckets: []float64{0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5},
+		},
+		[]string{"topic", "operation", "result"},
+	)
+
+	ProducerBrokerAckLatency = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "kafka_producer_broker_ack_seconds",
+			Help:    "Time from async enqueue to broker acknowledgment for Kafka producer messages",
+			Buckets: []float64{0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10},
+		},
+		[]string{"topic", "operation", "result"},
+	)
+
 	// -------------------------- 初始化：Kafka消费者指标 --------------------------
 	ConsumerMessagesReceived = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
@@ -475,14 +499,30 @@ func init() {
 	)
 
 	// -------------------------- 初始化：数据库操作指标 --------------------------
-	// DatabaseQueryDuration = prometheus.NewHistogramVec(
-	// 	prometheus.HistogramOpts{
-	// 		Name:    "database_query_duration_seconds",
-	// 		Help:    "Time taken for database queries",
-	// 		Buckets: []float64{0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 2},
-	// 	},
-	// 	[]string{"operation", "table"},
-	// )
+	DatabaseQueryDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "database_query_duration_seconds",
+			Help:    "Time taken for database queries grouped by component and operation",
+			Buckets: []float64{0.001, 0.0025, 0.005, 0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1, 2, 5},
+		},
+		[]string{"component", "operation", "status"},
+	)
+
+	DatabaseQueryErrors = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "database_query_errors_total",
+			Help: "Total number of database query errors grouped by component and operation",
+		},
+		[]string{"component", "operation", "error_type"},
+	)
+
+	DatabaseSlowQueries = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "database_slow_queries_total",
+			Help: "Number of database queries exceeding the configured slow threshold",
+		},
+		[]string{"component", "operation"},
+	)
 
 	DatabasePoolOpenConnections = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -531,30 +571,6 @@ func init() {
 		},
 		[]string{"component", "role", "index"},
 	)
-
-	// DatabaseQueryErrors = prometheus.NewCounterVec(
-	// 	prometheus.CounterOpts{
-	// 		Name: "database_query_errors_total",
-	// 		Help: "Total number of database query errors",
-	// 	},
-	// 	[]string{"operation", "table", "error_type"},
-	// )
-
-	// DatabaseConnectionsInUse = prometheus.NewGaugeVec(
-	// 	prometheus.GaugeOpts{
-	// 		Name: "database_connections_in_use",
-	// 		Help: "Number of database connections currently in use",
-	// 	},
-	// 	[]string{"pool"},
-	// )
-
-	// DatabaseConnectionsWait = prometheus.NewCounterVec(
-	// 	prometheus.CounterOpts{
-	// 		Name: "database_connections_wait_total",
-	// 		Help: "Total number of database connection waits",
-	// 	},
-	// 	[]string{"pool"},
-	// )
 
 	// -------------------------- 初始化：Redis操作指标 --------------------------
 	RedisOperations = prometheus.NewCounterVec(
@@ -961,10 +977,9 @@ func init() {
 		ConsumerLag,
 
 		// 数据库指标
-		// DatabaseQueryDuration,
-		// DatabaseQueryErrors,
-		// DatabaseConnectionsInUse,
-		// DatabaseConnectionsWait,
+		DatabaseQueryDuration,
+		DatabaseQueryErrors,
+		DatabaseSlowQueries,
 		DatabasePoolOpenConnections,
 		DatabasePoolInUse,
 		DatabasePoolIdle,
@@ -982,6 +997,8 @@ func init() {
 		ProducerInFlightCurrent,
 		WriteLimiterTotal,
 		ProducerDeliveryLatency,
+		ProducerEnqueueWaitLatency,
+		ProducerBrokerAckLatency,
 
 		// Redis集群指标
 		RedisClusterNodesTotal,
@@ -1188,6 +1205,74 @@ func GetRedisErrorType(err error) string {
 }
 
 // RecordRedisOperation 记录Redis操作指标
+func normalizeLabelValue(value, fallback string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return fallback
+	}
+	return trimmed
+}
+
+// RecordDatabaseQuery 记录数据库查询耗时与结果。
+func RecordDatabaseQuery(component, operation string, duration time.Duration, err error) {
+	componentLabel := normalizeLabelValue(component, "unknown")
+	operationLabel := normalizeLabelValue(operation, "unknown")
+	status := "success"
+	if err != nil {
+		status = "error"
+	}
+
+	if DatabaseQueryDuration != nil {
+		DatabaseQueryDuration.WithLabelValues(componentLabel, operationLabel, status).Observe(duration.Seconds())
+	}
+
+	if err != nil && DatabaseQueryErrors != nil {
+		errorType := getDBErrorType(err)
+		DatabaseQueryErrors.WithLabelValues(componentLabel, operationLabel, errorType).Inc()
+	}
+
+	if duration >= defaultSlowQueryThreshold && DatabaseSlowQueries != nil {
+		DatabaseSlowQueries.WithLabelValues(componentLabel, operationLabel).Inc()
+	}
+}
+
+func getDBErrorType(err error) string {
+	if err == nil {
+		return "success"
+	}
+
+	if errCode := errors.GetCode(err); errCode != 0 {
+		switch errCode {
+		case code.ErrDatabaseTimeout:
+			return "timeout"
+		case code.ErrDatabaseDeadlock:
+			return "deadlock"
+		case code.ErrDatabase:
+			return "database_error"
+		case code.ErrUserNotFound:
+			return "not_found"
+		}
+	}
+
+	lowered := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(lowered, "timeout"), strings.Contains(lowered, "deadline"):
+		return "timeout"
+	case strings.Contains(lowered, "deadlock"):
+		return "deadlock"
+	case strings.Contains(lowered, "duplicate"), strings.Contains(lowered, "unique"):
+		return "duplicate"
+	case strings.Contains(lowered, "not found"), strings.Contains(lowered, "no rows"):
+		return "not_found"
+	case strings.Contains(lowered, "cancel"):
+		return "cancelled"
+	case strings.Contains(lowered, "connection"), strings.Contains(lowered, "broken pipe"), strings.Contains(lowered, "reset"):
+		return "connection"
+	default:
+		return "unknown"
+	}
+}
+
 func RecordRedisOperation(operation string, duration float64, err error) {
 	// 记录操作延迟
 	RedisOperationDuration.WithLabelValues(operation).Observe(duration)
@@ -1246,6 +1331,42 @@ func RecordKafkaProducerDelivery(topic, operation string, duration time.Duration
 		result = GetKafkaErrorType(err)
 	}
 	ProducerDeliveryLatency.WithLabelValues(topic, operation, result).Observe(duration.Seconds())
+}
+
+// RecordKafkaProducerEnqueueWait 记录生产者入队前的排队等待时间。
+func RecordKafkaProducerEnqueueWait(topic, operation string, duration time.Duration, err error) {
+	if ProducerEnqueueWaitLatency == nil {
+		return
+	}
+	if topic == "" {
+		topic = "unknown"
+	}
+	if operation == "" {
+		operation = "unknown"
+	}
+	result := "success"
+	if err != nil {
+		result = GetKafkaErrorType(err)
+	}
+	ProducerEnqueueWaitLatency.WithLabelValues(topic, operation, result).Observe(duration.Seconds())
+}
+
+// RecordKafkaProducerBrokerAck 记录生产者等待 Broker ACK 的耗时。
+func RecordKafkaProducerBrokerAck(topic, operation string, duration time.Duration, err error) {
+	if ProducerBrokerAckLatency == nil {
+		return
+	}
+	if topic == "" {
+		topic = "unknown"
+	}
+	if operation == "" {
+		operation = "unknown"
+	}
+	result := "success"
+	if err != nil {
+		result = GetKafkaErrorType(err)
+	}
+	ProducerBrokerAckLatency.WithLabelValues(topic, operation, result).Observe(duration.Seconds())
 }
 
 // RecordProducerWALStats 记录生产者WAL队列积压指标

@@ -4,7 +4,7 @@ import { Trend, Rate } from 'k6/metrics';
 
 const CODE_SUCCESS = 100001;
 const CODE_INVALID_PARAMETER = 110004;
-const CODE_USER_NOT_FOUND = 110007;
+const CODE_USER_NOT_FOUND = 110001;
 const CODE_KAFKA_DEGRADED = 100401;
 
 const HTTP_OK = 200;
@@ -18,6 +18,7 @@ const batchDeleteLatency = new Trend('delete_force_batch_latency', true);
 
 const singleDeleteSuccessRate = new Rate('delete_force_single_success_rate');
 const batchDeleteSuccessRate = new Rate('delete_force_batch_success_rate');
+const invalidPayloadRejectedRate = new Rate('delete_force_invalid_payload_rejected_rate');
 const degradedRate = new Rate('delete_force_degraded_rate');
 
 const HIGH_CARDINALITY_TAG_KEYS = new Set(['username', 'request_id', 'x_request_id', 'x-request-id']);
@@ -62,6 +63,17 @@ const scenarioDefinitions = [
             maxVUs: 36,
         },
     },
+    {
+        name: 'delete_force_single_invalid_payload',
+        prefix: 'FORCE_SINGLE_INVALID',
+        config: {
+            exec: 'scenarioSingleInvalidPayload',
+            rate: 20,
+            duration: '1h',
+            preAllocatedVUs: 2,
+            maxVUs: 6,
+        },
+    },
 ];
 
 const GLOBAL_SCENARIO_DURATION = resolveGlobalScenarioDuration();
@@ -78,6 +90,7 @@ export const options = {
         delete_force_batch_latency: ['p(95)<700'],
         delete_force_single_success_rate: ['rate>0.97'],
         delete_force_batch_success_rate: ['rate>0.95'],
+        delete_force_invalid_payload_rejected_rate: ['rate>0.95'],
         delete_force_degraded_rate: ['rate<0.02'],
     },
     scenarios: buildScenarioOptions(scenarioDefinitions),
@@ -195,22 +208,57 @@ export function scenarioBatchParallel(cfg) {
     });
 }
 
+export function scenarioSingleInvalidPayload(cfg) {
+    const context = ensureSetup(cfg);
+    runInvalidPayloadScenario({
+        context,
+        scenarioName: 'scenarioSingleInvalidPayload',
+        tags: { scenario: 'delete_single_invalid_payload' },
+    });
+}
+
 function runSingleDeleteScenario({ context, scenarioName, tags }) {
     const state = ensureVuState(scenarioName);
     const target = ensureSingleTarget(context, state, scenarioName);
-    const res = sendForceDelete(context, target.name, tags);
-    singleDeleteLatency.add(res.timings.duration);
+    const maxAttempts = resolveDeleteMaxAttempts(context.dataset);
+    let attempt = 0;
+    let pendingRetries = 0;
+    let res = null;
+    let parsed = { code: null, message: '', data: null };
+    let success = false;
+    let degraded = false;
 
-    const parsed = parseResponse(res);
-    const degraded = isDegraded(parsed);
-    const success = isSingleDeleteSuccess(res, parsed);
+    while (attempt < maxAttempts) {
+        attempt += 1;
+        res = sendForceDelete(context, target.name, tags);
+        singleDeleteLatency.add(res.timings.duration);
+        parsed = parseResponse(res);
+        degraded = degraded || isDegraded(parsed);
+        success = isSingleDeleteSuccess(res, parsed);
+        if (success) {
+            break;
+        }
+        if (shouldRetryPendingDeletion(res, parsed, context.dataset, pendingRetries)) {
+            const delayMs = computePendingRetryDelayMs(context.dataset, pendingRetries);
+            pendingRetries += 1;
+            if (delayMs > 0) {
+                sleep(delayMs / 1000);
+            }
+            attempt = Math.max(0, attempt - 1);
+            continue;
+        }
+        break;
+    }
 
     singleDeleteSuccessRate.add(success);
     degradedRate.add(degraded);
 
-    recordChecks(res, {
+    const finalRes = res || { status: 0, timings: { duration: 0 } };
+    const finalParsed = parsed || { code: null, message: '', data: null };
+
+    recordChecks(finalRes, {
         delete_http_success: r => r.status === HTTP_OK || r.status === HTTP_NO_CONTENT || r.status === HTTP_NOT_FOUND,
-        delete_code_success: () => success || parsed.code === CODE_USER_NOT_FOUND,
+        delete_code_success: () => success || finalParsed.code === CODE_USER_NOT_FOUND,
     });
 
     if (success && context.dataset.verifyDeletion) {
@@ -227,17 +275,43 @@ function runSingleDeleteScenario({ context, scenarioName, tags }) {
 function runBatchDeleteScenario({ context, scenarioName, tags }) {
     const state = ensureVuState(scenarioName);
     const targets = ensureBatchTargets(context, state, scenarioName);
-    const res = sendBatchForceDelete(context, targets, tags);
-    batchDeleteLatency.add(res.timings.duration);
+    const maxAttempts = resolveDeleteMaxAttempts(context.dataset);
+    let attempt = 0;
+    let pendingRetries = 0;
+    let res = null;
+    let parsed = { code: null, message: '', data: null };
+    let success = false;
+    let degraded = false;
 
-    const parsed = parseResponse(res);
-    const degraded = isDegraded(parsed);
-    const success = isBatchDeleteSuccess(res, parsed);
+    while (attempt < maxAttempts) {
+        attempt += 1;
+        res = sendBatchForceDelete(context, targets, tags);
+        batchDeleteLatency.add(res.timings.duration);
+        parsed = parseResponse(res);
+        degraded = degraded || isDegraded(parsed);
+        success = isBatchDeleteSuccess(res, parsed);
+        if (success) {
+            break;
+        }
+        if (shouldRetryPendingDeletion(res, parsed, context.dataset, pendingRetries)) {
+            const delayMs = computePendingRetryDelayMs(context.dataset, pendingRetries);
+            pendingRetries += 1;
+            if (delayMs > 0) {
+                sleep(delayMs / 1000);
+            }
+            attempt = Math.max(0, attempt - 1);
+            continue;
+        }
+        break;
+    }
 
     batchDeleteSuccessRate.add(success);
     degradedRate.add(degraded);
 
-    recordChecks(res, {
+    const finalRes = res || { status: 0, timings: { duration: 0 } };
+    const finalParsed = parsed || { code: null, message: '', data: null };
+
+    recordChecks(finalRes, {
         batch_http_success: r => r.status === HTTP_OK,
         batch_code_success: () => success,
     });
@@ -251,6 +325,26 @@ function runBatchDeleteScenario({ context, scenarioName, tags }) {
     if (success || context.dataset.respawnOnFailure) {
         state.batchTargets = [];
     }
+
+    sleep(context.dataset.sleepBetween);
+}
+
+function runInvalidPayloadScenario({ context, scenarioName, tags }) {
+    const state = ensureVuState(scenarioName);
+    state.invalidCounter = (state.invalidCounter || 0) + 1;
+    const candidate = buildInvalidUsername(state.invalidCounter);
+    const res = sendForceDelete(context, candidate, tags);
+    const parsed = parseResponse(res);
+    const degraded = isDegraded(parsed);
+    const rejected = isInvalidPayloadRejected(res, parsed);
+
+    invalidPayloadRejectedRate.add(rejected);
+    degradedRate.add(degraded);
+
+    recordChecks(res, {
+        invalid_http_status: r => r.status === HTTP_BAD_REQUEST,
+        invalid_code: () => parsed.code === CODE_INVALID_PARAMETER,
+    });
 
     sleep(context.dataset.sleepBetween);
 }
@@ -472,6 +566,11 @@ function buildUsername(dataset, scenarioName, state, counterOverride) {
     return candidate;
 }
 
+function buildInvalidUsername(counter) {
+    const suffix = typeof counter === 'number' && counter > 0 ? `-${counter}` : '';
+    return `invalid!user${suffix}`;
+}
+
 function isSingleDeleteSuccess(res, parsed) {
     if (!res) {
         return false;
@@ -493,6 +592,16 @@ function isBatchDeleteSuccess(res, parsed) {
         return false;
     }
     return parsed.code === CODE_SUCCESS;
+}
+
+function isInvalidPayloadRejected(res, parsed) {
+    if (!res) {
+        return false;
+    }
+    if (res.status !== HTTP_BAD_REQUEST) {
+        return false;
+    }
+    return parsed.code === CODE_INVALID_PARAMETER;
 }
 
 function parseResponse(res) {
@@ -527,6 +636,84 @@ function normalizeData(value) {
 
 function isDegraded(parsed) {
     return parsed && parsed.code === CODE_KAFKA_DEGRADED;
+}
+
+function resolveDeleteMaxAttempts(dataset) {
+    const raw = dataset && Number.isFinite(Number(dataset.deleteMaxAttempts))
+        ? parseInt(dataset.deleteMaxAttempts, 10)
+        : NaN;
+    let attempts = Number.isNaN(raw) ? 2 : raw;
+    if (!Number.isFinite(attempts) || attempts < 1) {
+        attempts = 1;
+    }
+    if (attempts > 5) {
+        attempts = 5;
+    }
+    return attempts;
+}
+
+function shouldRetryPendingDeletion(res, parsed, dataset, pendingRetries) {
+    if (!res || res.status !== HTTP_NOT_FOUND) {
+        return false;
+    }
+    if (!parsed || parsed.code !== CODE_USER_NOT_FOUND) {
+        return false;
+    }
+    if (!messageIndicatesPending(parsed.message)) {
+        return false;
+    }
+    const maxPending = resolvePendingRetryMaxAttempts(dataset);
+    return pendingRetries < maxPending;
+}
+
+function messageIndicatesPending(message) {
+    if (typeof message !== 'string' || message.trim() === '') {
+        return false;
+    }
+    const normalized = message.trim().toLowerCase();
+    if (normalized.includes('pending')) {
+        return true;
+    }
+    if (normalized.includes('creating')) {
+        return true;
+    }
+    if (normalized.includes('queue')) {
+        return true;
+    }
+    return message.indexOf('正在创建') !== -1 || message.indexOf('排队') !== -1;
+}
+
+function resolvePendingRetryMaxAttempts(dataset) {
+    if (!dataset || !Number.isFinite(Number(dataset.pendingRetryMaxAttempts))) {
+        return 0;
+    }
+    const value = Math.max(0, parseInt(dataset.pendingRetryMaxAttempts, 10));
+    return Number.isFinite(value) ? value : 0;
+}
+
+function computePendingRetryDelayMs(dataset, retryIndex) {
+    if (!dataset) {
+        return 0;
+    }
+    const base = Number(dataset.pendingRetryInitialSleepMs) || 0;
+    const max = Math.max(Number(dataset.pendingRetryMaxSleepMs) || 0, base);
+    const multiplierRaw = Number(dataset.pendingRetryBackoffMultiplier);
+    const multiplier = Number.isFinite(multiplierRaw) && multiplierRaw >= 1 ? multiplierRaw : 1;
+    const index = Math.max(0, retryIndex);
+    if (base <= 0) {
+        return 0;
+    }
+    let delay = base;
+    if (index > 0) {
+        delay = base * Math.pow(multiplier, index);
+    }
+    if (!Number.isFinite(delay) || delay > max) {
+        delay = max;
+    }
+    if (delay < 0) {
+        return 0;
+    }
+    return delay;
 }
 
 function sendWithAuthRetry(context, tags, executor) {

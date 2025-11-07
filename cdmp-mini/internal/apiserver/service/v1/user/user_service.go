@@ -38,6 +38,7 @@ import (
 	"github.com/bytedance/gopkg/util/logger"
 	jsoniter "github.com/json-iterator/go"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/options"
+	storectx "github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/store"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/store/interfaces"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/audit"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/code"
@@ -61,13 +62,16 @@ import (
 )
 
 const (
-	RATE_LIMIT_PREVENTION   = usercache.NegativeCacheSentinel
-	BLACKLIST_SENTINEL      = usercache.BlacklistSentinel
-	createStepSlowThreshold = 200 * time.Millisecond
-	contactPlaceholderTTL   = 30 * time.Second
-	contactWarmupTimeout    = 2 * time.Minute
-	contactWarmupBatchSize  = 1000
-	contactCacheTTL         = 24 * time.Hour
+	RATE_LIMIT_PREVENTION           = usercache.NegativeCacheSentinel
+	BLACKLIST_SENTINEL              = usercache.BlacklistSentinel
+	createStepSlowThreshold         = 200 * time.Millisecond
+	contactPlaceholderTTL           = 30 * time.Second
+	contactWarmupTimeout            = 2 * time.Minute
+	contactWarmupBatchSize          = 1000
+	contactCacheTTL                 = 24 * time.Hour
+	strongConsistencyMaxRetries     = 3
+	strongConsistencyBackoffBase    = 80 * time.Millisecond
+	strongConsistencyBackoffCeiling = 500 * time.Millisecond
 )
 
 var json = jsoniter.ConfigCompatibleWithStandardLibrary
@@ -115,6 +119,12 @@ type pendingMarkerPayload struct {
 	LegacyRequestID string `json:"legacy_request_id,omitempty"`
 }
 
+type pendingMarkerState struct {
+	exists   bool
+	ttl      time.Duration
+	degraded bool
+}
+
 // WithForceCacheRefresh 标记当前请求需要绕过负缓存/黑名单哨兵。
 func WithForceCacheRefresh(ctx context.Context) context.Context {
 	if ctx == nil {
@@ -133,6 +143,16 @@ func forceCacheRefreshFromContext(ctx context.Context) bool {
 	}
 	trace.AddRequestTag(ctx, "force_cache_refresh", true)
 	return true
+}
+
+func isStrongConsistencyRequest(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	if v, ok := ctx.Value(forceCacheRefreshKey).(bool); ok && v {
+		return true
+	}
+	return storectx.ForcePrimaryFromContext(ctx)
 }
 
 // NewUserService 创建用户服务实例
@@ -246,29 +266,195 @@ func (u *UserService) getFromCache(ctx context.Context, cacheKey string) (*v1.Us
 func (u *UserService) getUserFromDBAndSetCache(ctx context.Context, username string) (*v1.User, error) {
 	defer u.reportDBPoolStats(ctx, "apiserver_user_service")
 
-	// 1. 查询数据库
-	user, err := u.Store.Users().Get(ctx, username, metav1.GetOptions{}, u.Options)
-	if err != nil {
-		if errors.IsCode(err, code.ErrUserNotFound) {
-			metrics.DBQueries.WithLabelValues("not_found").Inc()
-			cacheApplied, blacklisted := u.handleProtectionForMiss(ctx, username)
-			switch {
-			case blacklisted:
-				return &v1.User{ObjectMeta: metav1.ObjectMeta{Name: BLACKLIST_SENTINEL}}, nil
-			case cacheApplied:
-				return &v1.User{ObjectMeta: metav1.ObjectMeta{Name: RATE_LIMIT_PREVENTION}}, nil
-			default:
-				return nil, nil
+	strongConsistency := isStrongConsistencyRequest(ctx)
+	attempts := 0
+
+	for {
+		user, err := u.Store.Users().Get(ctx, username, metav1.GetOptions{}, u.Options)
+		if err != nil {
+			if errors.IsCode(err, code.ErrUserNotFound) {
+				metrics.DBQueries.WithLabelValues("not_found").Inc()
+				if strongConsistency {
+					if state, lookupErr := u.lookupPendingCreateMarker(ctx, username); lookupErr != nil {
+						trace.AddRequestTag(ctx, "pending_marker_lookup_error", lookupErr.Error())
+						log.Debugw("强一致查询pending标记检测失败", "username", username, "error", lookupErr)
+					} else if state.exists {
+						trace.AddRequestTag(ctx, "pending_marker_active", true)
+						if state.ttl > 0 {
+							trace.AddRequestTag(ctx, "pending_marker_ttl_ms", state.ttl.Milliseconds())
+						}
+						if state.degraded {
+							trace.AddRequestTag(ctx, "pending_marker_degraded", true)
+						}
+						message := "用户正在创建中，请稍后重试"
+						if state.degraded {
+							message = "用户创建正在排队，请稍后重试"
+						}
+						return nil, errors.WithCode(code.ErrUserNotFound, "%s", message)
+					}
+				}
+				cacheApplied, blacklisted := u.handleProtectionForMiss(ctx, username)
+				switch {
+				case blacklisted:
+					return &v1.User{ObjectMeta: metav1.ObjectMeta{Name: BLACKLIST_SENTINEL}}, nil
+				case cacheApplied:
+					return &v1.User{ObjectMeta: metav1.ObjectMeta{Name: RATE_LIMIT_PREVENTION}}, nil
+				default:
+					return nil, nil
+				}
 			}
+
+			if strongConsistency {
+				if retry, translatedErr := u.handleStrongConsistencyReadError(ctx, username, attempts, err); retry {
+					attempts++
+					continue
+				} else if translatedErr != nil {
+					return nil, translatedErr
+				}
+			}
+			return nil, err
 		}
-		return nil, err
+
+		if user == nil {
+			return nil, nil
+		}
+
+		// 写入缓存（带随机过期时间防雪崩）
+		u.setUserCache(ctx, username, user)
+
+		logger.Debugf("为用户%s设置缓存成功", username)
+		return user, nil
+	}
+}
+
+func (u *UserService) strongConsistencyRetryLimit() int {
+	return strongConsistencyMaxRetries
+}
+
+func (u *UserService) strongConsistencyBackoffDelay(attempt int) time.Duration {
+	if attempt < 0 {
+		attempt = 0
+	}
+	factor := 1 << uint(attempt)
+	delay := strongConsistencyBackoffBase * time.Duration(factor)
+	if delay > strongConsistencyBackoffCeiling {
+		return strongConsistencyBackoffCeiling
+	}
+	return delay
+}
+
+func waitWithContext(ctx context.Context, delay time.Duration) bool {
+	if delay <= 0 {
+		return true
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func (u *UserService) handleStrongConsistencyReadError(ctx context.Context, username string, attempt int, queryErr error) (bool, error) {
+	if queryErr == nil {
+		return false, nil
+	}
+	if errors.GetCode(queryErr) != code.ErrDatabaseTimeout {
+		return false, nil
 	}
 
-	//写入缓存（带随机过期时间防雪崩）
-	u.setUserCache(ctx, username, user)
+	state, lookupErr := u.lookupPendingCreateMarker(ctx, username)
+	if lookupErr != nil {
+		trace.AddRequestTag(ctx, "pending_marker_lookup_error", lookupErr.Error())
+		log.Debugw("强一致查询pending标记检测失败", "username", username, "error", lookupErr)
+		return false, nil
+	}
+	if !state.exists {
+		return false, nil
+	}
 
-	logger.Debugf("为用户%s设置缓存成功", username)
-	return user, nil
+	trace.AddRequestTag(ctx, "strong_consistency_pending", true)
+	if state.ttl > 0 {
+		trace.AddRequestTag(ctx, "pending_marker_ttl_ms", state.ttl.Milliseconds())
+	}
+	if state.degraded {
+		trace.AddRequestTag(ctx, "pending_marker_degraded", true)
+	}
+
+	maxAttempts := u.strongConsistencyRetryLimit()
+	if attempt+1 < maxAttempts {
+		delay := u.strongConsistencyBackoffDelay(attempt)
+		trace.AddRequestTag(ctx, fmt.Sprintf("strong_consistency_retry_delay_ms_%d", attempt+1), delay.Milliseconds())
+		if waitWithContext(ctx, delay) {
+			return true, nil
+		}
+		if ctx.Err() != nil {
+			return false, queryErr
+		}
+	}
+
+	message := "用户正在创建中，请稍后重试"
+	if state.degraded {
+		message = "用户创建正在排队，请稍后重试"
+	}
+	return false, errors.WithCode(code.ErrUserNotFound, "%s", message)
+}
+
+func (u *UserService) lookupPendingCreateMarker(ctx context.Context, username string) (pendingMarkerState, error) {
+	state := pendingMarkerState{}
+	if u == nil || u.Redis == nil {
+		return state, nil
+	}
+	trimmed := strings.TrimSpace(username)
+	if trimmed == "" {
+		return state, nil
+	}
+	key := usercache.PendingCreateKey(trimmed)
+	if key == "" {
+		return state, nil
+	}
+
+	redisCtx, cancel := u.redisOpContext(ctx)
+	start := time.Now()
+	value, err := u.Redis.GetKey(redisCtx, key)
+	cancel()
+	duration := time.Since(start)
+	metricErr := err
+	if errors.Is(err, redis.Nil) || errors.Is(err, storage.ErrKeyNotFound) {
+		metricErr = nil
+	}
+	metrics.RecordRedisOperation("pending_marker_get", duration.Seconds(), metricErr)
+	if err != nil {
+		if errors.Is(err, redis.Nil) || errors.Is(err, storage.ErrKeyNotFound) {
+			return state, nil
+		}
+		return state, err
+	}
+
+	state.exists = true
+	if degraded, decodeErr := usercache.PendingMarkerIsDegraded(value); decodeErr != nil {
+		trace.AddRequestTag(ctx, "pending_marker_decode_error", decodeErr.Error())
+	} else if degraded {
+		state.degraded = true
+	}
+
+	ttlCtx, ttlCancel := u.redisOpContext(ctx)
+	ttlStart := time.Now()
+	ttlSeconds, ttlErr := u.Redis.GetExp(ttlCtx, key)
+	ttlCancel()
+	ttlDuration := time.Since(ttlStart)
+	ttlMetricErr := ttlErr
+	if errors.Is(ttlErr, storage.ErrKeyNotFound) {
+		ttlMetricErr = nil
+	}
+	metrics.RecordRedisOperation("pending_marker_ttl", ttlDuration.Seconds(), ttlMetricErr)
+	if ttlErr == nil && ttlSeconds > 0 {
+		state.ttl = time.Duration(ttlSeconds) * time.Second
+	}
+
+	return state, nil
 }
 
 // setUserCache 设置用户缓存
@@ -358,6 +544,7 @@ func (u *UserService) refreshUserCacheFromDB(ctx context.Context, username strin
 	refreshKey := fmt.Sprintf("refresh:%s", username)
 	result, err, _ := u.group.Do(refreshKey, func() (interface{}, error) {
 		dbCtx, cancel := u.newDBContext(ctx, u.contactRefreshTimeout())
+		dbCtx = storectx.WithForcePrimary(dbCtx)
 		defer cancel()
 		return u.getUserFromDBAndSetCache(dbCtx, username)
 	})
@@ -1404,6 +1591,9 @@ func (u *UserService) checkUserExist(ctx context.Context, username string, force
 	result, err := util.RetryWithBackoff(u.Options.RedisOptions.MaxRetries, isRetryableError, func() (interface{}, error) {
 		attemptCount++
 		dbCtx, cancel := u.newDBContext(ctx, u.contactRefreshTimeout())
+		if forceRefresh {
+			dbCtx = storectx.WithForcePrimary(dbCtx)
+		}
 		defer cancel()
 		r, err, shared := u.group.Do(username, func() (interface{}, error) {
 			return u.getUserFromDBAndSetCache(dbCtx, username)

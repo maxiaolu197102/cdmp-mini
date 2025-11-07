@@ -1,0 +1,29 @@
+{
+    "usernamePrefix": "loadtest-mini",
+    "basePassword": "Test@1234",
+    "emailDomain": "example.com",
+    "serialUserCount": 5,
+    "parallelPutUserCount": 20,
+    "profileUserCount": 20,
+    "batchUserCount": 10,
+    "batchChunkSize": 5,
+    "batchTargetRatio": 0.5,
+    "requestTimeout": "30s",
+    "sleepBetween": 0.05,
+    "seedNicknamePrefix": "seed",
+    "putNicknamePrefix": "put",
+    "profileNicknamePrefix": "profile",
+    "batchNicknamePrefix": "batch",
+    "putToggleAdmin": true,
+    "includePhoneUpdates": true,
+    "profileUpdateEmail": true,
+    "profileUpdatePhone": false,
+    "batchToggleStatus": true,
+    "maxUsernameLength": 63,
+    "phonePrefix": "147100",
+    "phoneSuffixLength": 5,
+    "userReadyTimeoutMs": 60000,
+    "batchUpdates": {
+        "isAdmin": 1
+    }
+}

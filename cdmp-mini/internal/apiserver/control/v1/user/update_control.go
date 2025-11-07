@@ -2,6 +2,7 @@ package user
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	sru "github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/service/v1/user"
+	storectx "github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/store"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/audit"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/code"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/metrics"
@@ -39,6 +41,7 @@ func (u *UserController) Update(ctx *gin.Context) {
 	operator := common.GetUsername(traceCtx)
 	trace.SetOperator(traceCtx, operator)
 	controllerCtx, controllerSpan := trace.StartSpan(traceCtx, "user-controller", "update_user")
+	controllerCtx = storectx.WithForcePrimary(controllerCtx)
 	ctx.Request = ctx.Request.WithContext(controllerCtx)
 	trace.SetOperator(controllerCtx, operator)
 	trace.AddRequestTag(controllerCtx, "controller", "update_user")
@@ -133,6 +136,7 @@ func (u *UserController) Update(ctx *gin.Context) {
 		}
 
 		c := ctx.Request.Context()
+		c = sru.WithForceCacheRefresh(c)
 		// 使用HTTP请求的超时配置，而不是Redis超时
 		if _, hasDeadline := c.Deadline(); !hasDeadline {
 			var cancel context.CancelFunc
@@ -224,14 +228,19 @@ func (u *UserController) Update(ctx *gin.Context) {
 			auditLog("fail", err.Error())
 			return err
 		}
-		if existingUser.ObjectMeta.Version != *req.Version {
+		currentVersion := existingUser.ObjectMeta.Version
+		if strings.HasPrefix(existingUser.Name, "lock_case_") && req.Version != nil {
+			log.Infof("[lock-debug-controller] username=%s currentVersion=%d requestedVersion=%d", existingUser.Name, currentVersion, *req.Version)
+			fmt.Printf("[lock-debug-controller] username=%s currentVersion=%d requestedVersion=%d\n", existingUser.Name, currentVersion, *req.Version)
+		}
+		if currentVersion != *req.Version {
 			resultUser := v1.ConvertToPublicUser(existingUser)
 			if resultUser != nil {
-				resultUser.Metadata.Version = existingUser.ObjectMeta.Version
+				resultUser.Metadata.Version = currentVersion
 			}
 			snapshot := gin.H{
 				"update_user":     resultUser,
-				"current_version": existingUser.ObjectMeta.Version,
+				"current_version": currentVersion,
 				"operator":        common.GetUsername(ctx.Request.Context()),
 				"operation_time":  time.Now().Format(time.RFC3339),
 				"operation_type":  "noop",
@@ -279,21 +288,22 @@ func (u *UserController) Update(ctx *gin.Context) {
 			return err
 		}
 
-		nextVersion := existingUser.ObjectMeta.Version + 1
+		nextVersion := currentVersion + 1
 		resultUser := v1.ConvertToPublicUser(existingUser)
 		if resultUser != nil {
-			resultUser.Metadata.Version = nextVersion
+			resultUser.Metadata.Version = currentVersion
 			resultUser.UpdatedAt = time.Now().UTC()
 		}
 
 		// 构建成功数据
 		successData := gin.H{
-			"update_user":    resultUser,
-			"next_version":   nextVersion,
-			"operator":       common.GetUsername(ctx.Request.Context()),
-			"operation_time": time.Now().Format(time.RFC3339),
-			"operation_type": "create",
-			"code":           code.ErrSuccess,
+			"update_user":     resultUser,
+			"current_version": currentVersion,
+			"next_version":    nextVersion,
+			"operator":        common.GetUsername(ctx.Request.Context()),
+			"operation_time":  time.Now().Format(time.RFC3339),
+			"operation_type":  "update",
+			"code":            code.ErrSuccess,
 		}
 
 		summaryFields := []string{}

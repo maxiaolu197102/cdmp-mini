@@ -97,7 +97,7 @@ func TestUpdatePerformance(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if resp.HTTPStatus() != http.StatusAccepted && resp.HTTPStatus() != http.StatusOK {
+		if resp.HTTPStatus() != http.StatusOK {
 			return fmt.Errorf("unexpected status=%d", resp.HTTPStatus())
 		}
 		return nil
@@ -430,7 +430,7 @@ func runBatchScenario(t *testing.T, env *framework.Env, prefix, password string,
 			},
 		}
 		resp, err := env.AdminRequest(http.MethodPatch, "/api/users", payload)
-		if err != nil || resp.HTTPStatus() != http.StatusAccepted {
+		if err != nil || resp.HTTPStatus() != http.StatusOK {
 			perf.failure++
 			continue
 		}

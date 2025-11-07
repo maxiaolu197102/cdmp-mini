@@ -10,5 +10,10 @@
     "maxUsernameLength": 40,
     "batchSize": 15,
     "verifyDeletion": true,
-    "respawnOnFailure": true
+    "respawnOnFailure": true,
+    "deleteMaxAttempts": 3,
+    "pendingRetryMaxAttempts": 6,
+    "pendingRetryInitialSleepMs": 120,
+    "pendingRetryBackoffMultiplier": 1.8,
+    "pendingRetryMaxSleepMs": 900
 }

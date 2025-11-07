@@ -2,3 +2,7 @@
 - [ ] Investigate 5m delete_force run: http_req_duration p99 ≈ 8.8s and 29k dropped iterations (consider higher maxVUs or lower rates)
 - [ ] Trace-based analysis: pinpoint Kafka consumption bottleneck (fetch vs. flush-to-MySQL vs. ack) and outline speed-up options
 - [ ] Design batch workflow scenario, collect trace metrics, and evaluate bulk path latency
+- [ ] Investigate MySQL slow queries/resource usage during pressure windows (why queries miss the 200 ms budget; inspect indexes, pool sizing, lock waits)
+- [x] Revisit user-store read timeouts for strong consistency (200 ms + retry) and document backoff/timeout adjustments
+- [ ] Evaluate workload-side mitigations: insert-to-read delay in scripts vs. speeding up Kafka-to-MySQL path (consumer concurrency, transaction tuning)
+- [ ] During pending window, prefer 404 over 504 for strong-read misses so scripts can distinguish “not yet persisted” from “DB timeout”

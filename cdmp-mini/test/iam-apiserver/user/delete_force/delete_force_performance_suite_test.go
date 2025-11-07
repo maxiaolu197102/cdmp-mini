@@ -1,3 +1,6 @@
+//go:build perf
+// +build perf
+
 package delete_force
 
 import (

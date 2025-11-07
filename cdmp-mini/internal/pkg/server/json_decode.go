@@ -62,6 +62,14 @@ func decodeUserMessage(data []byte, dst *v1.User) error {
 				val := iter.ReadUint64()
 				dst.ExpectedVersion = &val
 			}
+		case "version":
+			if iter.WhatIsNext() == jsoniter.NilValue {
+				iter.ReadNil()
+				dst.ExpectedVersion = nil
+			} else {
+				val := iter.ReadUint64()
+				dst.ExpectedVersion = &val
+			}
 		case "conditions":
 			raw := iter.SkipAndReturnBytes()
 			if len(raw) > 0 {

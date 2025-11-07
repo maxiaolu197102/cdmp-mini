@@ -1,0 +1,729 @@
+{
+    "metrics": {
+        "update_batch_latency": {
+            "avg": 3.0435550916030545,
+            "min": 1.573092,
+            "med": 2.608753,
+            "max": 155.186861,
+            "p(90)": 3.641302,
+            "p(95)": 4.313585,
+            "thresholds": {
+                "p(95)<800": false
+            }
+        },
+        "data_sent": {
+            "rate": 360779.98631967214,
+            "count": 53689223
+        },
+        "http_req_tls_handshaking": {
+            "p(90)": 0,
+            "p(95)": 0,
+            "avg": 0,
+            "min": 0,
+            "med": 0,
+            "max": 0
+        },
+        "vus": {
+            "value": 27,
+            "min": 0,
+            "max": 68
+        },
+        "iterations": {
+            "count": 60231,
+            "rate": 404.7393153002079
+        },
+        "dropped_iterations": {
+            "rate": 0.09407697720779848,
+            "count": 14
+        },
+        "update_batch_success_rate": {
+            "passes": 1441,
+            "fails": 0,
+            "thresholds": {
+                "rate>0.90": false
+            },
+            "value": 1
+        },
+        "vus_max": {
+            "value": 89,
+            "min": 78,
+            "max": 89
+        },
+        "checks": {
+            "passes": 120462,
+            "fails": 0,
+            "value": 1
+        },
+        "http_req_blocked": {
+            "avg": 0.009100474098893589,
+            "min": 0.003592,
+            "med": 0.00786,
+            "max": 1.378692,
+            "p(90)": 0.013674800000000003,
+            "p(95)": 0.014917
+        },
+        "http_req_receiving": {
+            "med": 0.073666,
+            "max": 12.648411,
+            "p(90)": 0.13291780000000003,
+            "p(95)": 0.1478131,
+            "avg": 0.08210445543815448,
+            "min": 0.023303
+        },
+        "http_req_duration": {
+            "avg": 3.792537635078915,
+            "min": 1.573092,
+            "med": 3.29331,
+            "max": 184.728174,
+            "p(90)": 5.2676558,
+            "p(95)": 5.951367799999998,
+            "thresholds": {
+                "p(99)<2000": false
+            }
+        },
+        "http_req_connecting": {
+            "avg": 0.00017546898999784357,
+            "min": 0,
+            "med": 0,
+            "max": 0.293469,
+            "p(90)": 0,
+            "p(95)": 0
+        },
+        "update_put_success_rate": {
+            "passes": 27602,
+            "fails": 0,
+            "thresholds": {
+                "rate>0.95": false
+            },
+            "value": 1
+        },
+        "data_received": {
+            "count": 51464614,
+            "rate": 345831.0941632962
+        },
+        "update_degraded_rate": {
+            "passes": 0,
+            "fails": 60231,
+            "thresholds": {
+                "rate<0.02": false
+            },
+            "value": 0
+        },
+        "http_req_sending": {
+            "avg": 0.036628846865825196,
+            "min": 0.012121,
+            "med": 0.032071,
+            "max": 17.279714,
+            "p(90)": 0.058687,
+            "p(95)": 0.06616119999999998
+        },
+        "update_profile_success_rate": {
+            "passes": 31188,
+            "fails": 0,
+            "thresholds": {
+                "rate>0.97": false
+            },
+            "value": 1
+        },
+        "update_put_latency": {
+            "avg": 4.418988482754817,
+            "min": 2.391385,
+            "med": 4.096848,
+            "max": 183.496107,
+            "p(90)": 5.747018300000001,
+            "p(95)": 6.367671199999999,
+            "thresholds": {
+                "p(95)<500": false
+            }
+        },
+        "http_req_failed": {
+            "passes": 0,
+            "fails": 60287,
+            "thresholds": {
+                "rate<0.05": false
+            },
+            "value": 0
+        },
+        "update_profile_latency": {
+            "p(95)": 4.439887999999999,
+            "avg": 3.2414385439271727,
+            "min": 1.723618,
+            "med": 2.846064,
+            "max": 184.728174,
+            "p(90)": 3.9255449,
+            "thresholds": {
+                "p(95)<400": false
+            }
+        },
+        "http_reqs": {
+            "count": 60287,
+            "rate": 405.1156232090391
+        },
+        "http_req_duration{expected_response:true}": {
+            "min": 1.573092,
+            "med": 3.29331,
+            "max": 184.728174,
+            "p(90)": 5.2676558,
+            "p(95)": 5.951367799999998,
+            "avg": 3.792537635078915
+        },
+        "http_req_waiting": {
+            "min": 1.515271,
+            "med": 3.169276,
+            "max": 184.643885,
+            "p(90)": 5.1008645999999995,
+            "p(95)": 5.7839306,
+            "avg": 3.6738043327748673
+        },
+        "iteration_duration": {
+            "max": 236.139019,
+            "p(90)": 56.599257,
+            "p(95)": 57.4398255,
+            "avg": 54.767053323022914,
+            "min": 51.939015,
+            "med": 54.288425
+        }
+    },
+    "setup_data": {
+        "baseUrl": "http://192.168.10.8:8088",
+        "batchConditionSets": [
+            [
+                "loadtest-mini-batch-0-0-mhls8cb600d13hg",
+                "loadtest-mini-batch-1-0-mhls8cqf00m8okc"
+            ],
+            [
+                "loadtest-mini-batch-5-0-mhls8ecv00j8vp2",
+                "loadtest-mini-batch-6-0-mhls8er300r3ypq"
+            ]
+        ],
+        "batchUsers": [
+            {
+                "version": 1,
+                "altPhone": "14710064364",
+                "baseEmail": "loadtest-mini-batch-0-0-mhls8cb600d13hg",
+                "name": "loadtest-mini-batch-0-0-mhls8cb600d13hg",
+                "phone": "14710064309"
+            },
+            {
+                "version": 1,
+                "altPhone": "14710064365",
+                "baseEmail": "loadtest-mini-batch-1-0-mhls8cqf00m8okc",
+                "name": "loadtest-mini-batch-1-0-mhls8cqf00m8okc",
+                "phone": "14710064310"
+            },
+            {
+                "baseEmail": "loadtest-mini-batch-2-0-mhls8d5a00ignk5",
+                "name": "loadtest-mini-batch-2-0-mhls8d5a00ignk5",
+                "phone": "14710064311",
+                "version": 1,
+                "altPhone": "14710064366"
+            },
+            {
+                "altPhone": "14710064367",
+                "baseEmail": "loadtest-mini-batch-3-0-mhls8djx00hb0zh",
+                "name": "loadtest-mini-batch-3-0-mhls8djx00hb0zh",
+                "phone": "14710064312",
+                "version": 1
+            },
+            {
+                "altPhone": "14710064368",
+                "baseEmail": "loadtest-mini-batch-4-0-mhls8dyl00o5u9l",
+                "name": "loadtest-mini-batch-4-0-mhls8dyl00o5u9l",
+                "phone": "14710064313",
+                "version": 1
+            },
+            {
+                "name": "loadtest-mini-batch-5-0-mhls8ecv00j8vp2",
+                "phone": "14710064314",
+                "version": 1,
+                "altPhone": "14710064369",
+                "baseEmail": "loadtest-mini-batch-5-0-mhls8ecv00j8vp2"
+            },
+            {
+                "altPhone": "14710064370",
+                "baseEmail": "loadtest-mini-batch-6-0-mhls8er300r3ypq",
+                "name": "loadtest-mini-batch-6-0-mhls8er300r3ypq",
+                "phone": "14710064315",
+                "version": 1
+            },
+            {
+                "baseEmail": "loadtest-mini-batch-7-0-mhls8f5d00ja4mz",
+                "name": "loadtest-mini-batch-7-0-mhls8f5d00ja4mz",
+                "phone": "14710064316",
+                "version": 1,
+                "altPhone": "14710064371"
+            },
+            {
+                "name": "loadtest-mini-batch-8-0-mhls8fjl00iu9mb",
+                "phone": "14710064317",
+                "version": 1,
+                "altPhone": "14710064372",
+                "baseEmail": "loadtest-mini-batch-8-0-mhls8fjl00iu9mb"
+            },
+            {
+                "baseEmail": "loadtest-mini-batch-9-0-mhls8fxu00v0phz",
+                "name": "loadtest-mini-batch-9-0-mhls8fxu00v0phz",
+                "phone": "14710064318",
+                "version": 1,
+                "altPhone": "14710064373"
+            }
+        ],
+        "dataset": {
+            "requestTimeout": "30s",
+            "seedExtras": null,
+            "phoneSeedOffset": 64264,
+            "basePassword": "Test@1234",
+            "batchTargetRatio": 0.5,
+            "batchToggleStatus": true,
+            "phonePrefix": "147100",
+            "putNicknamePrefix": "put",
+            "seedExtendTemplate": null,
+            "userVisibilityDelayMs": 500,
+            "profileUserCount": 20,
+            "putMaxAttempts": 2,
+            "emailDomain": "example.com",
+            "includePhoneUpdates": true,
+            "phoneSuffixLength": 5,
+            "profileNicknamePrefix": "profile",
+            "serialUserCount": 5,
+            "usernamePrefix": "loadtest-mini",
+            "batchChunkSize": 5,
+            "maxUsernameLength": 63,
+            "parallelPutUserCount": 20,
+            "profileUpdateEmail": true,
+            "seedLabels": null,
+            "sleepBetween": 0.05,
+            "userReadyTimeoutMs": 60000,
+            "batchUserCount": 10,
+            "phoneSeedAltOffset": 64319,
+            "phoneSeedCursor": 55,
+            "profileUpdatePhone": false,
+            "putToggleAdmin": true,
+            "seedNicknamePrefix": "seed",
+            "batchNicknamePrefix": "batch",
+            "batchUpdates": {
+                "isAdmin": 1
+            },
+            "phoneSeedAltCursor": 55
+        },
+        "profileUsers": [
+            {
+                "phone": "14710064289",
+                "version": 1,
+                "altPhone": "14710064344",
+                "baseEmail": "loadtest-mini-profile-0-0-mhls848o00wcfy7",
+                "name": "loadtest-mini-profile-0-0-mhls848o00wcfy7"
+            },
+            {
+                "name": "loadtest-mini-profile-1-0-mhls84mz003593l",
+                "phone": "14710064290",
+                "version": 1,
+                "altPhone": "14710064345",
+                "baseEmail": "loadtest-mini-profile-1-0-mhls84mz003593l"
+            },
+            {
+                "version": 1,
+                "altPhone": "14710064346",
+                "baseEmail": "loadtest-mini-profile-2-0-mhls851b005hvr7",
+                "name": "loadtest-mini-profile-2-0-mhls851b005hvr7",
+                "phone": "14710064291"
+            },
+            {
+                "altPhone": "14710064347",
+                "baseEmail": "loadtest-mini-profile-3-0-mhls85fo00yv3ce",
+                "name": "loadtest-mini-profile-3-0-mhls85fo00yv3ce",
+                "phone": "14710064292",
+                "version": 1
+            },
+            {
+                "name": "loadtest-mini-profile-4-0-mhls85u100kucwo",
+                "phone": "14710064293",
+                "version": 1,
+                "altPhone": "14710064348",
+                "baseEmail": "loadtest-mini-profile-4-0-mhls85u100kucwo"
+            },
+            {
+                "altPhone": "14710064349",
+                "baseEmail": "loadtest-mini-profile-5-0-mhls868d00j9z7m",
+                "name": "loadtest-mini-profile-5-0-mhls868d00j9z7m",
+                "phone": "14710064294",
+                "version": 1
+            },
+            {
+                "version": 1,
+                "altPhone": "14710064350",
+                "baseEmail": "loadtest-mini-profile-6-0-mhls86mp00hb396",
+                "name": "loadtest-mini-profile-6-0-mhls86mp00hb396",
+                "phone": "14710064295"
+            },
+            {
+                "baseEmail": "loadtest-mini-profile-7-0-mhls871d00ogpav",
+                "name": "loadtest-mini-profile-7-0-mhls871d00ogpav",
+                "phone": "14710064296",
+                "version": 1,
+                "altPhone": "14710064351"
+            },
+            {
+                "baseEmail": "loadtest-mini-profile-8-0-mhls87fy00n67th",
+                "name": "loadtest-mini-profile-8-0-mhls87fy00n67th",
+                "phone": "14710064297",
+                "version": 1,
+                "altPhone": "14710064352"
+            },
+            {
+                "altPhone": "14710064353",
+                "baseEmail": "loadtest-mini-profile-9-0-mhls87ua00wg1o8",
+                "name": "loadtest-mini-profile-9-0-mhls87ua00wg1o8",
+                "phone": "14710064298",
+                "version": 1
+            },
+            {
+                "altPhone": "14710064354",
+                "baseEmail": "loadtest-mini-profile-10-0-mhls888u00crz",
+                "name": "loadtest-mini-profile-10-0-mhls888u00crz",
+                "phone": "14710064299",
+                "version": 1
+            },
+            {
+                "altPhone": "14710064355",
+                "baseEmail": "loadtest-mini-profile-11-0-mhls88nc00rkvdz",
+                "name": "loadtest-mini-profile-11-0-mhls88nc00rkvdz",
+                "phone": "14710064300",
+                "version": 1
+            },
+            {
+                "phone": "14710064301",
+                "version": 1,
+                "altPhone": "14710064356",
+                "baseEmail": "loadtest-mini-profile-12-0-mhls891t00yj1xw",
+                "name": "loadtest-mini-profile-12-0-mhls891t00yj1xw"
+            },
+            {
+                "altPhone": "14710064357",
+                "baseEmail": "loadtest-mini-profile-13-0-mhls89g9005wroo",
+                "name": "loadtest-mini-profile-13-0-mhls89g9005wroo",
+                "phone": "14710064302",
+                "version": 1
+            },
+            {
+                "baseEmail": "loadtest-mini-profile-14-0-mhls89ur00zuhe0",
+                "name": "loadtest-mini-profile-14-0-mhls89ur00zuhe0",
+                "phone": "14710064303",
+                "version": 1,
+                "altPhone": "14710064358"
+            },
+            {
+                "name": "loadtest-mini-profile-15-0-mhls8a9x00f731y",
+                "phone": "14710064304",
+                "version": 1,
+                "altPhone": "14710064359",
+                "baseEmail": "loadtest-mini-profile-15-0-mhls8a9x00f731y"
+            },
+            {
+                "altPhone": "14710064360",
+                "baseEmail": "loadtest-mini-profile-16-0-mhls8aoy00siu24",
+                "name": "loadtest-mini-profile-16-0-mhls8aoy00siu24",
+                "phone": "14710064305",
+                "version": 1
+            },
+            {
+                "baseEmail": "loadtest-mini-profile-17-0-mhls8b3e005h0rl",
+                "name": "loadtest-mini-profile-17-0-mhls8b3e005h0rl",
+                "phone": "14710064306",
+                "version": 1,
+                "altPhone": "14710064361"
+            },
+            {
+                "altPhone": "14710064362",
+                "baseEmail": "loadtest-mini-profile-18-0-mhls8bht00vakqx",
+                "name": "loadtest-mini-profile-18-0-mhls8bht00vakqx",
+                "phone": "14710064307",
+                "version": 1
+            },
+            {
+                "altPhone": "14710064363",
+                "baseEmail": "loadtest-mini-profile-19-0-mhls8bwp00wq1y1",
+                "name": "loadtest-mini-profile-19-0-mhls8bwp00wq1y1",
+                "phone": "14710064308",
+                "version": 1
+            }
+        ],
+        "serialUsers": [
+            {
+                "baseEmail": "loadtest-mini-serial-0-0-mhls7u7i00ia71u",
+                "name": "loadtest-mini-serial-0-0-mhls7u7i00ia71u",
+                "phone": "14710064264",
+                "version": 1,
+                "altPhone": "14710064319"
+            },
+            {
+                "altPhone": "14710064320",
+                "baseEmail": "loadtest-mini-serial-1-0-mhls7ulv00b6jwl",
+                "name": "loadtest-mini-serial-1-0-mhls7ulv00b6jwl",
+                "phone": "14710064265",
+                "version": 1
+            },
+            {
+                "phone": "14710064266",
+                "version": 1,
+                "altPhone": "14710064321",
+                "baseEmail": "loadtest-mini-serial-2-0-mhls7v08008uay4",
+                "name": "loadtest-mini-serial-2-0-mhls7v08008uay4"
+            },
+            {
+                "altPhone": "14710064322",
+                "baseEmail": "loadtest-mini-serial-3-0-mhls7vem0051xks",
+                "name": "loadtest-mini-serial-3-0-mhls7vem0051xks",
+                "phone": "14710064267",
+                "version": 1
+            },
+            {
+                "name": "loadtest-mini-serial-4-0-mhls7vsz0078a44",
+                "phone": "14710064268",
+                "version": 1,
+                "altPhone": "14710064323",
+                "baseEmail": "loadtest-mini-serial-4-0-mhls7vsz0078a44"
+            }
+        ],
+        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQiOiJodHRwczovL2dpdGh1Yi5jb20vbWF4aWFvbHUxOTgxL2NyZXRlbSIsImV4cCI6MTc2MjMzNzY5NCwiaWF0IjoxNzYyMzM0MDk0LCJpc2FkbWluIjoiMSIsImlzcyI6Imh0dHBzOi8vZ2l0aHViLmNvbS9tYXhpYW9sdTE5ODEvY3JldGVtIiwianRpIjoiand0X3Jsenh5NW1yMXI5bDY5Iiwib3JpZ19pYXQiOjE3NjIzMzQwOTQsInJvbGUiOiJhZG1pbiIsInNlc3Npb25faWQiOiJzZXNzXzNjOWNhZDQzN2UxMjY0MjEiLCJzdWIiOiJhZG1pbiIsInR5cGUiOiJhY2Nlc3MiLCJ1c2VyX2lkIjoiMyIsInVzZXJfc3RhdHVzIjoxLCJ1c2VybmFtZSI6ImFkbWluIn0.VljeNOoeMpdJCtJ82XRT0WyVfOac_tgrvmcI48-nt1E",
+        "parallelPutUsers": [
+            {
+                "altPhone": "14710064324",
+                "baseEmail": "loadtest-mini-put-0-0-mhls7w7d00psi2y",
+                "name": "loadtest-mini-put-0-0-mhls7w7d00psi2y",
+                "phone": "14710064269",
+                "version": 1
+            },
+            {
+                "version": 1,
+                "altPhone": "14710064325",
+                "baseEmail": "loadtest-mini-put-1-0-mhls7wlq00epdib",
+                "name": "loadtest-mini-put-1-0-mhls7wlq00epdib",
+                "phone": "14710064270"
+            },
+            {
+                "altPhone": "14710064326",
+                "baseEmail": "loadtest-mini-put-2-0-mhls7x070064xju",
+                "name": "loadtest-mini-put-2-0-mhls7x070064xju",
+                "phone": "14710064271",
+                "version": 1
+            },
+            {
+                "name": "loadtest-mini-put-3-0-mhls7xek009oe5d",
+                "phone": "14710064272",
+                "version": 1,
+                "altPhone": "14710064327",
+                "baseEmail": "loadtest-mini-put-3-0-mhls7xek009oe5d"
+            },
+            {
+                "version": 1,
+                "altPhone": "14710064328",
+                "baseEmail": "loadtest-mini-put-4-0-mhls7xsw00r1fgs",
+                "name": "loadtest-mini-put-4-0-mhls7xsw00r1fgs",
+                "phone": "14710064273"
+            },
+            {
+                "altPhone": "14710064329",
+                "baseEmail": "loadtest-mini-put-5-0-mhls7y92001lph9",
+                "name": "loadtest-mini-put-5-0-mhls7y92001lph9",
+                "phone": "14710064274",
+                "version": 1
+            },
+            {
+                "altPhone": "14710064330",
+                "baseEmail": "loadtest-mini-put-6-0-mhls7ynl00kn5fl",
+                "name": "loadtest-mini-put-6-0-mhls7ynl00kn5fl",
+                "phone": "14710064275",
+                "version": 1
+            },
+            {
+                "phone": "14710064276",
+                "version": 1,
+                "altPhone": "14710064331",
+                "baseEmail": "loadtest-mini-put-7-0-mhls7z1x005cop8",
+                "name": "loadtest-mini-put-7-0-mhls7z1x005cop8"
+            },
+            {
+                "altPhone": "14710064332",
+                "baseEmail": "loadtest-mini-put-8-0-mhls7zg9008oao9",
+                "name": "loadtest-mini-put-8-0-mhls7zg9008oao9",
+                "phone": "14710064277",
+                "version": 1
+            },
+            {
+                "phone": "14710064278",
+                "version": 1,
+                "altPhone": "14710064333",
+                "baseEmail": "loadtest-mini-put-9-0-mhls7zum00fliwt",
+                "name": "loadtest-mini-put-9-0-mhls7zum00fliwt"
+            },
+            {
+                "baseEmail": "loadtest-mini-put-10-0-mhls808y002vei2",
+                "name": "loadtest-mini-put-10-0-mhls808y002vei2",
+                "phone": "14710064279",
+                "version": 1,
+                "altPhone": "14710064334"
+            },
+            {
+                "phone": "14710064280",
+                "version": 1,
+                "altPhone": "14710064335",
+                "baseEmail": "loadtest-mini-put-11-0-mhls80na00t1ww7",
+                "name": "loadtest-mini-put-11-0-mhls80na00t1ww7"
+            },
+            {
+                "version": 1,
+                "altPhone": "14710064336",
+                "baseEmail": "loadtest-mini-put-12-0-mhls811m00tnhcd",
+                "name": "loadtest-mini-put-12-0-mhls811m00tnhcd",
+                "phone": "14710064281"
+            },
+            {
+                "name": "loadtest-mini-put-13-0-mhls81fz0040q7v",
+                "phone": "14710064282",
+                "version": 1,
+                "altPhone": "14710064337",
+                "baseEmail": "loadtest-mini-put-13-0-mhls81fz0040q7v"
+            },
+            {
+                "phone": "14710064283",
+                "version": 1,
+                "altPhone": "14710064338",
+                "baseEmail": "loadtest-mini-put-14-0-mhls81uc003qw0x",
+                "name": "loadtest-mini-put-14-0-mhls81uc003qw0x"
+            },
+            {
+                "altPhone": "14710064339",
+                "baseEmail": "loadtest-mini-put-15-0-mhls828o00e35pz",
+                "name": "loadtest-mini-put-15-0-mhls828o00e35pz",
+                "phone": "14710064284",
+                "version": 1
+            },
+            {
+                "version": 1,
+                "altPhone": "14710064340",
+                "baseEmail": "loadtest-mini-put-16-0-mhls82n600jhoqw",
+                "name": "loadtest-mini-put-16-0-mhls82n600jhoqw",
+                "phone": "14710064285"
+            },
+            {
+                "altPhone": "14710064341",
+                "baseEmail": "loadtest-mini-put-17-0-mhls831j00r135g",
+                "name": "loadtest-mini-put-17-0-mhls831j00r135g",
+                "phone": "14710064286",
+                "version": 1
+            },
+            {
+                "baseEmail": "loadtest-mini-put-18-0-mhls83fv00dcoxm",
+                "name": "loadtest-mini-put-18-0-mhls83fv00dcoxm",
+                "phone": "14710064287",
+                "version": 1,
+                "altPhone": "14710064342"
+            },
+            {
+                "phone": "14710064288",
+                "version": 1,
+                "altPhone": "14710064343",
+                "baseEmail": "loadtest-mini-put-19-0-mhls83ub00uwmft",
+                "name": "loadtest-mini-put-19-0-mhls83ub00uwmft"
+            }
+        ],
+        "scenarioMeta": {
+            "scenarioBatchCondition": {
+                "duration": "2m",
+                "exec": "scenarioBatchCondition",
+                "executor": "constant-arrival-rate",
+                "maxVUs": 24,
+                "preAllocatedVUs": 6,
+                "rate": 12,
+                "timeUnit": "1s"
+            },
+            "scenarioProfileBaseline": {
+                "preAllocatedVUs": 4,
+                "rate": 40,
+                "timeUnit": "1s",
+                "duration": "2m",
+                "exec": "scenarioProfileBaseline",
+                "executor": "constant-arrival-rate",
+                "maxVUs": 12
+            },
+            "scenarioProfileParallel": {
+                "exec": "scenarioProfileParallel",
+                "executor": "constant-arrival-rate",
+                "maxVUs": 64,
+                "preAllocatedVUs": 32,
+                "rate": 220,
+                "timeUnit": "1s",
+                "duration": "2m"
+            },
+            "scenarioPutBaseline": {
+                "executor": "constant-arrival-rate",
+                "maxVUs": 12,
+                "preAllocatedVUs": 4,
+                "rate": 30,
+                "timeUnit": "1s",
+                "duration": "2m",
+                "exec": "scenarioPutBaseline"
+            },
+            "scenarioPutParallel": {
+                "duration": "2m",
+                "exec": "scenarioPutParallel",
+                "executor": "constant-arrival-rate",
+                "maxVUs": 64,
+                "preAllocatedVUs": 32,
+                "rate": 200,
+                "timeUnit": "1s"
+            }
+        }
+    },
+    "root_group": {
+        "name": "",
+        "path": "",
+        "id": "d41d8cd98f00b204e9800998ecf8427e",
+        "groups": {},
+        "checks": {
+                "profile_http_202": {
+                    "fails": 0,
+                    "name": "profile_http_202",
+                    "path": "::profile_http_202",
+                    "id": "a40951299d13a3c2f1e1dbb6db1dcc3f",
+                    "passes": 31188
+                },
+                "profile_code_success": {
+                    "name": "profile_code_success",
+                    "path": "::profile_code_success",
+                    "id": "d6ca85c476c044b4ae18d2d01e67ea1c",
+                    "passes": 31188,
+                    "fails": 0
+                },
+                "batch_http_202": {
+                    "name": "batch_http_202",
+                    "path": "::batch_http_202",
+                    "id": "82720df4b6004f275331826b074561a1",
+                    "passes": 1441,
+                    "fails": 0
+                },
+                "batch_code_success": {
+                    "path": "::batch_code_success",
+                    "id": "724a84b4a36bd1cbf95e0c14b9654e8e",
+                    "passes": 1441,
+                    "fails": 0,
+                    "name": "batch_code_success"
+                },
+                "put_http_200": {
+                    "name": "put_http_200",
+                    "path": "::put_http_200",
+                    "id": "089dab8b695f58539129567bd1f4d9b0",
+                    "passes": 27602,
+                    "fails": 0
+                },
+                "put_code_success": {
+                    "name": "put_code_success",
+                    "path": "::put_code_success",
+                    "id": "aa54f06f8e91000a225ce68048f55855",
+                    "passes": 27602,
+                    "fails": 0
+                }
+            }
+    }
+}

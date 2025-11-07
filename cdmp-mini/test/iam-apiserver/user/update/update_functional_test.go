@@ -324,7 +324,7 @@ func TestTargetedPatchFunctional(t *testing.T) {
 			payload: func(spec framework.UserSpec) map[string]any {
 				return map[string]any{"nickname": "patch_single_field"}
 			},
-			expectHTTP: http.StatusAccepted,
+			expectHTTP: http.StatusOK,
 			expectCode: code.ErrSuccess,
 			waitCheck: func(t *testing.T, env *framework.Env, spec framework.UserSpec) {
 				user, unsupported := waitForPublicUser(t, env, spec.Name, 25*time.Second, func(u *publicUser) bool {
@@ -352,7 +352,7 @@ func TestTargetedPatchFunctional(t *testing.T) {
 					"version":  float64(9999),
 				}
 			},
-			expectHTTP: http.StatusAccepted,
+			expectHTTP: http.StatusOK,
 			expectCode: code.ErrSuccess,
 			waitCheck: func(t *testing.T, env *framework.Env, spec framework.UserSpec) {
 				user, unsupported := waitForPublicUser(t, env, spec.Name, 25*time.Second, func(u *publicUser) bool {
@@ -388,7 +388,7 @@ func TestTargetedPatchFunctional(t *testing.T) {
 			payload: func(spec framework.UserSpec) map[string]any {
 				return map[string]any{"password": "NewPassw0rd#1"}
 			},
-			expectHTTP: http.StatusAccepted,
+			expectHTTP: http.StatusOK,
 			expectCode: code.ErrSuccess,
 			waitCheck: func(t *testing.T, env *framework.Env, spec framework.UserSpec) {
 				newPassword := "NewPassw0rd#1"
@@ -437,7 +437,7 @@ func TestTargetedPatchFunctional(t *testing.T) {
 			payload: func(spec framework.UserSpec) map[string]any {
 				return map[string]any{"email": fmt.Sprintf("%s-patch@example.com", spec.Name)}
 			},
-			expectHTTP: http.StatusAccepted,
+			expectHTTP: http.StatusOK,
 			expectCode: code.ErrSuccess,
 			waitCheck: func(t *testing.T, env *framework.Env, spec framework.UserSpec) {
 				expectedEmail := fmt.Sprintf("%s-patch@example.com", spec.Name)
@@ -463,7 +463,7 @@ func TestTargetedPatchFunctional(t *testing.T) {
 			payload: func(spec framework.UserSpec) map[string]any {
 				return map[string]any{"phone": ""}
 			},
-			expectHTTP: http.StatusAccepted,
+			expectHTTP: http.StatusOK,
 			expectCode: code.ErrSuccess,
 			waitCheck: func(t *testing.T, env *framework.Env, spec framework.UserSpec) {
 				if spec.Phone == "" {
@@ -580,7 +580,7 @@ func TestBatchPatchFunctional(t *testing.T) {
 		}
 		t.Fatalf("login before change failed: %v", fmt.Errorf("batch patch request: %w", err))
 	}
-	if resp.HTTPStatus() != http.StatusAccepted && resp.HTTPStatus() != http.StatusOK {
+	if resp.HTTPStatus() != http.StatusOK {
 		t.Fatalf("login before change failed: %v", fmt.Errorf("unexpected http=%d", resp.HTTPStatus()))
 	}
 	if resp.Code != code.ErrSuccess {
@@ -859,7 +859,7 @@ func TestConditionalPatchFunctional(t *testing.T) {
 				}
 				t.Fatalf("login before change failed: %v", fmt.Errorf("conditional patch request: %w", err))
 			}
-			if resp.HTTPStatus() != http.StatusAccepted && resp.HTTPStatus() != http.StatusOK {
+			if resp.HTTPStatus() != http.StatusOK {
 				t.Fatalf("login before change failed: %v", fmt.Errorf("unexpected http=%d", resp.HTTPStatus()))
 			}
 			if resp.Code != code.ErrSuccess {
@@ -916,7 +916,7 @@ func applyPatchProfileAndWait(t *testing.T, env *framework.Env, spec framework.U
 		}
 		t.Fatalf("login before change failed: %v", fmt.Errorf("update profile %s: %w", spec.Name, err))
 	}
-	if resp.HTTPStatus() != http.StatusAccepted && resp.HTTPStatus() != http.StatusOK {
+	if resp.HTTPStatus() != http.StatusOK {
 		t.Fatalf("login before change failed: %v", fmt.Errorf("update profile %s unexpected http=%d", spec.Name, resp.HTTPStatus()))
 	}
 	if resp.Code != code.ErrSuccess {

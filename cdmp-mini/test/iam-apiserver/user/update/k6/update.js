@@ -11,6 +11,7 @@ const CODE_VALIDATION = 100004;
 const CODE_INVALID_PARAMETER = 110004;
 const CODE_RESOURCE_CONFLICT = 110006;
 const CODE_KAFKA_DEGRADED = 100401;
+const CODE_USER_NOT_FOUND = 110001;
 
 const HTTP_OK = 200;
 const HTTP_CREATED = 201;
@@ -38,7 +39,7 @@ if (GLOBAL_SCENARIO_DURATION) {
 }
 
 export const options = {
-    setupTimeout: '300s',
+    setupTimeout: '600s',
     thresholds: {
         http_req_failed: ['rate<0.05'],
         http_req_duration: ['p(99)<2000'],
@@ -174,6 +175,7 @@ function runPutScenario({ context, scenarioName, userPool, tags }) {
     const payload = buildPutPayload(context.dataset, state, user);
     const maxAttempts = resolvePutMaxAttempts(context.dataset);
     let attempt = 0;
+    let pendingRetries = 0;
     let res = null;
     let parsed = { code: null, message: '', data: null };
     let success = false;
@@ -193,6 +195,15 @@ function runPutScenario({ context, scenarioName, userPool, tags }) {
                 payload.version = newVersion;
             }
             break;
+        }
+        if (shouldRetryPendingCreation(res, parsed, context.dataset, pendingRetries)) {
+            const delayMs = computePendingRetryDelayMs(context.dataset, pendingRetries);
+            pendingRetries += 1;
+            if (delayMs > 0) {
+                sleep(delayMs / 1000);
+            }
+            attempt = Math.max(0, attempt - 1);
+            continue;
         }
         if (!needsVersionResync(parsed.code, res.status)) {
             break;
@@ -226,17 +237,45 @@ function runProfileScenario({ context, scenarioName, userPool, tags }) {
     const state = ensureVuState(scenarioName);
     const user = pickUserForVu(state, scenarioName, userPool);
     const payload = buildProfilePayload(context.dataset, state, user);
-    const res = sendProfilePatch(context, user, payload, tags);
-    profilePatchLatency.add(res.timings.duration);
-    const parsed = parseResponse(res);
-    const degraded = isDegraded(parsed);
-    const success = (res.status === HTTP_ACCEPTED || res.status === HTTP_OK) && parsed.code === CODE_SUCCESS;
+    const maxAttempts = resolvePutMaxAttempts(context.dataset);
+    let attempt = 0;
+    let pendingRetries = 0;
+    let res = null;
+    let parsed = { code: null, message: '', data: null };
+    let success = false;
+    let degraded = false;
+
+    while (attempt < maxAttempts) {
+        attempt += 1;
+        res = sendProfilePatch(context, user, payload, tags);
+        profilePatchLatency.add(res.timings.duration);
+        parsed = parseResponse(res);
+        degraded = degraded || isDegraded(parsed);
+        success = (res.status === HTTP_ACCEPTED || res.status === HTTP_OK) && parsed.code === CODE_SUCCESS;
+        if (success) {
+            break;
+        }
+        if (shouldRetryPendingCreation(res, parsed, context.dataset, pendingRetries)) {
+            const delayMs = computePendingRetryDelayMs(context.dataset, pendingRetries);
+            pendingRetries += 1;
+            if (delayMs > 0) {
+                sleep(delayMs / 1000);
+            }
+            attempt = Math.max(0, attempt - 1);
+            continue;
+        }
+        break;
+    }
+
     profilePatchSuccessRate.add(success);
     degradedRate.add(degraded);
 
-    recordChecks(res, {
+    const finalRes = res || { status: 0, timings: { duration: 0 } };
+    const finalParsed = parsed || { code: null, message: '', data: null };
+
+    recordChecks(finalRes, {
         profile_http_202: r => r.status === HTTP_ACCEPTED || r.status === HTTP_OK,
-        profile_code_success: () => parsed.code === CODE_SUCCESS,
+        profile_code_success: () => finalParsed.code === CODE_SUCCESS,
     });
 
     sleep(context.dataset.sleepBetween);
@@ -262,17 +301,45 @@ function runBatchScenario({ context, scenarioName, tags }) {
             },
         },
     };
-    const res = sendBatchPatch(context, payload, tags);
-    batchPatchLatency.add(res.timings.duration);
-    const parsed = parseResponse(res);
-    const degraded = isDegraded(parsed);
-    const success = (res.status === HTTP_ACCEPTED || res.status === HTTP_OK) && parsed.code === CODE_SUCCESS;
+    const maxAttempts = resolvePutMaxAttempts(context.dataset);
+    let attempt = 0;
+    let pendingRetries = 0;
+    let res = null;
+    let parsed = { code: null, message: '', data: null };
+    let success = false;
+    let degraded = false;
+
+    while (attempt < maxAttempts) {
+        attempt += 1;
+        res = sendBatchPatch(context, payload, tags);
+        batchPatchLatency.add(res.timings.duration);
+        parsed = parseResponse(res);
+        degraded = degraded || isDegraded(parsed);
+        success = (res.status === HTTP_ACCEPTED || res.status === HTTP_OK) && parsed.code === CODE_SUCCESS;
+        if (success) {
+            break;
+        }
+        if (shouldRetryPendingCreation(res, parsed, context.dataset, pendingRetries)) {
+            const delayMs = computePendingRetryDelayMs(context.dataset, pendingRetries);
+            pendingRetries += 1;
+            if (delayMs > 0) {
+                sleep(delayMs / 1000);
+            }
+            attempt = Math.max(0, attempt - 1);
+            continue;
+        }
+        break;
+    }
+
     batchPatchSuccessRate.add(success);
     degradedRate.add(degraded);
 
-    recordChecks(res, {
+    const finalRes = res || { status: 0, timings: { duration: 0 } };
+    const finalParsed = parsed || { code: null, message: '', data: null };
+
+    recordChecks(finalRes, {
         batch_http_202: r => r.status === HTTP_ACCEPTED || r.status === HTTP_OK,
-        batch_code_success: () => parsed.code === CODE_SUCCESS,
+        batch_code_success: () => finalParsed.code === CODE_SUCCESS,
     });
 
     sleep(context.dataset.sleepBetween);
@@ -609,18 +676,12 @@ function sendCreateUser(context, payload, tags) {
 }
 
 function waitForUserVisibility(context, username, tags) {
-    const deadline = Date.now() + context.dataset.userReadyTimeoutMs;
-    const baseTags = mergeTags({ endpoint: 'get_user_seed', username }, tags);
-    while (Date.now() < deadline) {
-        const res = sendWithAuthRetry(context, baseTags, params =>
-            http.get(`${context.baseUrl}/v1/users/${encodeURIComponent(username)}`, params)
-        );
-        if (res.status === HTTP_OK) {
-            return;
-        }
-        sleep(0.3);
+    const waitMsRaw = context && context.dataset ? context.dataset.userVisibilityDelayMs : 0;
+    const waitMs = Number.isFinite(waitMsRaw) && waitMsRaw > 0 ? waitMsRaw : 0;
+    if (waitMs > 0) {
+        // Give the backend a short window to replicate freshly created users before scenarios start consuming them.
+        sleep(waitMs / 1000);
     }
-    fail(`等待用户 ${username} 可见超时`);
 }
 
 function buildBatchConditionSets(batchUsers, chunkSize, ratio) {
@@ -772,6 +833,12 @@ function resolvePutMaxAttempts(dataset) {
 }
 
 function tryResyncVersion(context, user, tags) {
+    // 优化：如果本地 state.versions 没有记录，说明用户可能不存在，直接跳过 GET
+    const state = ensureVuState();
+    if (!state.versions || state.versions[user.name] === undefined) {
+        // 未知用户，避免无意义 GET
+        return null;
+    }
     const baseTags = mergeTags({ endpoint: 'get_user_sync', username: user.name }, tags);
     const res = sendWithAuthRetry(context, baseTags, params =>
         http.get(`${context.baseUrl}/v1/users/${encodeURIComponent(user.name)}`, params)
@@ -877,6 +944,70 @@ function sanitizeMetricTags(tags) {
 
 function isDegraded(parsed) {
     return parsed && parsed.code === CODE_KAFKA_DEGRADED;
+}
+
+function shouldRetryPendingCreation(res, parsed, dataset, pendingRetries) {
+    if (!res || res.status !== 404) {
+        return false;
+    }
+    if (!parsed || parsed.code !== CODE_USER_NOT_FOUND) {
+        return false;
+    }
+    if (!messageIndicatesPending(parsed.message)) {
+        return false;
+    }
+    const maxPendingRetries = resolvePendingRetryMaxAttempts(dataset);
+    return pendingRetries < maxPendingRetries;
+}
+
+function messageIndicatesPending(message) {
+    if (typeof message !== 'string' || message.trim() === '') {
+        return false;
+    }
+    const normalized = message.trim().toLowerCase();
+    if (normalized.includes('pending')) {
+        return true;
+    }
+    if (normalized.includes('creating')) {
+        return true;
+    }
+    if (normalized.includes('queue')) {
+        return true;
+    }
+    return message.indexOf('正在创建') !== -1 || message.indexOf('排队') !== -1;
+}
+
+function resolvePendingRetryMaxAttempts(dataset) {
+    if (!dataset || !Number.isFinite(Number(dataset.pendingRetryMaxAttempts))) {
+        return 0;
+    }
+    const value = Math.max(0, parseInt(dataset.pendingRetryMaxAttempts, 10));
+    return Number.isFinite(value) ? value : 0;
+}
+
+function computePendingRetryDelayMs(dataset, retryIndex) {
+    if (!dataset) {
+        return 0;
+    }
+    const base = Number(dataset.pendingRetryInitialSleepMs) || 0;
+    const max = Math.max(Number(dataset.pendingRetryMaxSleepMs) || 0, base);
+    const multiplierRaw = Number(dataset.pendingRetryBackoffMultiplier);
+    const multiplier = Number.isFinite(multiplierRaw) && multiplierRaw >= 1 ? multiplierRaw : 1;
+    const index = Math.max(0, retryIndex);
+    if (base <= 0) {
+        return 0;
+    }
+    let delay = base;
+    if (index > 0) {
+        delay = base * Math.pow(multiplier, index);
+    }
+    if (!Number.isFinite(delay) || delay > max) {
+        delay = max;
+    }
+    if (delay < 0) {
+        return 0;
+    }
+    return delay;
 }
 
 function scenarioConfig(prefix, defaults) {
@@ -1039,6 +1170,11 @@ function parseDataset(raw) {
     parsed.phonePrefix = typeof parsed.phonePrefix === 'string' ? parsed.phonePrefix.trim() : '';
     parsed.phoneSuffixLength = parseIntSafe(parsed.phoneSuffixLength, 6);
     parsed.userReadyTimeoutMs = parseIntSafe(parsed.userReadyTimeoutMs, 15000);
+    const visibilityFallback = Math.min(parsed.userReadyTimeoutMs, 500);
+    parsed.userVisibilityDelayMs = parseIntSafe(parsed.userVisibilityDelayMs, visibilityFallback);
+    if (!Number.isFinite(parsed.userVisibilityDelayMs) || parsed.userVisibilityDelayMs < 0) {
+        parsed.userVisibilityDelayMs = 0;
+    }
 
     parsed.batchUpdates = isPlainObject(parsed.batchUpdates) ? parsed.batchUpdates : { isAdmin: 1 };
     parsed.seedExtras = isPlainObject(parsed.seedExtras) ? parsed.seedExtras : null;

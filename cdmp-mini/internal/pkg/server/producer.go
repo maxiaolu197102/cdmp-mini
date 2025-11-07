@@ -52,18 +52,34 @@ type fallbackHeader struct {
 }
 
 type producerMetadata struct {
-	topic        string
-	operation    string
-	traceID      string
-	enqueuedAt   time.Time
-	parentSpanID string
+	topic         string
+	operation     string
+	traceID       string
+	enqueueStart  time.Time
+	enqueueFinish time.Time
+	ackAt         time.Time
+	attempt       int
+	extendedWait  bool
+	fallback      bool
+	parentSpanID  string
 }
 
 func (m *producerMetadata) markEnqueued() {
 	if m == nil {
 		return
 	}
-	m.enqueuedAt = time.Now()
+	if m.enqueueStart.IsZero() {
+		now := time.Now()
+		m.enqueueStart = now
+		if m.attempt == 0 {
+			m.attempt = 1
+		}
+		m.extendedWait = false
+		m.fallback = false
+		return
+	}
+	m.attempt++
+	m.extendedWait = true
 }
 
 func attachProducerMetadata(msg *sarama.ProducerMessage, topic, operation, traceID string) *producerMetadata {
@@ -77,10 +93,9 @@ func attachProducerMetadata(msg *sarama.ProducerMessage, topic, operation, trace
 		operation = "unknown"
 	}
 	meta := &producerMetadata{
-		topic:        topic,
-		operation:    operation,
-		traceID:      traceID,
-		parentSpanID: "",
+		topic:     topic,
+		operation: operation,
+		traceID:   traceID,
 	}
 	msg.Metadata = meta
 	return meta
@@ -94,19 +109,35 @@ func (p *UserProducer) recordDeliveryMetrics(msg *sarama.ProducerMessage, err er
 	if !ok || meta == nil {
 		return
 	}
-	if meta.enqueuedAt.IsZero() {
-		return
+	if meta.enqueueStart.IsZero() {
+		meta.enqueueStart = time.Now()
 	}
-	deliveryLatency := time.Since(meta.enqueuedAt)
-	if deliveryLatency < 0 {
-		deliveryLatency = 0
+	if meta.enqueueFinish.IsZero() {
+		meta.enqueueFinish = meta.enqueueStart
 	}
-	metrics.RecordKafkaProducerDelivery(meta.topic, meta.operation, deliveryLatency, err)
-	p.emitProducerDeliveryTrace(meta, msg, deliveryLatency, err)
+	meta.ackAt = time.Now()
+
+	enqueueWait := meta.enqueueFinish.Sub(meta.enqueueStart)
+	if enqueueWait < 0 {
+		enqueueWait = 0
+	}
+	brokerAck := meta.ackAt.Sub(meta.enqueueFinish)
+	if brokerAck < 0 {
+		brokerAck = 0
+	}
+	totalDelivery := meta.ackAt.Sub(meta.enqueueStart)
+	if totalDelivery < 0 {
+		totalDelivery = 0
+	}
+
+	metrics.RecordKafkaProducerDelivery(meta.topic, meta.operation, totalDelivery, err)
+	metrics.RecordKafkaProducerEnqueueWait(meta.topic, meta.operation, enqueueWait, err)
+	metrics.RecordKafkaProducerBrokerAck(meta.topic, meta.operation, brokerAck, err)
+	p.emitProducerDeliveryTrace(meta, msg, enqueueWait, brokerAck, totalDelivery, err)
 	msg.Metadata = nil
 }
 
-func (p *UserProducer) emitProducerDeliveryTrace(meta *producerMetadata, msg *sarama.ProducerMessage, latency time.Duration, sendErr error) {
+func (p *UserProducer) emitProducerDeliveryTrace(meta *producerMetadata, msg *sarama.ProducerMessage, enqueueWait, brokerAck, total time.Duration, sendErr error) {
 	if meta == nil {
 		return
 	}
@@ -139,7 +170,12 @@ func (p *UserProducer) emitProducerDeliveryTrace(meta *producerMetadata, msg *sa
 
 	trace.AddRequestTag(ctx, "topic", meta.topic)
 	trace.AddRequestTag(ctx, "operation", operationLabel)
-	trace.AddRequestTag(ctx, "delivery_latency_ms", float64(latency.Milliseconds()))
+	trace.AddRequestTag(ctx, "delivery_latency_ms", float64(total.Milliseconds()))
+	trace.AddRequestTag(ctx, "enqueue_wait_ms", float64(enqueueWait.Milliseconds()))
+	trace.AddRequestTag(ctx, "broker_ack_ms", float64(brokerAck.Milliseconds()))
+	trace.AddRequestTag(ctx, "attempt", meta.attempt)
+	trace.AddRequestTag(ctx, "extended_wait", meta.extendedWait)
+	trace.AddRequestTag(ctx, "fallback", meta.fallback)
 	if msg != nil {
 		if msg.Partition >= 0 {
 			trace.AddRequestTag(ctx, "partition", msg.Partition)
@@ -156,14 +192,19 @@ func (p *UserProducer) emitProducerDeliveryTrace(meta *producerMetadata, msg *sa
 
 	spanCtx, span := trace.StartSpanWithParent(ctx, "kafka-producer", "broker_ack", meta.parentSpanID)
 	if sendErr == nil {
-		// Ack succeeds before the consumer finishes, so keep the collector waiting for the downstream span.
 		trace.ExpectAsync(ctx, time.Now().Add(5*time.Second))
 	}
 	details := map[string]interface{}{
-		"topic":          meta.topic,
-		"operation":      operationLabel,
-		"latency_ms":     float64(latency) / float64(time.Millisecond),
-		"parent_span_id": meta.parentSpanID,
+		"topic":             meta.topic,
+		"operation":         operationLabel,
+		"latency_ms":        float64(total) / float64(time.Millisecond),
+		"enqueue_wait_ms":   float64(enqueueWait) / float64(time.Millisecond),
+		"broker_ack_ms":     float64(brokerAck) / float64(time.Millisecond),
+		"total_delivery_ms": float64(total) / float64(time.Millisecond),
+		"attempt":           meta.attempt,
+		"extended_wait":     meta.extendedWait,
+		"fallback":          meta.fallback,
+		"parent_span_id":    meta.parentSpanID,
 	}
 	if msg != nil {
 		if msg.Partition >= 0 {
@@ -249,6 +290,9 @@ func (p *UserProducer) enqueueWithTimeout(ctx context.Context, msg *sarama.Produ
 	case <-p.shutdown:
 		return fmt.Errorf("producer shutting down")
 	case p.producer.Input() <- msg:
+		if meta, ok := msg.Metadata.(*producerMetadata); ok && meta != nil {
+			meta.enqueueFinish = time.Now()
+		}
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
@@ -276,6 +320,15 @@ func (p *UserProducer) enqueueOrFallback(ctx context.Context, msg *sarama.Produc
 			actualTimeout = p.getEnqueueTimeout()
 		}
 		lastTimeout = actualTimeout
+
+		if meta, ok := msg.Metadata.(*producerMetadata); ok && meta != nil {
+			if meta.attempt < attemptsTried {
+				meta.attempt = attemptsTried
+			}
+			if idx > 0 {
+				meta.extendedWait = true
+			}
+		}
 
 		err = p.enqueueWithTimeout(ctx, msg, wait)
 		if err == nil {
@@ -497,6 +550,9 @@ func (p *UserProducer) SendUserDeleteMessage(ctx context.Context, username strin
 
 // 新增：写入降级文件的方法
 func (p *UserProducer) writeToFallbackFile(msg *sarama.ProducerMessage) {
+	if meta, ok := msg.Metadata.(*producerMetadata); ok && meta != nil {
+		meta.fallback = true
+	}
 	if p.fallbackDir == "" {
 		log.Warnf("Fallback directory not configured. Message lost: key=%s", msg.Key)
 		return
@@ -605,6 +661,11 @@ func (p *UserProducer) sendUserMessage(ctx context.Context, user *v1.User, opera
 		errSend = err
 		log.Errorf("Failed to marshal user %s for topic %s, operation %s: %v", user.Name, topic, operation, err)
 		return errors.WithCode(code.ErrEncodingJSON, "failed to marshal user message: %v", err)
+	}
+	log.Debugw("User message payload", "operation", operation, "topic", topic, "username", user.Name, "payload", string(userData))
+	if strings.HasPrefix(user.Name, "lock_case_") {
+		log.Infow("[lock-debug-producer]", "operation", operation, "topic", topic, "username", user.Name, "payload", string(userData))
+		appendLockDebug(fmt.Sprintf("producer|op=%s|user=%s|payload=%s", operation, user.Name, string(userData)))
 	}
 
 	now := time.Now()
@@ -881,6 +942,16 @@ func (p *UserProducer) processFallbackFile(logger log.Logger, filePath string, r
 	}
 
 	return processed, nil
+}
+
+func appendLockDebug(line string) {
+	const debugFile = "/tmp/lock_debug.log"
+	f, err := os.OpenFile(debugFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.WriteString(line + "\n")
 }
 
 func (p *UserProducer) publishFallbackEntry(entry fallbackMessage) error {

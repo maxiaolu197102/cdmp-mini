@@ -437,17 +437,28 @@ func (rc *RetryConsumer) processRetryUpdate(ctx context.Context, msg kafka.Messa
 
 	updated.UpdatedAt = time.Now().UTC()
 	existingVersion := existingSnapshot.ObjectMeta.Version
-	var expectedVersion *uint64
+	var (
+		expectedVersion *uint64
+		expectedValue   uint64
+	)
 	if user.ExpectedVersion != nil {
-		expectedVersion = user.ExpectedVersion
-		if existingVersion != *expectedVersion {
+		expectedValue = *user.ExpectedVersion
+		expectedVersion = &expectedValue
+		if existingVersion != expectedValue {
 			return rc.producer.SendToDeadLetterTopic(ctx, msg,
-				fmt.Sprintf("VERSION_CONFLICT: expected=%d actual=%d", *expectedVersion, existingVersion))
+				fmt.Sprintf("VERSION_CONFLICT: expected=%d actual=%d", expectedValue, existingVersion))
 		}
 	}
-	if expectedVersion == nil && command == v1.UserUpdateCommandPatch {
-		expected := existingVersion
-		expectedVersion = &expected
+	if expectedVersion == nil {
+		if command == v1.UserUpdateCommandPatch {
+			expectedValue = existingVersion
+			expectedVersion = &expectedValue
+			log.Warnw("Retry PATCH 缺少版本号，使用当前版本兜底", "username", user.Name, "command", command, "current_version", existingVersion)
+		} else {
+			log.Warnf("Retry 用户更新缺少版本号，丢弃消息防止覆盖: username=%s command=%s current_version=%d", user.Name, command, existingVersion)
+			return rc.producer.SendToDeadLetterTopic(ctx, msg,
+				fmt.Sprintf("MISSING_EXPECTED_VERSION: current=%d", existingVersion))
+		}
 	}
 	updated.ObjectMeta.Version = existingVersion + 1
 

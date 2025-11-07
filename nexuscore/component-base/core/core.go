@@ -38,6 +38,13 @@ type ErrResponse struct {
 	Data interface{} `json:"data,omitempty"`
 }
 
+// SuccessResponse 定义成功响应的标准格式
+type SuccessResponse struct {
+	Code    int         `json:"code"`
+	Message string      `json:"message"`
+	Data    interface{} `json:"data,omitempty"`
+}
+
 func WriteResponse(c *gin.Context, err error, data interface{}) {
 	if err != nil {
 		// 错误处理保持不变
@@ -53,6 +60,7 @@ func WriteResponse(c *gin.Context, err error, data interface{}) {
 
 	// ✅ 根据请求动态生成成功消息
 	statusCode := determineStatusCode(c.Request)
+	statusCode = adjustStatusByPayload(statusCode, data)
 	successMessage := getSuccessMessage(c.Request, data)
 
 	// 构建统一成功响应
@@ -70,74 +78,46 @@ func determineStatusCode(req *http.Request) int {
 	method := req.Method
 
 	switch {
-	// 登录认证操作
-	case path == "/login" && method == "POST":
+	case path == "/login" && method == http.MethodPost:
 		return http.StatusOK
 
-	// 删除操作
-	case method == "DELETE":
+	case method == http.MethodPost:
+		if strings.HasPrefix(path, "/v1/users") || strings.HasPrefix(path, "/api/users") {
+			return http.StatusCreated
+		}
 		return http.StatusOK
 
-	// 资源创建操作（POST 到集合端点）
-	case method == "POST" && isResourceCreation(path):
-		return http.StatusCreated
-
-	// 更新操作（PUT 到具体资源）
-	case method == "PUT" && isResourceUpdate(path):
+	case method == http.MethodPut:
+		if strings.HasPrefix(path, "/v1/users") || strings.HasPrefix(path, "/api/users") {
+			return http.StatusOK
+		}
+		if isResourceUpdate(path) {
+			return http.StatusOK
+		}
 		return http.StatusOK
 
-	// 异步局部更新（PUT /api/users/...）
-	case method == http.MethodPut && strings.HasPrefix(path, "/api/users/"):
-		return http.StatusAccepted
-
-	// 批量/异步局部更新（PATCH /api/users...）
-	case method == http.MethodPatch && strings.HasPrefix(path, "/api/users"):
-		return http.StatusAccepted
-
-	// 获取操作
-	case method == "GET":
+	case method == http.MethodPatch:
+		if strings.HasPrefix(path, "/v1/users") || strings.HasPrefix(path, "/api/users") {
+			return http.StatusOK
+		}
 		return http.StatusOK
 
-	// 默认
+	case method == http.MethodDelete:
+		return http.StatusOK
+
+	case method == http.MethodGet:
+		return http.StatusOK
+
 	default:
 		return http.StatusOK
 	}
 }
 
-// ✅ 明确定义哪些是资源创建端点
-func isResourceCreation(path string) bool {
-	resourceCreationPaths := []string{
-		"/v1/users",
-	}
-
-	for _, p := range resourceCreationPaths {
-		if path == p {
-			return true
-		}
-	}
-	return false
-}
+// ✅ 定义资源更新端点匹配逻辑
 func isResourceUpdate(path string) bool {
-	resourceCreationPaths := []string{
-		"/v1/users",
-	}
-
-	for _, p := range resourceCreationPaths {
-		if path == p {
-			return true
-		}
-	}
-	return false
+	return strings.HasPrefix(path, "/v1/users/")
 }
 
-// 在 common 包或 response 包中定义
-type SuccessResponse struct {
-	Code    int         `json:"code"`
-	Message string      `json:"message"`
-	Data    interface{} `json:"data,omitempty"`
-}
-
-// 预定义成功消息
 const (
 	MsgUserCreated  = "用户创建成功"
 	MsgUserDeleted  = "用户删除成功"
@@ -153,30 +133,30 @@ func getSuccessMessage(req *http.Request, data interface{}) string {
 
 	// 基于路径和方法的动态消息
 	switch {
-	case path == "/login" && method == "POST":
-		return "登录成功"
+	case path == "/login" && method == http.MethodPost:
+		return MsgLoginSuccess
 
-	case strings.HasPrefix(path, "/v1/users") && method == "POST":
-		return "用户创建成功"
+	case strings.HasPrefix(path, "/v1/users") && method == http.MethodPost:
+		return MsgUserCreated
 
-	case strings.HasPrefix(path, "/v1/users") && method == "DELETE":
+	case strings.HasPrefix(path, "/v1/users") && method == http.MethodDelete:
 		// 如果是强制删除
 		if strings.Contains(path, "/force") {
 			return "用户强制删除成功"
 		}
-		return "用户删除成功"
+		return MsgUserDeleted
 
-	case strings.HasPrefix(path, "/v1/users") && method == "PUT":
-		return "用户更新成功"
+	case strings.HasPrefix(path, "/v1/users") && method == http.MethodPut:
+		return MsgUserUpdated
 
-	case strings.HasPrefix(path, "/v1/users") && method == "PATCH":
+	case strings.HasPrefix(path, "/v1/users") && method == http.MethodPatch:
 		return "用户信息更新成功"
 
 	case strings.HasPrefix(path, "/api/users") && method == http.MethodPut:
-		return "用户信息更新请求已接受"
+		return "用户信息更新成功"
 
 	case strings.HasPrefix(path, "/api/users") && method == http.MethodPatch:
-		return "用户信息更新请求已接受"
+		return "用户信息更新成功"
 
 	default:
 		// 基于数据内容进一步判断
@@ -201,6 +181,41 @@ func getMessageFromData(data interface{}) string {
 				return "用户恢复成功"
 			}
 		}
+	case gin.H:
+		if operationType, ok := v["operation_type"].(string); ok {
+			switch operationType {
+			case "force_delete":
+				return "用户强制删除成功"
+			case "soft_delete":
+				return "用户已禁用"
+			case "restore":
+				return "用户恢复成功"
+			}
+		}
 	}
 	return "操作成功"
+}
+
+func adjustStatusByPayload(base int, data interface{}) int {
+	if base != http.StatusOK {
+		return base
+	}
+
+	var op string
+	switch v := data.(type) {
+	case map[string]interface{}:
+		if operation, ok := v["operation_type"].(string); ok {
+			op = operation
+		}
+	case gin.H:
+		if operation, ok := v["operation_type"].(string); ok {
+			op = operation
+		}
+	}
+
+	if op == "create" {
+		return http.StatusCreated
+	}
+
+	return base
 }

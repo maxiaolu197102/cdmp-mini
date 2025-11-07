@@ -3,10 +3,10 @@
     "name": "exact_match_condition",
     "description": "name in 条件命中指定用户",
     "success": true,
-    "http_status": 202,
+    "http_status": 200,
     "code": 100001,
-    "message": "用户信息更新请求已接受",
-    "duration_ms": 2,
+    "message": "用户信息更新成功",
+    "duration_ms": 6,
     "checks": {
       "response": true
     },
@@ -18,9 +18,9 @@
     "name": "no_match_condition",
     "description": "条件无匹配时应安全返回",
     "success": true,
-    "http_status": 202,
+    "http_status": 200,
     "code": 100001,
-    "message": "用户信息更新请求已接受",
+    "message": "用户信息更新成功",
     "duration_ms": 2,
     "checks": {
       "response": true
@@ -33,9 +33,9 @@
     "name": "range_condition_isadmin",
     "description": "范围条件 isAdmin.gte 命中已提升的管理员",
     "success": true,
-    "http_status": 202,
+    "http_status": 200,
     "code": 100001,
-    "message": "用户信息更新请求已接受",
+    "message": "用户信息更新成功",
     "duration_ms": 2,
     "checks": {
       "response": true
@@ -48,10 +48,10 @@
     "name": "complex_multi_field_condition",
     "description": "组合 name.in 与 isAdmin.eq 仅更新符合的普通用户",
     "success": true,
-    "http_status": 202,
+    "http_status": 200,
     "code": 100001,
-    "message": "用户信息更新请求已接受",
-    "duration_ms": 2,
+    "message": "用户信息更新成功",
+    "duration_ms": 1,
     "checks": {
       "response": true
     },

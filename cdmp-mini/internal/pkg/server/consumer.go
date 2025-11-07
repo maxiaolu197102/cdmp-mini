@@ -58,11 +58,6 @@ type deleteMessage struct {
 	DeletedAt string `json:"deleted_at"`
 }
 
-type pendingMarkerMetadata struct {
-	Status   string `json:"status"`
-	Degraded bool   `json:"degraded"`
-}
-
 type consumerJob struct {
 	msg       kafka.Message
 	workerID  int
@@ -86,6 +81,7 @@ const cacheNullSentinel = "rate_limit_prevention"
 
 const pendingMarkerCacheWindow = 500 * time.Millisecond
 const batchChannelFreeSlotDivisor = 8
+const createFastFlushTimeout = 25 * time.Millisecond
 
 type markerCacheEntry struct {
 	exists      bool
@@ -784,6 +780,16 @@ func (c *UserConsumer) runBatchAggregator(ctx context.Context, batchCh <-chan co
 			case OperationCreate:
 				createBatchMsgs = append(getBatch(createBatchMsgs), bi.message)
 				createBatchReaders = append(createBatchReaders, bi.readerIdx)
+				if len(createBatchMsgs) == 1 && len(batchCh) == 0 {
+					fastTimeout := createFastFlushTimeout
+					if fastTimeout <= 0 {
+						fastTimeout = minTimeout
+					}
+					if fastTimeout > 0 && currentTimeout > fastTimeout {
+						ticker.Reset(fastTimeout)
+						currentTimeout = fastTimeout
+					}
+				}
 				if len(createBatchMsgs) >= currentBatchLimit {
 					if !flush() {
 						return
@@ -1120,7 +1126,7 @@ func (c *UserConsumer) processCreateOperation(ctx context.Context, msg kafka.Mes
 	pendingDegraded := false
 	if pendingExists && pendingValue != "" {
 		trace.AddRequestTag(ctx, "pending_marker_value_len", len(pendingValue))
-		if degraded, decodeErr := decodePendingMarkerDegraded(pendingValue); decodeErr != nil {
+		if degraded, decodeErr := usercache.PendingMarkerIsDegraded(pendingValue); decodeErr != nil {
 			trace.AddRequestTag(ctx, "pending_marker_decode_error", decodeErr.Error())
 		} else if degraded {
 			pendingDegraded = true
@@ -1312,7 +1318,15 @@ func (c *UserConsumer) handleSingleUpdate(ctx context.Context, msg kafka.Message
 	user.Email = usercache.NormalizeEmail(user.Email)
 	user.Phone = usercache.NormalizePhone(user.Phone)
 
-	existingSnapshot, err := c.loadUserSnapshot(ctx, user.Name)
+	var (
+		existingSnapshot *v1.User
+		err              error
+	)
+	if user.ExpectedVersion != nil {
+		existingSnapshot, err = c.loadUserSnapshotStrong(ctx, user.Name)
+	} else {
+		existingSnapshot, err = c.loadUserSnapshot(ctx, user.Name)
+	}
 	if err != nil {
 		if stderrs.Is(err, sql.ErrNoRows) || stderrs.Is(err, gorm.ErrRecordNotFound) {
 			return c.sendToRetry(ctx, msg, "UPDATE_TARGET_NOT_READY: "+user.Name)
@@ -1366,17 +1380,37 @@ func (c *UserConsumer) handleSingleUpdate(ctx context.Context, msg kafka.Message
 
 	updated.UpdatedAt = time.Now().UTC()
 	existingVersion := existing.ObjectMeta.Version
-	var expectedVersion *uint64
+	var (
+		expectedVersion *uint64
+		expectedValue   uint64
+	)
 	if user.ExpectedVersion != nil {
-		expectedVersion = user.ExpectedVersion
-		if existingVersion != *expectedVersion {
-			reason := fmt.Sprintf("VERSION_CONFLICT: expected=%d actual=%d", *expectedVersion, existingVersion)
-			return c.sendToDeadLetter(ctx, msg, reason)
+		expectedValue = *user.ExpectedVersion
+		expectedVersion = &expectedValue
+		log.Infow("用户更新乐观锁检查", "username", user.Name, "expected_version", expectedValue, "existing_version", existingVersion, "command", command)
+		if existingVersion != expectedValue {
+			// 乐观锁冲突直接 ACK，记录监控日志，不进死信队列
+			log.Warnf("用户更新命中乐观锁冲突，直接丢弃: username=%s expected_version=%v actual_version=%v", user.Name, expectedValue, existingVersion)
+			metrics.BusinessFailures.WithLabelValues("consumer", "update_user_db", "optimistic_conflict").Inc()
+			return nil
 		}
 	}
-	if expectedVersion == nil && command == v1.UserUpdateCommandPatch {
-		expected := existingVersion
-		expectedVersion = &expected
+	if expectedVersion == nil {
+		if command == v1.UserUpdateCommandPatch {
+			expectedValue = existingVersion
+			expectedVersion = &expectedValue
+			log.Warnw("PATCH 更新缺少版本号，使用当前版本兜底", "username", user.Name, "command", command, "current_version", existingVersion)
+		} else {
+			log.Warnf("用户更新缺少版本号，直接丢弃以避免覆盖: username=%s command=%s current_version=%d", user.Name, command, existingVersion)
+			metrics.BusinessFailures.WithLabelValues("consumer", "update_user_db", "missing_expected_version").Inc()
+			trace.AddRequestTag(ctx, "update_missing_version", true)
+			return nil
+		}
+	}
+	log.Infow("用户更新版本调试", "username", user.Name, "expected_version", *expectedVersion, "existing_version", existingVersion)
+	if strings.HasPrefix(user.Name, "lock_case_") {
+		fmt.Printf("[lock-debug] name=%s expected=%d existing=%d command=%s\n", user.Name, *expectedVersion, existingVersion, command)
+		appendLockDebug(fmt.Sprintf("consumer|phase=pre-update|user=%s|expected=%d|existing=%d|command=%s", user.Name, *expectedVersion, existingVersion, command))
 	}
 
 	updated.ObjectMeta.Version = existingVersion + 1
@@ -1388,7 +1422,11 @@ func (c *UserConsumer) handleSingleUpdate(ctx context.Context, msg kafka.Message
 			return nil
 		}
 		if errors.IsCode(err, code.ErrResourceConflict) {
-			return c.sendToRetry(ctx, msg, "更新用户失败: "+err.Error())
+			// 乐观锁冲突直接 ACK，记录监控日志，不再重试
+			trace.AddRequestTag(ctx, "update_conflict", true)
+			log.Warnf("用户更新命中乐观锁冲突，直接丢弃: username=%s expected_version=%v err=%v", updated.Name, expectedVersion, err)
+			metrics.BusinessFailures.WithLabelValues("consumer", "update_user_db", "optimistic_conflict").Inc()
+			return nil
 		}
 		return c.sendToRetry(ctx, msg, "更新用户失败: "+err.Error())
 	}
@@ -1437,50 +1475,80 @@ func (c *UserConsumer) handleBatchPatch(ctx context.Context, msg kafka.Message, 
 	}
 	log.Infow("批量更新命中用户", "message_key", string(msg.Key), "count", len(targets), "sample_users", loggedTargets)
 
-	var retryErr error
-	conflicts := 0
-	now := time.Now().UTC()
+	var (
+		retryErr            error
+		unresolvedConflicts int
+	)
 
+	const maxConflictResyncAttempts = 3
+
+targetLoop:
 	for idx := range targets {
-		existing := targets[idx]
-		patched := existing
-		if err := update.Patch.Apply(&patched); err != nil {
-			return c.sendToDeadLetter(ctx, msg, "APPLY_PATCH_FAILED: "+err.Error())
-		}
-		patched.Email = usercache.NormalizeEmail(patched.Email)
-		patched.Phone = usercache.NormalizePhone(patched.Phone)
-		patched.UpdatedAt = now
-		expected := existing.ObjectMeta.Version
-		patched.ExpectedVersion = &expected
-		patched.ObjectMeta.Version = expected + 1
-		if err := v1.EnsureExtendShadow(&patched.ObjectMeta); err != nil {
-			return c.sendToDeadLetter(ctx, msg, "SERIALIZE_EXTEND_FAILED: "+err.Error())
-		}
-		if err := c.updateUserInDB(ctx, &patched, patched.ExpectedVersion); err != nil {
-			if isDuplicateKeyDBError(err) {
-				// 对于批量更新，单条发生唯一约束冲突时记录并跳过该条，继续处理其他目标
-				log.Warnf("批量更新命中唯一约束冲突，跳过该条: username=%s err=%v", patched.Name, err)
-				continue
+		snapshot := targets[idx]
+		conflictUnresolved := false
+
+	attemptLoop:
+		for attempt := 1; attempt <= maxConflictResyncAttempts; attempt++ {
+			current := snapshot
+			patched := current
+			if err := update.Patch.Apply(&patched); err != nil {
+				return c.sendToDeadLetter(ctx, msg, "APPLY_PATCH_FAILED: "+err.Error())
 			}
-			if errors.IsCode(err, code.ErrResourceConflict) {
-				conflicts++
-				log.Warnf("批量更新版本冲突: username=%s current_version=%d expected_version=%d new_version=%d", existing.Name, existing.ObjectMeta.Version, expected, patched.ObjectMeta.Version)
-				continue
+			patched.Email = usercache.NormalizeEmail(patched.Email)
+			patched.Phone = usercache.NormalizePhone(patched.Phone)
+			patched.UpdatedAt = time.Now().UTC()
+			expected := current.ObjectMeta.Version
+			patched.ExpectedVersion = &expected
+			patched.ObjectMeta.Version = expected + 1
+			if err := v1.EnsureExtendShadow(&patched.ObjectMeta); err != nil {
+				return c.sendToDeadLetter(ctx, msg, "SERIALIZE_EXTEND_FAILED: "+err.Error())
 			}
-			retryErr = err
+			if err := c.updateUserInDB(ctx, &patched, patched.ExpectedVersion); err != nil {
+				if isDuplicateKeyDBError(err) {
+					log.Warnf("批量更新命中唯一约束冲突，跳过该条: username=%s err=%v", patched.Name, err)
+					break attemptLoop
+				}
+				if errors.IsCode(err, code.ErrResourceConflict) {
+					log.Warnf("批量更新版本冲突: username=%s current_version=%d expected_version=%d new_version=%d attempt=%d", current.Name, current.ObjectMeta.Version, expected, patched.ObjectMeta.Version, attempt)
+					if attempt == maxConflictResyncAttempts {
+						conflictUnresolved = true
+						break attemptLoop
+					}
+					latest, loadErr := c.loadUserSnapshot(ctx, current.Name)
+					if loadErr != nil {
+						retryErr = fmt.Errorf("批量更新冲突后重新加载用户失败: %w", loadErr)
+						break targetLoop
+					}
+					if latest == nil {
+						log.Warnf("批量更新冲突后目标缺失，跳过: username=%s", current.Name)
+						break attemptLoop
+					}
+					snapshot = *latest
+					continue attemptLoop
+				}
+				retryErr = err
+				break targetLoop
+			}
+			if err := c.setUserCache(ctx, &patched, &current); err != nil {
+				log.Warnf("批量更新刷新缓存失败: username=%s err=%v", patched.Name, err)
+			}
+			break attemptLoop
+		}
+
+		if retryErr != nil {
 			break
 		}
-		if err := c.setUserCache(ctx, &patched, &existing); err != nil {
-			log.Warnf("批量更新刷新缓存失败: username=%s err=%v", patched.Name, err)
+		if conflictUnresolved {
+			unresolvedConflicts++
 		}
 	}
 
 	if retryErr != nil {
 		return c.sendToRetry(ctx, msg, "批量更新失败: "+retryErr.Error())
 	}
-	if conflicts > 0 {
-		log.Warnf("批量更新存在版本冲突: count=%d", conflicts)
-		return c.sendToRetry(ctx, msg, fmt.Sprintf("批量更新存在版本冲突: count=%d", conflicts))
+	if unresolvedConflicts > 0 {
+		log.Warnf("批量更新存在未解决的版本冲突: count=%d", unresolvedConflicts)
+		return nil
 	}
 	return nil
 }
@@ -1563,13 +1631,22 @@ func (c *UserConsumer) createUserInDB(ctx context.Context, user *v1.User, marker
 }
 
 // loadUserSnapshot 查询数据库中的用户信息，用于判定重复消息或刷新缓存。
+
 func (c *UserConsumer) loadUserSnapshot(ctx context.Context, username string) (*v1.User, error) {
+	return c.loadUserSnapshotInternal(ctx, username, false)
+}
+
+func (c *UserConsumer) loadUserSnapshotStrong(ctx context.Context, username string) (*v1.User, error) {
+	return c.loadUserSnapshotInternal(ctx, username, true)
+}
+
+func (c *UserConsumer) loadUserSnapshotInternal(ctx context.Context, username string, skipCache bool) (*v1.User, error) {
 	trimmed := strings.TrimSpace(username)
 	if trimmed == "" {
 		return nil, nil
 	}
 
-	if c.redis != nil {
+	if !skipCache && c.redis != nil {
 		cacheKey := usercache.UserKey(trimmed)
 		if cacheKey != "" {
 			start := time.Now()
@@ -1769,28 +1846,6 @@ func (c *UserConsumer) getPendingCreateMarker(ctx context.Context, username stri
 	}
 	c.markerCache.Set(trimmed, entry)
 	return true, value, ttl, getDuration, ttlDuration, nil
-}
-
-func decodePendingMarkerDegraded(raw string) (bool, error) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return false, nil
-	}
-	if trimmed[0] != '{' {
-		if strings.EqualFold(trimmed, "degraded") {
-			return true, nil
-		}
-		return false, nil
-	}
-	var marker pendingMarkerMetadata
-	if err := jsonCodec.Unmarshal([]byte(trimmed), &marker); err != nil {
-		return false, err
-	}
-	status := strings.ToLower(strings.TrimSpace(marker.Status))
-	if status == "degraded" || marker.Degraded {
-		return true, nil
-	}
-	return false, nil
 }
 
 // clearPendingCreateMarker 在消息处理完成后清理 pending 标记，防止重复请求受阻。
@@ -2889,7 +2944,6 @@ func (c *UserConsumer) purgeUserState(ctx context.Context, username string, user
 	}
 
 }
-
 func buildPlaceholders(count int) string {
 	if count <= 0 {
 		return ""
