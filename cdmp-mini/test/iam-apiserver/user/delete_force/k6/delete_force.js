@@ -37,8 +37,8 @@ const scenarioDefinitions = [
             exec: 'scenarioSingleBaseline',
             rate: 25,
             duration: '1h',
-            preAllocatedVUs: 4,
-            maxVUs: 16,
+            preAllocatedVUs: 24,
+            maxVUs: 64,
         },
     },
     {
@@ -48,8 +48,8 @@ const scenarioDefinitions = [
             exec: 'scenarioSingleParallel',
             rate: 160,
             duration: '1h',
-            preAllocatedVUs: 32,
-            maxVUs: 64,
+            preAllocatedVUs: 96,
+            maxVUs: 128,
         },
     },
     {
@@ -59,8 +59,8 @@ const scenarioDefinitions = [
             exec: 'scenarioBatchParallel',
             rate: 40,
             duration: '1h',
-            preAllocatedVUs: 12,
-            maxVUs: 36,
+            preAllocatedVUs: 48,
+            maxVUs: 80,
         },
     },
     {
@@ -70,8 +70,8 @@ const scenarioDefinitions = [
             exec: 'scenarioSingleInvalidPayload',
             rate: 20,
             duration: '1h',
-            preAllocatedVUs: 2,
-            maxVUs: 6,
+            preAllocatedVUs: 8,
+            maxVUs: 24,
         },
     },
 ];

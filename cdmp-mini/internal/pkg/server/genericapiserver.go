@@ -391,11 +391,11 @@ func NewGenericAPIServer(opts *options.Options) (*GenericAPIServer, error) {
 			}
 			if instances.updateConsumers[i] != nil {
 				consumerReady.Add(1)
-				go instances.updateConsumers[i].StartConsuming(ctx, 1, &consumerReady)
+				go instances.updateConsumers[i].StartConsuming(ctx, workerCount, &consumerReady)
 			}
 			if instances.deleteConsumers[i] != nil {
 				consumerReady.Add(1)
-				go instances.deleteConsumers[i].StartConsuming(ctx, 1, &consumerReady)
+				go instances.deleteConsumers[i].StartConsuming(ctx, workerCount, &consumerReady)
 			}
 		}
 

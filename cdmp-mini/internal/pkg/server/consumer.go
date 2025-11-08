@@ -1247,11 +1247,54 @@ func (c *UserConsumer) processDeleteOperation(ctx context.Context, msg kafka.Mes
 	var (
 		userID           uint64
 		existingSnapshot *v1.User
+		pendingExists    bool
+		pendingTTL       time.Duration
+		pendingErr       error
 	)
 	retryCount := 0
 	if header := c.getHeaderValue(msg.Headers, HeaderRetryCount); header != "" {
 		if parsed, err := strconv.Atoi(header); err == nil {
 			retryCount = parsed
+		}
+	}
+	if username := strings.TrimSpace(deleteRequest.Username); username != "" {
+		monitorCtx, monitorSpan := trace.StartSpan(ctx, "kafka-consumer", "pending_marker_lookup_delete")
+		trace.AddRequestTag(monitorCtx, "username", username)
+		var pendingValue string
+		var redisGetDuration, redisTTLDur time.Duration
+		pendingExists, pendingValue, pendingTTL, redisGetDuration, redisTTLDur, pendingErr = c.getPendingCreateMarker(monitorCtx, username)
+		status := "success"
+		statusCode := strconv.Itoa(code.ErrSuccess)
+		details := map[string]any{
+			"username":     username,
+			"marker_found": pendingExists,
+			"redis_get_ms": redisGetDuration.Milliseconds(),
+			"redis_ttl_ms": redisTTLDur.Milliseconds(),
+		}
+		if pendingTTL > 0 {
+			details["marker_ttl_ms"] = pendingTTL.Milliseconds()
+		}
+		if pendingValue != "" {
+			details["marker_payload_len"] = len(pendingValue)
+		}
+		if pendingErr != nil {
+			status = "error"
+			if c := errors.GetCode(pendingErr); c != 0 {
+				statusCode = strconv.Itoa(c)
+			} else {
+				statusCode = strconv.Itoa(code.ErrUnknown)
+			}
+			details["error"] = pendingErr.Error()
+		}
+		trace.EndSpan(monitorSpan, status, statusCode, details)
+		if pendingErr != nil {
+			trace.AddRequestTag(ctx, "delete_pending_marker_error", pendingErr.Error())
+			log.Warnf("删除消息检查pending标记失败: username=%s err=%v", username, pendingErr)
+		} else if pendingExists {
+			trace.AddRequestTag(ctx, "delete_pending_marker_exists", true)
+			if pendingTTL > 0 {
+				trace.AddRequestTag(ctx, "delete_pending_marker_ttl_ms", pendingTTL.Milliseconds())
+			}
 		}
 	}
 	if deleteRequest.Username != "" {
@@ -1267,10 +1310,18 @@ func (c *UserConsumer) processDeleteOperation(ctx context.Context, msg kafka.Mes
 
 	if err := c.deleteUserFromDB(ctx, deleteRequest.Username); err != nil {
 		if errors.IsCode(err, code.ErrUserNotFound) || stderrs.Is(err, gorm.ErrRecordNotFound) {
-			if retryCount == 0 {
+			retryPending := pendingExists || pendingErr != nil
+			if retryCount == 0 && retryPending {
+				reason := "DELETE_TARGET_NOT_READY"
+				if pendingErr != nil {
+					reason = "DELETE_TARGET_STATE_UNKNOWN"
+				}
 				trace.AddRequestTag(ctx, "delete_retry_on_not_found", true)
-				log.Warnf("Delete message for %s reached before user exists, scheduling retry", deleteRequest.Username)
-				return c.sendToRetry(ctx, msg, "DELETE_TARGET_NOT_READY: "+err.Error())
+				if pendingTTL > 0 {
+					trace.AddRequestTag(ctx, "delete_retry_pending_ttl_ms", pendingTTL.Milliseconds())
+				}
+				log.Warnf("Delete message for %s reached before user is ready, scheduling retry", deleteRequest.Username)
+				return c.sendToRetry(ctx, msg, reason+": "+err.Error())
 			}
 			trace.AddRequestTag(ctx, "delete_idempotent_skip", true)
 			c.purgeUserState(ctx, deleteRequest.Username, userID, existingSnapshot)
@@ -2923,6 +2974,13 @@ func (c *UserConsumer) purgeUserState(ctx context.Context, username string, user
 		}
 		trace.EndSpan(span, status, statusCode, details)
 	}()
+
+	if strings.TrimSpace(username) != "" {
+		if _, err := c.clearPendingCreateMarker(ctx, username); err != nil {
+			cacheError = true
+			log.Warnw("删除流程清理pending标记失败", "username", username, "error", err)
+		}
+	}
 
 	if err := c.deleteUserCache(ctx, username); err != nil {
 		cacheError = true

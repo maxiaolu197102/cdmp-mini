@@ -1,9 +1,32 @@
 [
   {
+    "name": "delete_existing_user",
+    "description": "管理员可成功删除现有用户并验证数据一致性与审计记录",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "用户强制删除成功",
+    "duration_ms": 214,
+    "checks": {
+      "post_validation": true,
+      "response": true
+    },
+    "notes": [
+      "管理员可成功删除现有用户并验证数据一致性与审计记录"
+    ]
+  },
+  {
     "name": "delete_nonexistent_user",
     "description": "删除不存在的用户应返回404并保持幂等",
-    "success": false,
-    "duration_ms": 0,
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "用户强制删除成功",
+    "duration_ms": 7,
+    "checks": {
+      "post_validation": true,
+      "response": true
+    },
     "notes": [
       "删除不存在的用户应返回404并保持幂等"
     ]
@@ -11,8 +34,14 @@
   {
     "name": "invalid_username",
     "description": "非法用户名应触发参数校验失败",
-    "success": false,
-    "duration_ms": 0,
+    "success": true,
+    "http_status": 400,
+    "code": 110004,
+    "message": "[code: 110004] 用户名不合法:名称部分必须由字母、数字、'-'、'_'或'.'组成，且首尾必须为字母或数字（例如：'MyName'，或'my.name'，或'123-abc'，用于验证的正则表达式：'([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]'）",
+    "duration_ms": 1,
+    "checks": {
+      "response": true
+    },
     "notes": [
       "非法用户名应触发参数校验失败"
     ]
@@ -20,8 +49,16 @@
   {
     "name": "batch_delete_success",
     "description": "批量删除成功路径",
-    "success": false,
-    "duration_ms": 1,
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "用户删除成功",
+    "duration_ms": 1548,
+    "checks": {
+      "deleted_set_match": true,
+      "response": true,
+      "users_removed": true
+    },
     "notes": [
       "批量删除应全部删除目标账号"
     ]
@@ -29,8 +66,14 @@
   {
     "name": "batch_delete_over_limit",
     "description": "超出批量删除数量限制应直接拒绝",
-    "success": false,
-    "duration_ms": 0,
+    "success": true,
+    "http_status": 400,
+    "code": 110101,
+    "message": "[code: 110101] 一次最多删除100个用户",
+    "duration_ms": 4,
+    "checks": {
+      "limit_enforced": true
+    },
     "notes": [
       "验证最大批量删除限制"
     ]
@@ -38,8 +81,14 @@
   {
     "name": "batch_delete_missing_names",
     "description": "缺少用户名参数时返回参数错误",
-    "success": false,
-    "duration_ms": 0,
+    "success": true,
+    "http_status": 400,
+    "code": 110004,
+    "message": "[code: 110004] 请通过以下方式传入用户名列表：\n1. ?names=user1\u0026names=user2（推荐）\n2. ?names=user1,user2,user3",
+    "duration_ms": 2,
+    "checks": {
+      "invalid_parameter": true
+    },
     "notes": [
       "空数据集删除应提示错误"
     ]
@@ -47,8 +96,11 @@
   {
     "name": "concurrent_delete_same_user",
     "description": "并发删除同一用户应保持幂等",
-    "success": false,
-    "duration_ms": 0,
+    "success": true,
+    "duration_ms": 1448,
+    "checks": {
+      "idempotent": true
+    },
     "notes": [
       "验证并发删除冲突处理"
     ]
@@ -56,8 +108,15 @@
   {
     "name": "permission_enforced",
     "description": "普通用户不允许执行物理删除",
-    "success": false,
-    "duration_ms": 0,
+    "success": true,
+    "http_status": 403,
+    "code": 100207,
+    "message": "[code: 100207] 非管理员无权限访问此接口",
+    "duration_ms": 865,
+    "checks": {
+      "permission_denied": true,
+      "victim_intact": true
+    },
     "notes": [
       "权限控制应阻止越权删除"
     ]
@@ -65,8 +124,17 @@
   {
     "name": "token_revocation_after_delete",
     "description": "删除后会话与登录应立即失效",
-    "success": false,
-    "duration_ms": 0,
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "用户强制删除成功",
+    "duration_ms": 649,
+    "checks": {
+      "login_blocked": true,
+      "response": true,
+      "token_revoked": true,
+      "user_removed": true
+    },
     "notes": [
       "验证事务回滚与关联数据清理"
     ]
@@ -74,8 +142,16 @@
   {
     "name": "precise_delete_scope",
     "description": "只删除目标用户不影响其他账号",
-    "success": false,
-    "duration_ms": 0,
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "用户强制删除成功",
+    "duration_ms": 1062,
+    "checks": {
+      "other_user_intact": true,
+      "response": true,
+      "target_removed": true
+    },
     "notes": [
       "验证精确删除范围"
     ]

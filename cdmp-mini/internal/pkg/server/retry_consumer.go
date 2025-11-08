@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jmoiron/sqlx"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/dbscan"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/metrics"
@@ -649,6 +650,10 @@ func (rc *RetryConsumer) prepareNextRetry(ctx context.Context, msg kafka.Message
 		nextRetryDelay = 2 * time.Second
 		retryStrategy = "中等延迟(重复键)"
 
+	case isDeleteTargetNotReadyError(errorInfo):
+		nextRetryDelay = 250 * time.Millisecond
+		retryStrategy = "快速重试(Delete目标尚未就绪)"
+
 	case isTemporaryError(errorInfo):
 		// 线性增长：n * baseDelay
 		nextRetryDelay = time.Duration(currentRetryCount+1) * rc.kafkaOptions.BaseRetryDelay
@@ -720,6 +725,12 @@ func isTemporaryError(errorInfo string) bool {
 	return strings.Contains(errorInfo, "temporary") ||
 		strings.Contains(errorInfo, "busy") ||
 		strings.Contains(errorInfo, "lock")
+}
+
+func isDeleteTargetNotReadyError(errorInfo string) bool {
+	lower := strings.ToLower(errorInfo)
+	return strings.Contains(lower, "delete_target_not_ready") ||
+		strings.Contains(lower, "delete target not ready")
 }
 
 func (rc *RetryConsumer) createUserInDB(ctx context.Context, user *v1.User) error {
@@ -914,7 +925,29 @@ func (rc *RetryConsumer) deleteUserCache(ctx context.Context, username string) e
 	return err
 }
 
+func (rc *RetryConsumer) clearPendingCreateMarker(ctx context.Context, username string) error {
+	if rc.redis == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(username)
+	if trimmed == "" {
+		return nil
+	}
+	key := usercache.PendingCreateKey(trimmed)
+	if key == "" {
+		return nil
+	}
+	_, err := rc.redis.DeleteKey(ctx, key)
+	if err == redis.Nil {
+		return nil
+	}
+	return err
+}
+
 func (rc *RetryConsumer) purgeUserState(ctx context.Context, username string, userID uint64, snapshot *v1.User) {
+	if err := rc.clearPendingCreateMarker(ctx, username); err != nil {
+		log.Warnw("重试流程清理pending标记失败", "username", username, "error", err)
+	}
 	if err := rc.deleteUserCache(ctx, username); err != nil {
 		log.Errorw("重试缓存删除失败", "username", username, "error", err)
 	} else {
