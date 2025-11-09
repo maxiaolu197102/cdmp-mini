@@ -68,8 +68,8 @@ func init() {
 	// 7. iam-apiserver 策略模块（1102xx）
 	register(ErrPolicyNotFound, 404, "策略不存在") // 404：策略资源不存在
 
-	//8. kafka（1004xx）：服务10 + 模块04 + 序号 404
-	register(ErrKafkaFailed, 404, "严重错误：无法发送到重试Topic！主消息已丢失") // 404：密钥资源不存在
+	//8. kafka（1004xx）：服务10 + 模块04 + 序号 500
+	register(ErrKafkaFailed, 500, "严重错误：无法发送到重试Topic！主消息已丢失") // 500：服务端内部错误
 
 	//9. redis（1004xx）：服务10 + 模块04 + 序号 404
 	register(ErrRedisFailed, 404, "严重错误：reids错误") // 404：密钥资源不存在

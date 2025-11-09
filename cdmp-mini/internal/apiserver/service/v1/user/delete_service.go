@@ -16,21 +16,28 @@ import (
 )
 
 func (u *UserService) DeleteCollection(ctx context.Context, username []string, force bool, opts metav1.DeleteOptions, opt *options.Options) error {
+	ctx = WithBatchLookupCache(ctx)
+	trace.AddRequestTag(ctx, "batch_lookup_cache", "enabled")
+
 	//检查用户是否存在
 
 	//判断用户是否存在
 	for _, name := range username {
 		ruser, err := u.checkUserExist(ctx, name, true)
-		if err != nil || ruser == nil || ruser.Name == RATE_LIMIT_PREVENTION || ruser.Name == BLACKLIST_SENTINEL {
+		if err != nil {
+			log.Debugw("batch delete check failed", "username", name, "error", err)
 			continue
-		} else {
-			u.Delete(ctx, name, true, opts, opt)
 		}
+		if ruser == nil || ruser.Name == RATE_LIMIT_PREVENTION || ruser.Name == BLACKLIST_SENTINEL {
+			continue
+		}
+		_ = u.Delete(ctx, name, true, opts, opt)
 	}
 	return nil
 }
 
 func (u *UserService) Delete(ctx context.Context, username string, force bool, opts metav1.DeleteOptions, opt *options.Options) (err error) {
+	ctx = WithBatchLookupCache(ctx)
 	ctx, span := trace.StartSpan(ctx, "user-service", "delete")
 	trace.AddRequestTag(ctx, "username", username)
 	businessCode := strconv.Itoa(code.ErrSuccess)

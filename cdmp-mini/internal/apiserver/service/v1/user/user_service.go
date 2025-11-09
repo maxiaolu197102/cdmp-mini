@@ -62,16 +62,19 @@ import (
 )
 
 const (
-	RATE_LIMIT_PREVENTION           = usercache.NegativeCacheSentinel
-	BLACKLIST_SENTINEL              = usercache.BlacklistSentinel
-	createStepSlowThreshold         = 200 * time.Millisecond
-	contactPlaceholderTTL           = 30 * time.Second
-	contactWarmupTimeout            = 2 * time.Minute
-	contactWarmupBatchSize          = 1000
-	contactCacheTTL                 = 24 * time.Hour
-	strongConsistencyMaxRetries     = 3
-	strongConsistencyBackoffBase    = 80 * time.Millisecond
-	strongConsistencyBackoffCeiling = 500 * time.Millisecond
+	RATE_LIMIT_PREVENTION               = usercache.NegativeCacheSentinel
+	BLACKLIST_SENTINEL                  = usercache.BlacklistSentinel
+	createStepSlowThreshold             = 200 * time.Millisecond
+	contactPlaceholderTTL               = 30 * time.Second
+	contactWarmupTimeout                = 2 * time.Minute
+	contactWarmupBatchSize              = 1000
+	contactCacheTTL                     = 24 * time.Hour
+	strongConsistencyMaxRetries         = 3
+	strongConsistencyBackoffBase        = 80 * time.Millisecond
+	strongConsistencyBackoffCeiling     = 500 * time.Millisecond
+	strongConsistencyInitialDelayBase   = 35 * time.Millisecond
+	strongConsistencyInitialDelayJitter = 45 * time.Millisecond
+	batchLookupCacheTTL                 = 750 * time.Millisecond
 )
 
 var json = jsoniter.ConfigCompatibleWithStandardLibrary
@@ -94,7 +97,10 @@ type UserService struct {
 
 type contextKey string
 
-const forceCacheRefreshKey contextKey = "user.forceCacheRefresh"
+const (
+	forceCacheRefreshKey contextKey = "user.forceCacheRefresh"
+	batchLookupCacheKey  contextKey = "user.batchLookupCache"
+)
 
 func newPreflightLimiter(opts *options.Options) *semaphore.Weighted {
 	if opts == nil || opts.ServerRunOptions == nil {
@@ -153,6 +159,80 @@ func isStrongConsistencyRequest(ctx context.Context) bool {
 		return true
 	}
 	return storectx.ForcePrimaryFromContext(ctx)
+}
+
+type batchLookupEntry struct {
+	user     *v1.User
+	notFound bool
+	expires  time.Time
+}
+
+type batchLookupCache struct {
+	mu      sync.RWMutex
+	entries map[string]batchLookupEntry
+}
+
+func newBatchLookupCache() *batchLookupCache {
+	return &batchLookupCache{
+		entries: make(map[string]batchLookupEntry),
+	}
+}
+
+func (c *batchLookupCache) get(username string) (batchLookupEntry, bool) {
+	if c == nil {
+		return batchLookupEntry{}, false
+	}
+	c.mu.RLock()
+	entry, ok := c.entries[username]
+	c.mu.RUnlock()
+	if !ok {
+		return batchLookupEntry{}, false
+	}
+	if time.Now().After(entry.expires) {
+		c.mu.Lock()
+		delete(c.entries, username)
+		c.mu.Unlock()
+		return batchLookupEntry{}, false
+	}
+	return entry, true
+}
+
+func (c *batchLookupCache) set(username string, user *v1.User, notFound bool) {
+	if c == nil {
+		return
+	}
+	entry := batchLookupEntry{
+		user:     user,
+		notFound: notFound,
+		expires:  time.Now().Add(batchLookupCacheTTL),
+	}
+	c.mu.Lock()
+	if c.entries == nil {
+		c.entries = make(map[string]batchLookupEntry)
+	}
+	c.entries[username] = entry
+	c.mu.Unlock()
+}
+
+// WithBatchLookupCache ensures the context carries a per-request batch lookup cache for user existence checks.
+func WithBatchLookupCache(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if existing := batchLookupCacheFromContext(ctx); existing != nil {
+		return ctx
+	}
+	return context.WithValue(ctx, batchLookupCacheKey, newBatchLookupCache())
+}
+
+func batchLookupCacheFromContext(ctx context.Context) *batchLookupCache {
+	if ctx == nil {
+		return nil
+	}
+	if cache, ok := ctx.Value(batchLookupCacheKey).(*batchLookupCache); ok {
+		return cache
+	}
+	return nil
 }
 
 // NewUserService 创建用户服务实例
@@ -341,6 +421,19 @@ func (u *UserService) strongConsistencyBackoffDelay(attempt int) time.Duration {
 		return strongConsistencyBackoffCeiling
 	}
 	return delay
+}
+
+func (u *UserService) strongConsistencyProbeDelay() time.Duration {
+	base := strongConsistencyInitialDelayBase
+	if base <= 0 {
+		return 0
+	}
+	jitter := strongConsistencyInitialDelayJitter
+	if jitter <= 0 {
+		return base
+	}
+	delta := time.Duration(rand.Int63n(int64(jitter)))
+	return base + delta
 }
 
 func waitWithContext(ctx context.Context, delay time.Duration) bool {
@@ -1496,6 +1589,23 @@ func (u *UserService) warmContactCache() error {
 // 通用重试工具
 
 func (u *UserService) checkUserExist(ctx context.Context, username string, forceRefresh bool) (*v1.User, error) {
+	batchCache := batchLookupCacheFromContext(ctx)
+	recordBatchResult := func(user *v1.User, notFound bool) {
+		if batchCache != nil {
+			batchCache.set(username, user, notFound)
+		}
+	}
+	if entry, ok := batchCache.get(username); ok {
+		metrics.CacheHits.WithLabelValues("batch_hit").Inc()
+		if entry.notFound {
+			return nil, nil
+		}
+		return entry.user, nil
+	}
+	if batchCache != nil {
+		metrics.CacheHits.WithLabelValues("batch_miss").Inc()
+	}
+
 	cacheSpanCtx, cacheSpan := trace.StartSpan(ctx, "user-service", "check_user_cache")
 	if cacheSpanCtx != nil {
 		ctx = cacheSpanCtx
@@ -1542,17 +1652,20 @@ func (u *UserService) checkUserExist(ctx context.Context, username string, force
 		case RATE_LIMIT_PREVENTION:
 			cacheDetails["cache_result"] = "negative_hit"
 			if !forceRefresh {
+				recordBatchResult(user, false)
 				return user, nil
 			}
 			cacheDetails["cache_result"] = "negative_bypass"
 		case BLACKLIST_SENTINEL:
 			cacheDetails["cache_result"] = "blacklist_hit"
 			if !forceRefresh {
+				recordBatchResult(user, false)
 				return user, nil
 			}
 			cacheDetails["cache_result"] = "blacklist_bypass"
 		default:
 			cacheDetails["cache_result"] = "hit"
+			recordBatchResult(user, false)
 			return user, nil
 		}
 	}
@@ -1565,6 +1678,19 @@ func (u *UserService) checkUserExist(ctx context.Context, username string, force
 		cacheDetails["fallback_db"] = true
 	}
 	endCacheSpan()
+
+	shouldDelay := forceRefresh || isStrongConsistencyRequest(ctx)
+	if shouldDelay {
+		delay := u.strongConsistencyProbeDelay()
+		if delay > 0 {
+			trace.AddRequestTag(ctx, "strong_consistency_probe_delay_ms", delay.Milliseconds())
+			if !waitWithContext(ctx, delay) {
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
+			}
+		}
+	}
 
 	dbSpanCtx, dbSpan := trace.StartSpan(ctx, "user-service", "check_user_primary_lookup")
 	if dbSpanCtx != nil {
@@ -1616,10 +1742,15 @@ func (u *UserService) checkUserExist(ctx context.Context, username string, force
 	}
 	if result == nil {
 		dbDetails["db_result"] = "not_found"
+		recordBatchResult(nil, true)
 		return nil, nil
 	}
 	dbDetails["db_result"] = "hit"
-	return result.(*v1.User), nil
+	if userObj, ok := result.(*v1.User); ok {
+		recordBatchResult(userObj, false)
+		return userObj, nil
+	}
+	return nil, fmt.Errorf("unexpected user lookup result type %T", result)
 }
 
 // 判断是否为可重试错误（如超时、临时网络错误、数据库临时错误等）
