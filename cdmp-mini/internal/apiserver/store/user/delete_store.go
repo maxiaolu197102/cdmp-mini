@@ -2,9 +2,18 @@ package user
 
 import (
 	"context"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/options"
+	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/code"
+	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/trace"
+	"github.com/maxiaolu1981/cretem/cdmp-mini/pkg/log"
+	v1 "github.com/maxiaolu1981/cretem/nexuscore/api/apiserver/v1"
 	metav1 "github.com/maxiaolu1981/cretem/nexuscore/component-base/meta/v1"
+	"github.com/maxiaolu1981/cretem/nexuscore/errors"
+	"gorm.io/gorm"
 )
 
 func (u *Users) Delete(ctx context.Context, username string, opts metav1.DeleteOptions, opt *options.Options) error {
@@ -12,106 +21,220 @@ func (u *Users) Delete(ctx context.Context, username string, opts metav1.DeleteO
 }
 
 func (u *Users) DeleteForce(ctx context.Context, username string, opts metav1.DeleteOptions, opt *options.Options) error {
-	// 	logger := log.L(ctx).WithValues(
-	// 		"method", "DeleteForce",
-	// 		"unscoped", true,
-	// 	)
+	storeCtx, span := trace.StartSpan(ctx, "user-store", "delete_force")
+	if storeCtx != nil {
+		ctx = storeCtx
+	}
+	trace.AddRequestTag(ctx, "target_user", username)
+	trace.AddRequestTag(ctx, "delete_force", true)
 
-	// 	startTime := time.Now()
-	// 	logger.Infow("存储层:开始用户删除操作", "start_time", startTime)
+	logger := log.L(ctx).WithValues(
+		"store", "user",
+		"method", "DeleteForce",
+		"username", username,
+		"unscoped", opts.Unscoped,
+	)
 
-	// 	err := u.executeInTransaction(ctx, logger, func(tx *gorm.DB) error {
-	// 		// 1. 删除关联数据
-	// 		assocStart := time.Now()
-	// 		if err := u.deleteUserAssociations(tx, username, opts); err != nil {
-	// 			return err
-	// 		}
-	// 		logger.Infow("存储层:关联数据删除完成", "duration_ms", time.Since(assocStart).Milliseconds())
+	spanStatus := "success"
+	spanCode := strconv.Itoa(code.ErrSuccess)
+	spanDetails := map[string]any{
+		"username": username,
+		"unscoped": opts.Unscoped,
+	}
+	defer func() {
+		if span != nil {
+			trace.EndSpan(span, spanStatus, spanCode, spanDetails)
+		}
+	}()
 
-	// 		// 2. 删除用户主体数据
-	// 		mainStart := time.Now()
-	// 		if err := u.deleteUserMainData(tx, username, opts); err != nil {
-	// 			return err
-	// 		}
-	// 		logger.Infow("存储层:主体数据删除完成", "duration_ms", time.Since(mainStart).Milliseconds())
+	if u == nil || u.db == nil {
+		spanStatus = "error"
+		spanCode = strconv.Itoa(code.ErrDatabase)
+		err := errors.WithCode(code.ErrDatabase, "用户存储未初始化")
+		logger.Errorw("DeleteForce: 存储未初始化", "error", err)
+		return err
+	}
+	if strings.TrimSpace(username) == "" {
+		spanStatus = "error"
+		spanCode = strconv.Itoa(code.ErrInvalidParameter)
+		err := errors.WithCode(code.ErrInvalidParameter, "用户名不能为空")
+		logger.Errorw("DeleteForce: 参数校验失败", "error", err)
+		return err
+	}
 
-	// 		return nil
-	// 	})
+	start := time.Now()
+	var assocDeleted map[string]int64
+	var userRows int64
 
-	// 	totalDuration := time.Since(startTime)
-	// 	if err != nil {
-	// 		logger.Errorw("存储层:用户删除失败", "error", err, "total_duration_ms", totalDuration.Milliseconds(), "status", "failed")
-	// 		return err
-	// 	}
+	txnErr := u.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		assocStart := time.Now()
+		deleted, err := u.deleteUserAssociations(ctx, tx, username)
+		if err != nil {
+			return err
+		}
+		assocDeleted = deleted
+		logger.Debugw("DeleteForce: 关联数据已删除", "duration_ms", time.Since(assocStart).Milliseconds(), "details", assocDeleted)
 
-	// 	//logger.Infow("用户删除成功", "total_duration_ms", totalDuration.Milliseconds(), "status", "success")
-	// 	return nil
-	// }
+		userStart := time.Now()
+		rows, err := u.deleteUserMainData(ctx, tx, username, opts)
+		if err != nil {
+			return err
+		}
+		userRows = rows
+		logger.Debugw("DeleteForce: 主体数据已删除", "duration_ms", time.Since(userStart).Milliseconds(), "rows", userRows)
+		return nil
+	})
 
-	// // deleteUserAssociations 删除用户关联数据（修复tx参数使用）
-	// func (u *Users) deleteUserAssociations(tx *gorm.DB, username string, opts metav1.DeleteOptions) error {
-	// 	logger := log.L(context.Background()).WithValues("operation", "delete_user_associations", "username", username)
+	if txnErr != nil {
+		spanStatus = "error"
+		if c := errors.GetCode(txnErr); c != 0 {
+			spanCode = strconv.Itoa(c)
+		} else {
+			spanCode = strconv.Itoa(code.ErrDatabase)
+		}
+		logger.Errorw("DeleteForce: 删除失败", "error", txnErr)
+		return txnErr
+	}
 
-	// 	// 使用事务tx
-	// 	//pol := NewPolices(&datastore{DB: tx}) // 根据实际情况使用 db 或 DB
+	spanDetails["assoc_deleted"] = assocDeleted
+	spanDetails["user_rows"] = userRows
+	spanDetails["duration_ms"] = time.Since(start).Milliseconds()
 
-	// 	policyStart := time.Now()
-
-	// 	result := tx.Where("username = ?", username).Delete(&v1.Policy{})
-	// 	if result.Error != nil {
-	// 		policyDuration := time.Since(policyStart)
-	// 		logger.Errorw("存储层:删除用户策略失败", "error", result.Error, "policy_duration_ms", policyDuration.Milliseconds())
-	// 		return errors.Wrap(result.Error, "存储层:删除用户策略失败")
-	// 	}
-
-	// 	policyDuration := time.Since(policyStart)
-	// 	logger.Debugw("存储层:用户策略删除完成", "policy_duration_ms", policyDuration.Milliseconds())
-
-	// 	return nil
-	// }
-
-	// // deleteUserMainData 删除用户主体数据（带计时）
-	// func (u *Users) deleteUserMainData(tx *gorm.DB, username string, opts metav1.DeleteOptions) error {
-	// 	logger := log.L(context.Background()).WithValues(
-	// 		"operation", "delete_user_main_data",
-	// 		"username", username,
-	// 		"unscoped", opts.Unscoped,
-	// 	)
-
-	// 	db := tx
-	// 	if opts.Unscoped {
-	// 		db = db.Unscoped()
-	// 		logger.Debug("存储层:使用硬删除模式")
-	// 	}
-
-	// 	// 记录删除操作时间
-	// 	deleteStart := time.Now()
-	// 	result := db.Where("name = ?", username).Delete(&v1.User{})
-	// 	deleteDuration := time.Since(deleteStart)
-
-	// 	if result.Error != nil && !errors.Is(result.Error, gorm.ErrRecordNotFound) {
-	// 		logger.Errorw("存储层:删除用户失败",
-	// 			"error", result.Error,
-	// 			"delete_duration_ms", deleteDuration.Milliseconds(),
-	// 		)
-	// 		return errors.WithCode(code.ErrDatabase, result.Error.Error())
-	// 	}
-
-	// 	if result.RowsAffected == 0 {
-	// 		logger.Warnw("存储层:未找到要删除的用户",
-	// 			"delete_duration_ms", deleteDuration.Milliseconds(),
-	// 		)
-	// 		return errors.WithCode(code.ErrUserNotFound, "存储层:用户不存在")
-	// 	}
-
-	// 	logger.Infow("存储层:用户主体数据删除成功",
-	// 		"rows_affected", result.RowsAffected,
-	// 		"delete_duration_ms", deleteDuration.Milliseconds(),
-	// 	)
-
+	logger.Infow("DeleteForce: 用户删除完成",
+		"assoc_deleted", assocDeleted,
+		"user_rows", userRows,
+		"total_duration_ms", time.Since(start).Milliseconds(),
+	)
 	return nil
+}
+
+func (u *Users) deleteUserAssociations(ctx context.Context, tx *gorm.DB, username string) (map[string]int64, error) {
+	spanCtx, span := trace.StartSpan(ctx, "user-store", "delete_force_associations")
+	if spanCtx != nil {
+		ctx = spanCtx
+	}
+	status := "success"
+	codeStr := strconv.Itoa(code.ErrSuccess)
+	spanDetails := map[string]any{"username": username}
+	beginAll := time.Now()
+	defer func() {
+		spanDetails["duration_ms"] = time.Since(beginAll).Milliseconds()
+		if span != nil {
+			trace.EndSpan(span, status, codeStr, spanDetails)
+		}
+	}()
+
+	logger := log.L(ctx).WithValues("operation", "delete_user_associations", "username", username)
+	if tx == nil {
+		err := errors.WithCode(code.ErrDatabase, "事务未初始化")
+		logger.Errorw("删除关联数据失败", "error", err)
+		status = "error"
+		codeStr = strconv.Itoa(errors.GetCode(err))
+		return nil, err
+	}
+
+	targets := []struct {
+		name  string
+		model any
+	}{
+		{name: "policy", model: &v1.Policy{}},
+		{name: "secret", model: &v1.Secret{}},
+	}
+
+	deleted := make(map[string]int64, len(targets))
+	for _, target := range targets {
+		tableLogger := logger.WithValues("table", target.name)
+		begin := time.Now()
+		result := tx.WithContext(ctx).Where("username = ?", username).Delete(target.model)
+		if result.Error != nil {
+			err := errors.WithCode(code.ErrDatabase, "删除%s失败: %v", target.name, result.Error)
+			tableLogger.Errorw("删除失败", "error", err)
+			tagDeleteLockWait(ctx, result.Error, "assoc", target.name)
+			status = "error"
+			codeStr = strconv.Itoa(errors.GetCode(err))
+			return nil, err
+		}
+		deleted[target.name] = result.RowsAffected
+		tableLogger.Debugw("删除完成", "rows", result.RowsAffected, "duration_ms", time.Since(begin).Milliseconds())
+		spanDetails[target.name+"_rows"] = result.RowsAffected
+	}
+
+	return deleted, nil
+}
+
+func (u *Users) deleteUserMainData(ctx context.Context, tx *gorm.DB, username string, opts metav1.DeleteOptions) (int64, error) {
+	spanCtx, span := trace.StartSpan(ctx, "user-store", "delete_force_main")
+	if spanCtx != nil {
+		ctx = spanCtx
+	}
+	status := "success"
+	codeStr := strconv.Itoa(code.ErrSuccess)
+	spanDetails := map[string]any{
+		"username": username,
+		"unscoped": opts.Unscoped,
+	}
+	defer func() {
+		if span != nil {
+			trace.EndSpan(span, status, codeStr, spanDetails)
+		}
+	}()
+
+	logger := log.L(ctx).WithValues("operation", "delete_user_main", "username", username, "unscoped", opts.Unscoped)
+	if tx == nil {
+		err := errors.WithCode(code.ErrDatabase, "事务未初始化")
+		logger.Errorw("删除用户主体失败", "error", err)
+		status = "error"
+		codeStr = strconv.Itoa(errors.GetCode(err))
+		return 0, err
+	}
+
+	executor := tx.WithContext(ctx)
+	if opts.Unscoped {
+		executor = executor.Unscoped()
+	}
+
+	begin := time.Now()
+	result := executor.Where("name = ?", username).Delete(&v1.User{})
+	duration := time.Since(begin).Milliseconds()
+
+	if result.Error != nil {
+		err := errors.WithCode(code.ErrDatabase, "删除用户失败: %v", result.Error)
+		logger.Errorw("删除失败", "error", err, "duration_ms", duration)
+		tagDeleteLockWait(ctx, result.Error, "main", "user")
+		status = "error"
+		codeStr = strconv.Itoa(errors.GetCode(err))
+		spanDetails["duration_ms"] = duration
+		return 0, err
+	}
+
+	if result.RowsAffected == 0 {
+		logger.Infow("未找到用户,跳过删除", "duration_ms", duration)
+		spanDetails["duration_ms"] = duration
+		return 0, nil
+	}
+
+	logger.Infow("用户主体删除完成", "rows", result.RowsAffected, "duration_ms", duration)
+	spanDetails["duration_ms"] = duration
+	spanDetails["rows"] = result.RowsAffected
+	return result.RowsAffected, nil
 }
 
 func (u *Users) DeleteCollection(ctx context.Context, usernames []string, opts metav1.DeleteOptions, opt *options.Options) error {
 	return nil
+}
+
+func tagDeleteLockWait(ctx context.Context, err error, stage string, resource string) {
+	if ctx == nil || err == nil {
+		return
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "lock wait") || strings.Contains(msg, "deadlock") || strings.Contains(msg, "lock timeout") {
+		trace.AddRequestTag(ctx, "lock_wait_detected", true)
+		if stage != "" {
+			trace.AddRequestTag(ctx, "lock_wait_stage", stage)
+		}
+		if resource != "" {
+			trace.AddRequestTag(ctx, "lock_wait_resource", resource)
+		}
+	}
 }

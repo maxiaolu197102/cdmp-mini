@@ -31,31 +31,32 @@ import (
 )
 
 type RetryConsumer struct {
-	reader          *kafka.Reader
-	db              *gorm.DB
-	sqlxDB          *sqlx.DB
-	redis           *storage.RedisCluster
-	producer        *UserProducer
-	maxRetries      int
-	kafkaOptions    *options.KafkaOptions
-	poolReporter    poolStatsReporter
-	poolComponent   string
-	groupInstanceID string
-	instanceIndex   int
+	reader             *kafka.Reader
+	db                 *gorm.DB
+	sqlxDB             *sqlx.DB
+	redis              *storage.RedisCluster
+	producer           *UserProducer
+	maxRetries         int
+	kafkaOptions       *options.KafkaOptions
+	poolReporter       poolStatsReporter
+	poolComponent      string
+	groupInstanceID    string
+	instanceIndex      int
+	pendingCoordinator *usercache.PendingCoordinator
 }
 
 func NewRetryConsumer(db *gorm.DB, redis *storage.RedisCluster, producer *UserProducer, kafkaOptions *options.KafkaOptions, topic, groupid string, instanceIndex int) *RetryConsumer {
 	groupInstanceID := buildGroupInstanceID(kafkaOptions.InstanceID, groupid, instanceIndex)
 	rc := &RetryConsumer{
 		reader: kafka.NewReader(kafka.ReaderConfig{
-			Brokers:         kafkaOptions.Brokers,
-			Topic:           topic,
-			GroupID:         groupid,
-			GroupInstanceID: groupInstanceID,
-			MinBytes:        10e3,
-			MaxBytes:        10e6,
-			CommitInterval:  2 * time.Second,
-			StartOffset:     kafka.FirstOffset,
+			Brokers: kafkaOptions.Brokers,
+			Topic:   topic,
+			GroupID: groupid,
+			// kafka-go v0.4.49 lacks GroupInstanceID support, so static membership is unavailable here.
+			MinBytes:       10e3,
+			MaxBytes:       10e6,
+			CommitInterval: 2 * time.Second,
+			StartOffset:    kafka.FirstOffset,
 		}),
 		db:              db,
 		redis:           redis,
@@ -71,6 +72,7 @@ func NewRetryConsumer(db *gorm.DB, redis *storage.RedisCluster, producer *UserPr
 	} else {
 		rc.sqlxDB = sqlx.NewDb(core, "mysql").Unsafe()
 	}
+	rc.pendingCoordinator = usercache.NewPendingCoordinator(redis, usercache.PendingCoordinatorConfig{})
 	return rc
 }
 
@@ -926,11 +928,15 @@ func (rc *RetryConsumer) deleteUserCache(ctx context.Context, username string) e
 }
 
 func (rc *RetryConsumer) clearPendingCreateMarker(ctx context.Context, username string) error {
-	if rc.redis == nil {
-		return nil
-	}
 	trimmed := strings.TrimSpace(username)
 	if trimmed == "" {
+		return nil
+	}
+	if rc.pendingCoordinator != nil {
+		_, err := rc.pendingCoordinator.Release(ctx, trimmed, "")
+		return err
+	}
+	if rc.redis == nil {
 		return nil
 	}
 	key := usercache.PendingCreateKey(trimmed)

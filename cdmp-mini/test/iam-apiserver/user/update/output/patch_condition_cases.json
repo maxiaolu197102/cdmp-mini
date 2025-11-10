@@ -6,7 +6,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "用户信息更新成功",
-    "duration_ms": 4,
+    "duration_ms": 62,
     "checks": {
       "response": true
     },
@@ -21,7 +21,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "用户信息更新成功",
-    "duration_ms": 1,
+    "duration_ms": 31,
     "checks": {
       "response": true
     },
@@ -36,7 +36,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "用户信息更新成功",
-    "duration_ms": 6,
+    "duration_ms": 3,
     "checks": {
       "response": true
     },
@@ -51,7 +51,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "用户信息更新成功",
-    "duration_ms": 3,
+    "duration_ms": 4,
     "checks": {
       "response": true
     },

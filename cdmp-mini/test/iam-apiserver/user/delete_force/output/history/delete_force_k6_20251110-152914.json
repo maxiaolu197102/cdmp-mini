@@ -1,0 +1,294 @@
+{
+    "root_group": {
+        "checks": {
+            "invalid_http_status": {
+                "id": "8edc60285dbce3e0ab08d4a08e857f27",
+                "passes": 47759,
+                "fails": 0,
+                "name": "invalid_http_status",
+                "path": "::invalid_http_status"
+            },
+            "invalid_code": {
+                "name": "invalid_code",
+                "path": "::invalid_code",
+                "id": "b76c7bbcdae4c82b8b02b70a5717b20e",
+                "passes": 47759,
+                "fails": 0
+            },
+            "delete_http_success": {
+                "name": "delete_http_success",
+                "path": "::delete_http_success",
+                "id": "72d90dbccd57d883464a617cd2605bc7",
+                "passes": 349992,
+                "fails": 0
+            },
+            "delete_code_success": {
+                "fails": 0,
+                "name": "delete_code_success",
+                "path": "::delete_code_success",
+                "id": "4a87a8aa2fe2390aa74b938558fe2969",
+                "passes": 349992
+            },
+            "batch_http_success": {
+                "name": "batch_http_success",
+                "path": "::batch_http_success",
+                "id": "b912f021de20510db0ee7f3b7d6d00a3",
+                "passes": 18222,
+                "fails": 0
+            },
+            "batch_code_success": {
+                "fails": 0,
+                "name": "batch_code_success",
+                "path": "::batch_code_success",
+                "id": "724a84b4a36bd1cbf95e0c14b9654e8e",
+                "passes": 18222
+            }
+        },
+        "name": "",
+        "path": "",
+        "id": "d41d8cd98f00b204e9800998ecf8427e",
+        "groups": {}
+    },
+    "metrics": {
+        "iteration_duration": {
+            "p(90)": 6728.7615582,
+            "p(95)": 8038.768906399997,
+            "avg": 2627.109513110854,
+            "min": 22.182113,
+            "med": 1204.752408,
+            "max": 39100.383218
+        },
+        "iterations": {
+            "count": 415973,
+            "rate": 114.98661234742832
+        },
+        "http_req_duration": {
+            "avg": 248.01014065920424,
+            "min": 0.36922,
+            "med": 25.039235,
+            "max": 8092.662503,
+            "p(90)": 325.829658,
+            "p(95)": 762.9906579999999,
+            "thresholds": {
+                "p(99)<2000": true
+            }
+        },
+        "http_req_waiting": {
+            "min": 0.30359,
+            "med": 24.896382,
+            "max": 8092.159316,
+            "p(90)": 325.693287,
+            "p(95)": 762.853599,
+            "avg": 247.8779729177144
+        },
+        "checks": {
+            "passes": 831946,
+            "fails": 0,
+            "value": 1
+        },
+        "http_reqs": {
+            "count": 3353711,
+            "rate": 927.0598492746071
+        },
+        "http_req_duration{expected_response:true}": {
+            "p(95)": 732.1968889999996,
+            "avg": 240.1876404650393,
+            "min": 1.833425,
+            "med": 24.858308,
+            "max": 8092.662503,
+            "p(90)": 318.4945208000001
+        },
+        "http_req_tls_handshaking": {
+            "max": 0,
+            "p(90)": 0,
+            "p(95)": 0,
+            "avg": 0,
+            "min": 0,
+            "med": 0
+        },
+        "http_req_blocked": {
+            "min": 0.002453,
+            "med": 0.006118,
+            "max": 54.486585,
+            "p(90)": 0.010725,
+            "p(95)": 0.0135415,
+            "avg": 0.008079279076223323
+        },
+        "http_req_receiving": {
+            "p(90)": 0.106472,
+            "p(95)": 0.142096,
+            "avg": 0.09479218703668672,
+            "min": 0.021112,
+            "med": 0.058041,
+            "max": 75.193902
+        },
+        "dropped_iterations": {
+            "count": 466030,
+            "rate": 128.823772101247
+        },
+        "vus": {
+            "value": 10,
+            "min": 10,
+            "max": 360
+        },
+        "data_sent": {
+            "count": 2694037045,
+            "rate": 744707.4529910025
+        },
+        "delete_force_invalid_payload_rejected_rate": {
+            "passes": 47759,
+            "fails": 0,
+            "thresholds": {
+                "rate>0.95": false
+            },
+            "value": 1
+        },
+        "delete_force_single_latency": {
+            "avg": 84.2393367426549,
+            "min": 1.869151,
+            "med": 22.9613365,
+            "max": 7771.846085,
+            "p(90)": 148.90616380000012,
+            "p(95)": 218.39887845000018,
+            "thresholds": {
+                "p(95)<500": false
+            }
+        },
+        "delete_force_single_success_rate": {
+            "fails": 0,
+            "passes": 349992,
+            "thresholds": {
+                "rate>0.97": false
+            },
+            "value": 1
+        },
+        "delete_force_batch_latency": {
+            "p(90)": 728.983837,
+            "p(95)": 1111.5099756000006,
+            "avg": 377.18663743227836,
+            "min": 6.631311,
+            "med": 105.94880950000001,
+            "max": 8092.662503,
+            "thresholds": {
+                "p(95)<700": true
+            }
+        },
+        "http_req_connecting": {
+            "p(95)": 0,
+            "avg": 0.00006544200737630642,
+            "min": 0,
+            "med": 0,
+            "max": 49.139308,
+            "p(90)": 0
+        },
+        "vus_max": {
+            "value": 360,
+            "min": 215,
+            "max": 360
+        },
+        "delete_force_batch_success_rate": {
+            "passes": 18222,
+            "fails": 0,
+            "thresholds": {
+                "rate>0.95": false
+            },
+            "value": 1
+        },
+        "http_req_sending": {
+            "avg": 0.03737555443864888,
+            "min": 0.00887,
+            "med": 0.021595,
+            "max": 54.956666,
+            "p(90)": 0.041747,
+            "p(95)": 0.0563065
+        },
+        "data_received": {
+            "count": 2423781312,
+            "rate": 670001.1831005503
+        },
+        "delete_force_degraded_rate": {
+            "fails": 415973,
+            "passes": 0,
+            "thresholds": {
+                "rate<0.02": false
+            },
+            "value": 0
+        },
+        "http_req_failed": {
+            "passes": 48122,
+            "fails": 3305589,
+            "thresholds": {
+                "rate<0.05": false
+            },
+            "value": 0.014348880985869087
+        }
+    },
+    "setup_data": {
+        "baseUrl": "http://192.168.10.8:8088",
+        "dataset": {
+            "requestTimeout": "60s",
+            "batchPreseedGroups": 3,
+            "userReadyTimeoutMs": 18000,
+            "deleteMaxAttempts": 3,
+            "deleteVerifyTimeoutMs": 10000,
+            "pendingRetryBackoffMultiplier": 1.4,
+            "pendingRetryMaxAttempts": 5,
+            "seedExtendTemplate": null,
+            "respawnOnFailure": true,
+            "basePassword": "Test@1234",
+            "batchMinPool": 1,
+            "batchSize": 15,
+            "emailDomain": "example.com",
+            "maxUsernameLength": 40,
+            "pendingRetryInitialSleepMs": 60,
+            "pendingRetryMaxSleepMs": 500,
+            "seedExtras": null,
+            "seedLabels": null,
+            "seedNicknamePrefix": "dforce",
+            "singleMinPool": 2,
+            "singlePreseedCount": 6,
+            "sleepBetween": 0.02,
+            "usernamePrefix": "delete-force-user-par",
+            "verifyDeletion": true
+        },
+        "scenarioMeta": {
+            "scenarioBatchParallel": {
+                "executor": "constant-arrival-rate",
+                "maxVUs": 80,
+                "preAllocatedVUs": 48,
+                "rate": 40,
+                "timeUnit": "1s",
+                "duration": "1h",
+                "exec": "scenarioBatchParallel"
+            },
+            "scenarioSingleBaseline": {
+                "duration": "1h",
+                "exec": "scenarioSingleBaseline",
+                "executor": "constant-arrival-rate",
+                "maxVUs": 64,
+                "preAllocatedVUs": 24,
+                "rate": 25,
+                "timeUnit": "1s"
+            },
+            "scenarioSingleInvalidPayload": {
+                "timeUnit": "1s",
+                "duration": "1h",
+                "exec": "scenarioSingleInvalidPayload",
+                "executor": "constant-arrival-rate",
+                "maxVUs": 24,
+                "preAllocatedVUs": 8,
+                "rate": 20
+            },
+            "scenarioSingleParallel": {
+                "rate": 160,
+                "timeUnit": "1s",
+                "duration": "1h",
+                "exec": "scenarioSingleParallel",
+                "executor": "constant-arrival-rate",
+                "maxVUs": 192,
+                "preAllocatedVUs": 128
+            }
+        },
+        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQiOiJodHRwczovL2dpdGh1Yi5jb20vbWF4aWFvbHUxOTgxL2NyZXRlbSIsImV4cCI6MTc2Mjc2MzM1NCwiaWF0IjoxNzYyNzU5NzU0LCJpc2FkbWluIjoiMSIsImlzcyI6Imh0dHBzOi8vZ2l0aHViLmNvbS9tYXhpYW9sdTE5ODEvY3JldGVtIiwianRpIjoiand0X3o1MnI4bjZ5NWo3MjFsIiwib3JpZ19pYXQiOjE3NjI3NTk3NTQsInJvbGUiOiJhZG1pbiIsInNlc3Npb25faWQiOiJzZXNzX2RlMDZjODVkZWNmZDFmNGIiLCJzdWIiOiJhZG1pbiIsInR5cGUiOiJhY2Nlc3MiLCJ1c2VyX2lkIjoiMyIsInVzZXJfc3RhdHVzIjoxLCJ1c2VybmFtZSI6ImFkbWluIn0.VS67am2cMfjYBiyYCOpAVoxufLEgTxPBGgre2kk0tv8"
+    }
+}

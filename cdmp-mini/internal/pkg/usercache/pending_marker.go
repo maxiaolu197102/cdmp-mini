@@ -6,8 +6,9 @@ import (
 )
 
 type pendingMarkerMetadata struct {
-	Status   string `json:"status"`
-	Degraded bool   `json:"degraded"`
+	Status       string `json:"status"`
+	Degraded     bool   `json:"degraded"`
+	Backpressure string `json:"backpressure"`
 }
 
 // PendingMarkerIsDegraded returns true when the pending marker payload indicates a degraded state.
@@ -29,6 +30,10 @@ func PendingMarkerIsDegraded(raw string) (bool, error) {
 	}
 	status := strings.ToLower(strings.TrimSpace(marker.Status))
 	if status == "degraded" || marker.Degraded {
+		return true, nil
+	}
+	level := strings.ToLower(strings.TrimSpace(marker.Backpressure))
+	if level != "" && level != "none" {
 		return true, nil
 	}
 	return false, nil

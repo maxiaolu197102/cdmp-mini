@@ -23,7 +23,8 @@ func (u *UserService) DeleteCollection(ctx context.Context, username []string, f
 
 	//判断用户是否存在
 	for _, name := range username {
-		ruser, err := u.checkUserExist(ctx, name, true)
+		verifyCtx := WithVerifyUserGone(ctx)
+		ruser, err := u.checkUserExist(verifyCtx, name, true)
 		if err != nil {
 			log.Debugw("batch delete check failed", "username", name, "error", err)
 			continue
@@ -40,6 +41,7 @@ func (u *UserService) Delete(ctx context.Context, username string, force bool, o
 	ctx = WithBatchLookupCache(ctx)
 	ctx, span := trace.StartSpan(ctx, "user-service", "delete")
 	trace.AddRequestTag(ctx, "username", username)
+	trace.AddRequestTag(ctx, "delete_force", force)
 	businessCode := strconv.Itoa(code.ErrSuccess)
 	spanStatus := "success"
 	defer func() {
@@ -59,6 +61,7 @@ func (u *UserService) Delete(ctx context.Context, username string, force bool, o
 
 	//检查用户是否存在
 	checkCtx, checkSpan := trace.StartSpan(ctx, "user-service", "check_user_exist")
+	checkCtx = WithVerifyUserGone(checkCtx)
 	ruser, existErr := u.checkUserExist(checkCtx, username, true)
 	spanStatusCheck := "success"
 	spanCodeCheck := strconv.Itoa(code.ErrSuccess)

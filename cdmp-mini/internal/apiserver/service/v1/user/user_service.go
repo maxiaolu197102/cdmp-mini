@@ -27,6 +27,7 @@ package user
 
 import (
 	"context"
+	stdErrors "errors"
 	"fmt"
 	"math/rand"
 	"strconv"
@@ -38,6 +39,7 @@ import (
 	"github.com/bytedance/gopkg/util/logger"
 	jsoniter "github.com/json-iterator/go"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/options"
+
 	storectx "github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/store"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/store/interfaces"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/audit"
@@ -80,12 +82,13 @@ const (
 var json = jsoniter.ConfigCompatibleWithStandardLibrary
 
 type UserService struct {
-	Store    interfaces.Factory
-	Redis    *storage.RedisCluster
-	Options  *options.Options
-	Producer producer.MessageProducer
-	Audit    *audit.Manager
-	group    singleflight.Group
+	Store              interfaces.Factory
+	Redis              *storage.RedisCluster
+	Options            *options.Options
+	Producer           producer.MessageProducer
+	Audit              *audit.Manager
+	pendingCoordinator *usercache.PendingCoordinator
+	group              singleflight.Group
 
 	contactWarmupMu        sync.Mutex
 	contactWarming         bool
@@ -100,6 +103,7 @@ type contextKey string
 const (
 	forceCacheRefreshKey contextKey = "user.forceCacheRefresh"
 	batchLookupCacheKey  contextKey = "user.batchLookupCache"
+	verifyUserGoneKey    contextKey = "user.verifyUserGone"
 )
 
 func newPreflightLimiter(opts *options.Options) *semaphore.Weighted {
@@ -126,9 +130,12 @@ type pendingMarkerPayload struct {
 }
 
 type pendingMarkerState struct {
-	exists   bool
-	ttl      time.Duration
-	degraded bool
+	exists       bool
+	ttl          time.Duration
+	degraded     bool
+	backpressure usercache.BackpressureLevel
+	leaseOwner   string
+	queueDepth   int64
 }
 
 // WithForceCacheRefresh 标记当前请求需要绕过负缓存/黑名单哨兵。
@@ -235,9 +242,25 @@ func batchLookupCacheFromContext(ctx context.Context) *batchLookupCache {
 	return nil
 }
 
+// WithVerifyUserGone 标记当前请求用于验证用户是否已被删除。
+func WithVerifyUserGone(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, verifyUserGoneKey, true)
+}
+
+func verifyUserGoneFromContext(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	marked, ok := ctx.Value(verifyUserGoneKey).(bool)
+	return ok && marked
+}
+
 // NewUserService 创建用户服务实例
 func NewUserService(store interfaces.Factory, redis *storage.RedisCluster, opts *options.Options, producer producer.MessageProducer, auditMgr *audit.Manager) *UserService {
-	return &UserService{
+	svc := &UserService{
 		Store:            store,
 		Redis:            redis,
 		Options:          opts,
@@ -246,6 +269,13 @@ func NewUserService(store interfaces.Factory, redis *storage.RedisCluster, opts 
 		preflightLimiter: newPreflightLimiter(opts),
 		poolReporter:     newPoolStatsReporterForFactory(store),
 	}
+	if redis != nil {
+		cfg := usercache.PendingCoordinatorConfig{
+			LeaseTTL: svc.pendingCreateTTL(),
+		}
+		svc.pendingCoordinator = usercache.NewPendingCoordinator(redis, cfg)
+	}
+	return svc
 }
 
 func (u *UserService) userStoreReadOnly() interfaces.UserStore {
@@ -497,6 +527,43 @@ func (u *UserService) handleStrongConsistencyReadError(ctx context.Context, user
 
 func (u *UserService) lookupPendingCreateMarker(ctx context.Context, username string) (pendingMarkerState, error) {
 	state := pendingMarkerState{}
+	if u == nil {
+		return state, nil
+	}
+	trimmed := strings.TrimSpace(username)
+	if trimmed == "" {
+		return state, nil
+	}
+	if u.pendingCoordinator == nil {
+		return u.legacyLookupPendingCreateMarker(ctx, trimmed)
+	}
+	snapshot, err := u.pendingCoordinator.Observe(ctx, trimmed)
+	if err != nil {
+		return state, err
+	}
+	if snapshot == nil || !snapshot.Exists {
+		return state, nil
+	}
+	state.exists = true
+	state.ttl = snapshot.TTL
+	state.backpressure = snapshot.Backpressure
+	state.leaseOwner = snapshot.LeaseOwner
+	state.queueDepth = snapshot.QueueDepth
+	if snapshot.Backpressure != usercache.BackpressureNone {
+		state.degraded = true
+	}
+	if !state.degraded {
+		if degraded, decodeErr := usercache.PendingMarkerIsDegraded(snapshot.Raw); decodeErr != nil {
+			trace.AddRequestTag(ctx, "pending_marker_decode_error", decodeErr.Error())
+		} else if degraded {
+			state.degraded = true
+		}
+	}
+	return state, nil
+}
+
+func (u *UserService) legacyLookupPendingCreateMarker(ctx context.Context, username string) (pendingMarkerState, error) {
+	state := pendingMarkerState{}
 	if u == nil || u.Redis == nil {
 		return state, nil
 	}
@@ -712,6 +779,20 @@ func durationToSecondsCeil(d time.Duration) int64 {
 	return int64(seconds)
 }
 
+func tagIfLockWait(ctx context.Context, err error, tag string) {
+	if ctx == nil || err == nil {
+		return
+	}
+	if errors.IsCode(err, code.ErrDatabaseTimeout) {
+		trace.AddRequestTag(ctx, tag+"_lock_wait", true)
+		return
+	}
+	lowered := strings.ToLower(err.Error())
+	if strings.Contains(lowered, "lock wait") || strings.Contains(lowered, "deadlock") {
+		trace.AddRequestTag(ctx, tag+"_lock_wait", true)
+	}
+}
+
 func (u *UserService) pendingCreateTTL() time.Duration {
 	minTTL := serveropts.MinUserPendingCreateTTL
 	if u == nil || u.Options == nil || u.Options.ServerRunOptions == nil {
@@ -722,6 +803,19 @@ func (u *UserService) pendingCreateTTL() time.Duration {
 		return minTTL
 	}
 	return ttl
+}
+
+func (u *UserService) pendingLeaseMetadata(ctx context.Context, username string) usercache.LeaseMetadata {
+	meta := usercache.LeaseMetadata{Username: username}
+	if traceCtx := trace.FromContext(ctx); traceCtx != nil {
+		meta.RequestID = traceCtx.RequestContext.RequestID
+		meta.Operator = traceCtx.RequestContext.Operator
+		meta.ClientIP = traceCtx.RequestContext.ClientIP
+	}
+	if legacyID := ctx.Value("requestID"); legacyID != nil {
+		meta.LegacyRequestID = fmt.Sprint(legacyID)
+	}
+	return meta
 }
 
 func (u *UserService) pendingCreatePayload(ctx context.Context, username string) string {
@@ -762,6 +856,63 @@ func (u *UserService) pendingCreatePayload(ctx context.Context, username string)
 
 // markUserPendingCreate 将用户名的 pending 标记写入 Redis，确保 Kafka 侧能够做最终一致性校验。
 func (u *UserService) markUserPendingCreate(ctx context.Context, username string) (bool, bool, time.Duration, time.Duration, time.Duration, error) {
+	if u == nil {
+		return false, false, 0, 0, 0, nil
+	}
+	trimmed := strings.TrimSpace(username)
+	if trimmed == "" {
+		return false, false, 0, 0, 0, nil
+	}
+	if u.pendingCoordinator == nil || u.Redis == nil {
+		return u.legacyMarkUserPendingCreate(ctx, trimmed)
+	}
+	meta := u.pendingLeaseMetadata(ctx, trimmed)
+	result, err := u.pendingCoordinator.Acquire(ctx, trimmed, meta)
+	if err != nil {
+		var acquireErr *usercache.AcquireError
+		if stdErrors.As(err, &acquireErr) {
+			if acquireErr.State != nil {
+				if acquireErr.State.QueueDepth > 0 {
+					trace.AddRequestTag(ctx, "pending_queue_depth", acquireErr.State.QueueDepth)
+				}
+				if acquireErr.State.Backpressure != usercache.BackpressureNone {
+					trace.AddRequestTag(ctx, "pending_backpressure_level", string(acquireErr.State.Backpressure))
+				}
+			}
+			switch acquireErr.Reason {
+			case usercache.AcquireFailureBackpressure:
+				return false, false, 0, 0, 0, errors.WithCode(code.ErrServerBusy, "用户创建排队中，请稍后重试")
+			case usercache.AcquireFailureConflict:
+				return false, false, 0, 0, 0, errors.WithCode(code.ErrServerBusy, "用户创建正在进行，请稍后再试")
+			}
+		}
+		return false, false, 0, 0, 0, err
+	}
+	lease := result.Lease
+	if lease == nil {
+		trace.AddRequestTag(ctx, "pending_marker_setnx_ms", result.SetNXDuration.Milliseconds())
+		return false, false, 0, result.SetNXDuration, 0, nil
+	}
+	pendingTTL := lease.LeaseExpiresAt.Sub(time.Now())
+	if pendingTTL < 0 {
+		pendingTTL = 0
+	}
+	trace.AddRequestTag(ctx, "pending_marker_new", true)
+	trace.AddRequestTag(ctx, "pending_marker_setnx_ms", result.SetNXDuration.Milliseconds())
+	if lease.QueueDepth > 0 {
+		trace.AddRequestTag(ctx, "pending_queue_depth", lease.QueueDepth)
+	}
+	if lease.Backpressure != usercache.BackpressureNone {
+		trace.AddRequestTag(ctx, "pending_backpressure_level", string(lease.Backpressure))
+	}
+	if pendingTTL > 0 {
+		trace.AddRequestTag(ctx, "pending_marker_ttl_ms", pendingTTL.Milliseconds())
+	}
+	trace.AddRequestTag(ctx, "pending_lease_owner", lease.OwnerID)
+	return true, false, pendingTTL, result.SetNXDuration, 0, nil
+}
+
+func (u *UserService) legacyMarkUserPendingCreate(ctx context.Context, username string) (bool, bool, time.Duration, time.Duration, time.Duration, error) {
 	trimmed := strings.TrimSpace(username)
 	if trimmed == "" || u == nil || u.Redis == nil {
 		return false, false, 0, 0, 0, nil
@@ -1068,6 +1219,22 @@ func (u *UserService) contactRefreshTimeout() time.Duration {
 	return serveropts.DefaultContactRefreshTimeout
 }
 
+func (u *UserService) shouldRunPreflight(ctx context.Context, user *v1.User) bool {
+	if user == nil {
+		return false
+	}
+	if forceCacheRefreshFromContext(ctx) || isStrongConsistencyRequest(ctx) {
+		return true
+	}
+	if strings.TrimSpace(user.Name) == "" && user.Email == "" && user.Phone == "" {
+		return false
+	}
+	if u.Redis == nil || !u.contactCacheReady.Load() {
+		return true
+	}
+	return false
+}
+
 func (u *UserService) newDBContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	base := parent
 	if base == nil {
@@ -1243,7 +1410,8 @@ func (u *UserService) ensureContactUniqueness(ctx context.Context, user *v1.User
 		retryAttempts = 1
 	}
 
-	if strings.TrimSpace(user.Name) != "" || email != "" || phone != "" {
+	runPreflight := u.shouldRunPreflight(ctx, user)
+	if runPreflight && (strings.TrimSpace(user.Name) != "" || email != "" || phone != "") {
 		result, err := util.RetryWithBackoff(retryAttempts, isRetryableError, func() (interface{}, error) {
 			dbCtx, cancel := u.newDBContext(ctx, u.contactLookupTimeout())
 			defer cancel()
@@ -1260,13 +1428,14 @@ func (u *UserService) ensureContactUniqueness(ctx context.Context, user *v1.User
 				preflight = typed
 			}
 		}
+	} else if !runPreflight {
+		u.recordUserCreateStep(ctx, "preflight_query_skip", "database", user.Name, 0, nil)
 	}
 
 	if ranPreflight && strings.TrimSpace(user.Name) != "" && preflightErr == nil {
 		usernameChecked = true
 	}
-
-	if preflightErr != nil {
+	if runPreflight && preflightErr != nil {
 		if shouldDegradeForError(preflightErr) {
 			u.markCreateDegraded(ctx, "preflight_timeout", "username", user.Name)
 			u.ensureDegradedContactPlaceholders(ctx, user.Name, email, phone)
@@ -1295,7 +1464,10 @@ func (u *UserService) ensureContactUniqueness(ctx context.Context, user *v1.User
 				if existing := preflight["email"]; existing != nil {
 					return existing, nil
 				}
-				return nil, errors.WithCode(code.ErrUserNotFound, "用户不存在")
+				if runPreflight {
+					return nil, errors.WithCode(code.ErrUserNotFound, "用户不存在")
+				}
+				return store.GetByEmail(lookupCtx, emailCopy, u.Options)
 			},
 		); err != nil {
 			return nil, false, err
@@ -1317,7 +1489,10 @@ func (u *UserService) ensureContactUniqueness(ctx context.Context, user *v1.User
 				if existing := preflight["phone"]; existing != nil {
 					return existing, nil
 				}
-				return nil, errors.WithCode(code.ErrUserNotFound, "用户不存在")
+				if runPreflight {
+					return nil, errors.WithCode(code.ErrUserNotFound, "用户不存在")
+				}
+				return store.GetByPhone(lookupCtx, phoneCopy, u.Options)
 			},
 		); err != nil {
 			return nil, false, err
@@ -1616,6 +1791,11 @@ func (u *UserService) checkUserExist(ctx context.Context, username string, force
 		"username":      username,
 		"force_refresh": forceRefresh,
 	}
+	verifyIntent := verifyUserGoneFromContext(ctx)
+	if verifyIntent {
+		cacheDetails["verify_user_gone"] = true
+		trace.AddRequestTag(ctx, "verify_user_gone_intent", "cache")
+	}
 	endCacheSpan := func() {
 		if cacheSpan != nil {
 			trace.EndSpan(cacheSpan, cacheStatus, cacheCode, cacheDetails)
@@ -1648,23 +1828,41 @@ func (u *UserService) checkUserExist(ctx context.Context, username string, force
 		cacheDetails["cache_return_candidate"] = true
 	}
 	if err == nil && found && user != nil {
+		if verifyIntent {
+			trace.AddRequestTag(ctx, "verify_user_gone_cache_hit", true)
+		}
 		switch user.Name {
 		case RATE_LIMIT_PREVENTION:
 			cacheDetails["cache_result"] = "negative_hit"
+			if verifyIntent {
+				trace.AddRequestTag(ctx, "verify_user_gone_cache_result", "negative")
+			}
 			if !forceRefresh {
 				recordBatchResult(user, false)
 				return user, nil
 			}
 			cacheDetails["cache_result"] = "negative_bypass"
+			if verifyIntent {
+				trace.AddRequestTag(ctx, "verify_user_gone_cache_result", "negative_bypass")
+			}
 		case BLACKLIST_SENTINEL:
 			cacheDetails["cache_result"] = "blacklist_hit"
+			if verifyIntent {
+				trace.AddRequestTag(ctx, "verify_user_gone_cache_result", "blacklist")
+			}
 			if !forceRefresh {
 				recordBatchResult(user, false)
 				return user, nil
 			}
 			cacheDetails["cache_result"] = "blacklist_bypass"
+			if verifyIntent {
+				trace.AddRequestTag(ctx, "verify_user_gone_cache_result", "blacklist_bypass")
+			}
 		default:
 			cacheDetails["cache_result"] = "hit"
+			if verifyIntent {
+				trace.AddRequestTag(ctx, "verify_user_gone_cache_result", "positive")
+			}
 			recordBatchResult(user, false)
 			return user, nil
 		}
@@ -1672,6 +1870,9 @@ func (u *UserService) checkUserExist(ctx context.Context, username string, force
 
 	if err == nil && !found {
 		cacheDetails["cache_result"] = "miss"
+		if verifyIntent {
+			trace.AddRequestTag(ctx, "verify_user_gone_cache_result", "miss")
+		}
 	}
 
 	if cacheSpan != nil {
@@ -1738,17 +1939,30 @@ func (u *UserService) checkUserExist(ctx context.Context, username string, force
 		} else {
 			dbCode = strconv.Itoa(code.ErrUnknown)
 		}
+		tagIfLockWait(ctx, err, "check_user_exist_db")
+		if verifyIntent {
+			trace.AddRequestTag(ctx, "verify_user_gone_db_result", "error")
+		}
 		return nil, err
 	}
 	if result == nil {
 		dbDetails["db_result"] = "not_found"
 		recordBatchResult(nil, true)
+		if verifyIntent {
+			trace.AddRequestTag(ctx, "verify_user_gone_db_result", "not_found")
+		}
 		return nil, nil
 	}
 	dbDetails["db_result"] = "hit"
 	if userObj, ok := result.(*v1.User); ok {
 		recordBatchResult(userObj, false)
+		if verifyIntent {
+			trace.AddRequestTag(ctx, "verify_user_gone_db_result", "hit")
+		}
 		return userObj, nil
+	}
+	if verifyIntent {
+		trace.AddRequestTag(ctx, "verify_user_gone_db_result", "unexpected_type")
 	}
 	return nil, fmt.Errorf("unexpected user lookup result type %T", result)
 }

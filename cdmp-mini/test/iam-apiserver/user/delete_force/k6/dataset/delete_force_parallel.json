@@ -1,0 +1,23 @@
+{
+    "usernamePrefix": "delete-force-user-par",
+    "basePassword": "Test@1234",
+    "emailDomain": "example.com",
+    "seedNicknamePrefix": "dforce",
+    "sleepBetween": 0.02,
+    "requestTimeout": "60s",
+    "userReadyTimeoutMs": 18000,
+    "deleteVerifyTimeoutMs": 10000,
+    "maxUsernameLength": 40,
+    "batchSize": 15,
+    "verifyDeletion": true,
+    "respawnOnFailure": true,
+    "deleteMaxAttempts": 3,
+    "pendingRetryMaxAttempts": 5,
+    "pendingRetryInitialSleepMs": 60,
+    "pendingRetryBackoffMultiplier": 1.4,
+    "pendingRetryMaxSleepMs": 500,
+    "singlePreseedCount": 6,
+    "singleMinPool": 2,
+    "batchPreseedGroups": 3,
+    "batchMinPool": 1
+}

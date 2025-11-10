@@ -35,16 +35,17 @@ import (
 )
 
 type UserConsumer struct {
-	readers     []*kafka.Reader
-	db          *gorm.DB
-	sqlxDB      *sqlx.DB
-	redis       *storage.RedisCluster
-	producer    *UserProducer
-	topic       string
-	groupID     string
-	instanceID  int // 新增：实例ID
-	opts        *options.KafkaOptions
-	markerCache *pendingMarkerCache
+	readers            []*kafka.Reader
+	db                 *gorm.DB
+	sqlxDB             *sqlx.DB
+	redis              *storage.RedisCluster
+	producer           *UserProducer
+	topic              string
+	groupID            string
+	instanceID         int // 新增：实例ID
+	opts               *options.KafkaOptions
+	markerCache        *pendingMarkerCache
+	pendingCoordinator *usercache.PendingCoordinator
 	// 移除本地保护状态，全部走redis全局key
 	// 主控选举相关
 	isMaster      bool
@@ -84,11 +85,14 @@ const batchChannelFreeSlotDivisor = 8
 const createFastFlushTimeout = 25 * time.Millisecond
 
 type markerCacheEntry struct {
-	exists      bool
-	value       string
-	hasTTL      bool
-	expireAt    time.Time
-	cacheExpiry time.Time
+	exists       bool
+	value        string
+	hasTTL       bool
+	expireAt     time.Time
+	cacheExpiry  time.Time
+	ownerID      string
+	queueDepth   int64
+	backpressure usercache.BackpressureLevel
 }
 
 func (e markerCacheEntry) remainingTTL(now time.Time) time.Duration {
@@ -266,14 +270,11 @@ func NewUserConsumer(opts *options.KafkaOptions, topic, groupID string, instance
 
 	readers := make([]*kafka.Reader, 0, fetcherCount)
 	for fetcherIdx := 0; fetcherIdx < fetcherCount; fetcherIdx++ {
-		groupInstanceID := buildGroupInstanceID(opts.InstanceID, groupID, instanceIndex*fetcherCount+fetcherIdx)
 		reader := kafka.NewReader(kafka.ReaderConfig{
 			Brokers: opts.Brokers,
 			Topic:   topic,
 			GroupID: groupID,
-			// Enable static membership so that the coordinator can track this consumer across restarts.
-			GroupInstanceID: groupInstanceID,
-
+			// kafka-go v0.4.49 lacks GroupInstanceID support, so static membership is unavailable here.
 			// 优化配置
 			MinBytes:      32 * 1024, // 32KB，兼顾延迟与批量度
 			MaxBytes:      10e6,      // 10MB
@@ -309,6 +310,7 @@ func NewUserConsumer(opts *options.KafkaOptions, topic, groupID string, instance
 	} else {
 		consumer.sqlxDB = sqlx.NewDb(sqlCore, "mysql").Unsafe()
 	}
+	consumer.pendingCoordinator = usercache.NewPendingCoordinator(redis, usercache.PendingCoordinatorConfig{})
 	//go consumer.startLagMonitor(context.Background())
 	return consumer
 
@@ -1811,16 +1813,64 @@ func (c *UserConsumer) getPendingCreateMarker(ctx context.Context, username stri
 	if trimmed == "" {
 		return false, "", 0, 0, 0, nil
 	}
-	key := usercache.PendingCreateKey(trimmed)
-	if key == "" {
-		return false, "", 0, 0, 0, nil
-	}
 	if cached, ok := c.markerCache.Get(trimmed); ok {
 		trace.AddRequestTag(ctx, "pending_marker_cache_hit", true)
 		now := time.Now()
 		return cached.exists, cached.value, cached.remainingTTL(now), 0, 0, nil
 	}
 	trace.AddRequestTag(ctx, "pending_marker_cache_hit", false)
+	if c.pendingCoordinator == nil {
+		return c.legacyGetPendingCreateMarker(ctx, trimmed)
+	}
+	snapshot, err := c.pendingCoordinator.Observe(ctx, trimmed)
+	if err != nil {
+		trace.AddRequestTag(ctx, "pending_marker_get_error", err.Error())
+		return false, "", 0, 0, 0, err
+	}
+	if snapshot == nil || !snapshot.Exists {
+		c.markerCache.Set(trimmed, markerCacheEntry{
+			exists:      false,
+			hasTTL:      false,
+			cacheExpiry: time.Now().Add(pendingMarkerCacheWindow),
+		})
+		return false, "", 0, snapshot.RedisGetDuration, snapshot.RedisTTLDur, nil
+	}
+	trace.AddRequestTag(ctx, "pending_marker_get_ms", snapshot.RedisGetDuration.Milliseconds())
+	if snapshot.RedisTTLDur > 0 {
+		trace.AddRequestTag(ctx, "pending_marker_ttl_lookup_ms", snapshot.RedisTTLDur.Milliseconds())
+	}
+	entry := markerCacheEntry{
+		exists:       true,
+		value:        snapshot.Raw,
+		hasTTL:       snapshot.TTL > 0,
+		ownerID:      snapshot.LeaseOwner,
+		queueDepth:   snapshot.QueueDepth,
+		backpressure: snapshot.Backpressure,
+		cacheExpiry:  time.Now().Add(pendingMarkerCacheWindow),
+	}
+	if snapshot.TTL > 0 {
+		expireAt := time.Now().Add(snapshot.TTL)
+		entry.expireAt = expireAt
+		if expireAt.Before(entry.cacheExpiry) {
+			entry.cacheExpiry = expireAt
+		}
+	}
+	c.markerCache.Set(trimmed, entry)
+	return true, snapshot.Raw, snapshot.TTL, snapshot.RedisGetDuration, snapshot.RedisTTLDur, nil
+}
+
+func (c *UserConsumer) legacyGetPendingCreateMarker(ctx context.Context, username string) (bool, string, time.Duration, time.Duration, time.Duration, error) {
+	if c.redis == nil {
+		return false, "", 0, 0, 0, nil
+	}
+	trimmed := strings.TrimSpace(username)
+	if trimmed == "" {
+		return false, "", 0, 0, 0, nil
+	}
+	key := usercache.PendingCreateKey(trimmed)
+	if key == "" {
+		return false, "", 0, 0, 0, nil
+	}
 
 	getStart := time.Now()
 	value, err := c.redis.GetKey(ctx, key)
@@ -1901,18 +1951,39 @@ func (c *UserConsumer) getPendingCreateMarker(ctx context.Context, username stri
 
 // clearPendingCreateMarker 在消息处理完成后清理 pending 标记，防止重复请求受阻。
 func (c *UserConsumer) clearPendingCreateMarker(ctx context.Context, username string) (time.Duration, error) {
-	if c.redis == nil {
+	if c.redis == nil && c.pendingCoordinator == nil {
 		return 0, nil
 	}
 	trimmed := strings.TrimSpace(username)
 	if trimmed == "" {
 		return 0, nil
 	}
-	key := usercache.PendingCreateKey(trimmed)
+	var cached markerCacheEntry
+	if entry, ok := c.markerCache.Get(trimmed); ok {
+		cached = entry
+	}
+	c.markerCache.Delete(trimmed)
+	if c.pendingCoordinator != nil {
+		duration, err := c.pendingCoordinator.Release(ctx, trimmed, cached.ownerID)
+		trace.AddRequestTag(ctx, "pending_marker_clear_ms", duration.Milliseconds())
+		if err != nil {
+			trace.AddRequestTag(ctx, "pending_marker_clear_error", err.Error())
+			return duration, err
+		}
+		trace.AddRequestTag(ctx, "pending_marker_cleared", true)
+		return duration, nil
+	}
+	return c.legacyClearPendingCreateMarker(ctx, trimmed)
+}
+
+func (c *UserConsumer) legacyClearPendingCreateMarker(ctx context.Context, username string) (time.Duration, error) {
+	if c.redis == nil {
+		return 0, nil
+	}
+	key := usercache.PendingCreateKey(username)
 	if key == "" {
 		return 0, nil
 	}
-	c.markerCache.Delete(trimmed)
 	deleteStart := time.Now()
 	deleted, err := c.redis.DeleteKey(ctx, key)
 	deleteDuration := time.Since(deleteStart)

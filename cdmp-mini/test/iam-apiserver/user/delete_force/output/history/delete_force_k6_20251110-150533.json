@@ -1,0 +1,239 @@
+{
+    "root_group": {
+        "path": "",
+        "id": "d41d8cd98f00b204e9800998ecf8427e",
+        "groups": {},
+        "checks": {
+                "delete_http_success": {
+                    "name": "delete_http_success",
+                    "path": "::delete_http_success",
+                    "id": "72d90dbccd57d883464a617cd2605bc7",
+                    "passes": 25694,
+                    "fails": 0
+                },
+                "delete_code_success": {
+                    "name": "delete_code_success",
+                    "path": "::delete_code_success",
+                    "id": "4a87a8aa2fe2390aa74b938558fe2969",
+                    "passes": 25694,
+                    "fails": 0
+                }
+            },
+        "name": ""
+    },
+    "metrics": {
+        "delete_force_batch_success_rate": {
+            "passes": 0,
+            "fails": 0,
+            "thresholds": {
+                "rate>0.95": false
+            },
+            "value": 0
+        },
+        "checks": {
+            "passes": 51388,
+            "fails": 0,
+            "value": 1
+        },
+        "http_req_duration": {
+            "min": 1.763005,
+            "med": 5.8357565000000005,
+            "max": 1091.368721,
+            "p(90)": 36.868375,
+            "p(95)": 59.635687,
+            "avg": 24.43590611684719,
+            "thresholds": {
+                "p(99)<2000": false
+            }
+        },
+        "http_reqs": {
+            "count": 154116,
+            "rate": 891.3079674445275
+        },
+        "delete_force_single_latency": {
+            "min": 1.878849,
+            "med": 4.1741455,
+            "max": 1057.422562,
+            "p(90)": 15.1899455,
+            "p(95)": 21.94879555,
+            "avg": 7.729285702693237,
+            "thresholds": {
+                "p(95)<500": false
+            }
+        },
+        "http_req_sending": {
+            "max": 33.827559,
+            "p(90)": 0.061821,
+            "p(95)": 0.0755435,
+            "avg": 0.05234934747852228,
+            "min": 0.008811,
+            "med": 0.038246
+        },
+        "http_req_receiving": {
+            "p(95)": 0.18144625,
+            "avg": 0.1258673543110408,
+            "min": 0.021898,
+            "med": 0.10187,
+            "max": 35.639676,
+            "p(90)": 0.154841
+        },
+        "delete_force_single_success_rate": {
+            "passes": 25694,
+            "fails": 0,
+            "thresholds": {
+                "rate>0.97": false
+            },
+            "value": 1
+        },
+        "http_req_failed": {
+            "passes": 0,
+            "fails": 154116,
+            "thresholds": {
+                "rate<0.05": false
+            },
+            "value": 0
+        },
+        "data_sent": {
+            "count": 122464899,
+            "rate": 708258.3262671581
+        },
+        "vus_max": {
+            "min": 106,
+            "max": 128,
+            "value": 128
+        },
+        "http_req_tls_handshaking": {
+            "avg": 0,
+            "min": 0,
+            "med": 0,
+            "max": 0,
+            "p(90)": 0,
+            "p(95)": 0
+        },
+        "delete_force_degraded_rate": {
+            "passes": 0,
+            "fails": 25694,
+            "thresholds": {
+                "rate<0.02": false
+            },
+            "value": 0
+        },
+        "iteration_duration": {
+            "med": 605.791704,
+            "max": 1863.723879,
+            "p(90)": 825.5382800000001,
+            "p(95)": 1206.5803376,
+            "avg": 672.2016690817491,
+            "min": 282.095335
+        },
+        "http_req_connecting": {
+            "avg": 0.00024008788185522585,
+            "min": 0,
+            "med": 0,
+            "max": 5.022817,
+            "p(90)": 0,
+            "p(95)": 0
+        },
+        "http_req_duration{expected_response:true}": {
+            "avg": 24.43590611684719,
+            "min": 1.763005,
+            "med": 5.8357565000000005,
+            "max": 1091.368721,
+            "p(90)": 36.868375,
+            "p(95)": 59.635687
+        },
+        "http_req_blocked": {
+            "avg": 0.012061503925614142,
+            "min": 0.002667,
+            "med": 0.01014,
+            "max": 34.380747,
+            "p(90)": 0.01483,
+            "p(95)": 0.01670425
+        },
+        "dropped_iterations": {
+            "count": 1868,
+            "rate": 10.803312330883085
+        },
+        "data_received": {
+            "count": 114632971,
+            "rate": 662963.4845450016
+        },
+        "iterations": {
+            "count": 25617,
+            "rate": 148.15227622068093
+        },
+        "vus": {
+            "value": 102,
+            "min": 61,
+            "max": 128
+        },
+        "delete_force_invalid_payload_rejected_rate": {
+            "fails": 0,
+            "passes": 0,
+            "thresholds": {
+                "rate>0.95": false
+            },
+            "value": 0
+        },
+        "http_req_waiting": {
+            "p(90)": 36.617295999999996,
+            "p(95)": 59.35257275,
+            "avg": 24.257689415057502,
+            "min": 1.711011,
+            "med": 5.6627525,
+            "max": 1091.167598
+        },
+        "delete_force_batch_latency": {
+            "med": 0,
+            "max": 0,
+            "p(90)": 0,
+            "p(95)": 0,
+            "avg": 0,
+            "min": 0,
+            "thresholds": {
+                "p(95)<700": false
+            }
+        }
+    },
+    "setup_data": {
+        "baseUrl": "http://192.168.10.8:8088",
+        "dataset": {
+            "seedExtras": null,
+            "singleMinPool": 2,
+            "sleepBetween": 0.02,
+            "maxUsernameLength": 40,
+            "respawnOnFailure": true,
+            "seedLabels": null,
+            "seedNicknamePrefix": "dforce",
+            "userReadyTimeoutMs": 18000,
+            "verifyDeletion": true,
+            "batchMinPool": 1,
+            "batchPreseedGroups": 3,
+            "batchSize": 15,
+            "deleteMaxAttempts": 3,
+            "pendingRetryInitialSleepMs": 60,
+            "emailDomain": "example.com",
+            "pendingRetryBackoffMultiplier": 1.4,
+            "requestTimeout": "60s",
+            "singlePreseedCount": 6,
+            "usernamePrefix": "delete-force-user",
+            "pendingRetryMaxSleepMs": 500,
+            "basePassword": "Test@1234",
+            "deleteVerifyTimeoutMs": 10000,
+            "pendingRetryMaxAttempts": 5,
+            "seedExtendTemplate": null
+        },
+        "scenarioMeta": {
+            "scenarioSingleParallel": {
+                "timeUnit": "1s",
+                "duration": "1h",
+                "exec": "scenarioSingleParallel",
+                "executor": "constant-arrival-rate",
+                "maxVUs": 128,
+                "preAllocatedVUs": 96,
+                "rate": 160
+            }
+        },
+        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQiOiJodHRwczovL2dpdGh1Yi5jb20vbWF4aWFvbHUxOTgxL2NyZXRlbSIsImV4cCI6MTc2Mjc2MTkzMywiaWF0IjoxNzYyNzU4MzMzLCJpc2FkbWluIjoiMSIsImlzcyI6Imh0dHBzOi8vZ2l0aHViLmNvbS9tYXhpYW9sdTE5ODEvY3JldGVtIiwianRpIjoiand0X200OG5ycWo4M283MjFsIiwib3JpZ19pYXQiOjE3NjI3NTgzMzMsInJvbGUiOiJhZG1pbiIsInNlc3Npb25faWQiOiJzZXNzXzE3ZTUzODBiMzgxODYwYjIiLCJzdWIiOiJhZG1pbiIsInR5cGUiOiJhY2Nlc3MiLCJ1c2VyX2lkIjoiMyIsInVzZXJfc3RhdHVzIjoxLCJ1c2VybmFtZSI6ImFkbWluIn0.sQk6d8G2o_9yDcopYSjEQk4EWnoB1DZHIfSaHEX7v4o"
+    }
+}
