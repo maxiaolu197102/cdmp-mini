@@ -79,6 +79,7 @@ var (
 	ConsumerTopicPartitions   *prometheus.GaugeVec
 	ConsumerGroupInstances    *prometheus.GaugeVec
 	ConsumerPartitionsNoOwner *prometheus.GaugeVec
+	ConsumerMessageAgeSeconds *prometheus.HistogramVec
 
 	// 数据库操作指标
 	DatabaseQueryDuration *prometheus.HistogramVec
@@ -91,6 +92,15 @@ var (
 	DatabasePoolWaitCount           *prometheus.GaugeVec
 	DatabasePoolWaitDurationSeconds *prometheus.GaugeVec
 	DatabasePoolMaxOpenConnections  *prometheus.GaugeVec
+)
+
+var (
+	// Pending lease / coordinator 指标
+	PendingLeaseActiveGauge       *prometheus.GaugeVec
+	PendingLeaseQueueDepth        *prometheus.GaugeVec
+	PendingLeaseBackpressureLevel *prometheus.GaugeVec
+	PendingLeaseEvents            *prometheus.CounterVec
+	PendingLeaseHoldDuration      *prometheus.HistogramVec
 )
 
 // Redis操作指标
@@ -496,6 +506,56 @@ func init() {
 			Help: "Heuristic count of partitions without active consumers for a topic/group",
 		},
 		[]string{"topic", "group"},
+	)
+
+	ConsumerMessageAgeSeconds = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "kafka_consumer_message_age_seconds",
+			Help:    "Age of Kafka messages when picked up by consumer workers",
+			Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60, 120, 300},
+		},
+		[]string{"component", "topic", "group"},
+	)
+
+	PendingLeaseActiveGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "pending_lease_active_total",
+			Help: "Number of active pending leases tracked by the coordinator",
+		},
+		[]string{"component"},
+	)
+
+	PendingLeaseQueueDepth = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "pending_lease_queue_depth",
+			Help: "Current queue depth observed by the pending lease coordinator",
+		},
+		[]string{"component"},
+	)
+
+	PendingLeaseBackpressureLevel = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "pending_lease_backpressure_level",
+			Help: "Current backpressure level derived from pending lease queue depth (0=none,1=elevated,2=severe)",
+		},
+		[]string{"component"},
+	)
+
+	PendingLeaseEvents = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "pending_lease_events_total",
+			Help: "Total number of pending lease lifecycle events",
+		},
+		[]string{"component", "event"},
+	)
+
+	PendingLeaseHoldDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "pending_lease_hold_duration_seconds",
+			Help:    "Time between lease acquisition and release",
+			Buckets: []float64{0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60, 120, 300},
+		},
+		[]string{"component", "result"},
 	)
 
 	// -------------------------- 初始化：数据库操作指标 --------------------------
@@ -975,6 +1035,16 @@ func init() {
 		ConsumerCommitSuccess,
 		ConsumerCommitFailures,
 		ConsumerLag,
+		ConsumerTopicPartitions,
+		ConsumerGroupInstances,
+		ConsumerPartitionsNoOwner,
+		ConsumerMessageAgeSeconds,
+
+		PendingLeaseActiveGauge,
+		PendingLeaseQueueDepth,
+		PendingLeaseBackpressureLevel,
+		PendingLeaseEvents,
+		PendingLeaseHoldDuration,
 
 		// 数据库指标
 		DatabaseQueryDuration,

@@ -6,7 +6,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "登录成功",
-    "duration_ms": 15,
+    "duration_ms": 24,
     "checks": {
       "access_token_issued": true,
       "operator_matches": true,
@@ -25,8 +25,8 @@
     "success": true,
     "http_status": 401,
     "code": 100206,
-    "message": "[code: 100206] 密码校验失败：用户名【login_wrong_1762773823612002881_29187】的密码不正确",
-    "duration_ms": 11,
+    "message": "[code: 100206] 密码校验失败：用户名【login_wrong_1762886494005660869_96406】的密码不正确",
+    "duration_ms": 13,
     "checks": {
       "invalid_credentials_rejected": true
     }
@@ -38,7 +38,7 @@
     "http_status": 404,
     "code": 110001,
     "message": "[code: 110001] 用户不存在",
-    "duration_ms": 4,
+    "duration_ms": 5,
     "checks": {
       "user_not_found": true
     }
@@ -74,7 +74,7 @@
     "http_status": 400,
     "code": 110004,
     "message": "[code: 110004] 参数错误：username和password不能为空",
-    "duration_ms": 0,
+    "duration_ms": 1,
     "checks": {
       "password_empty_rejected": true
     }
@@ -86,7 +86,7 @@
     "http_status": 400,
     "code": 110004,
     "message": "[code: 110004] 名称部分长度不能超过63个字符",
-    "duration_ms": 7,
+    "duration_ms": 2,
     "checks": {
       "length_validation": true
     }
@@ -122,7 +122,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "登录成功",
-    "duration_ms": 9,
+    "duration_ms": 13,
     "checks": {
       "tokens_issued": true
     }
@@ -134,7 +134,7 @@
     "http_status": 429,
     "code": 100213,
     "message": "[code: 100213] 登录失败次数太多,15分钟后重试",
-    "duration_ms": 20,
+    "duration_ms": 26,
     "checks": {
       "lockout_triggered": true
     }
@@ -146,7 +146,7 @@
     "http_status": 400,
     "code": 110004,
     "message": "[code: 110004] 密码不合法：缺少大写字母，至少需要一个数字，缺少特殊字符，密码长度必须在8到200个字符之间",
-    "duration_ms": 3,
+    "duration_ms": 2,
     "checks": {
       "password_policy_enforced": true
     }
@@ -158,7 +158,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "登录成功",
-    "duration_ms": 20,
+    "duration_ms": 19,
     "checks": {
       "distinct_tokens": true,
       "multi_session_access": true
@@ -171,7 +171,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 14,
+    "duration_ms": 20,
     "checks": {
       "refresh_success": true
     }
@@ -183,7 +183,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 16,
+    "duration_ms": 14,
     "checks": {
       "token_revoked": true
     }
@@ -195,7 +195,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "登录成功",
-    "duration_ms": 9070,
+    "duration_ms": 2133,
     "checks": {
       "expired_rejected": true,
       "pre_expiry_access": true,
@@ -203,7 +203,7 @@
     },
     "notes": [
       "登录时使用 X-Debug-Token-Timeout=1s",
-      "初始 TTL ≈ 0.67s"
+      "初始 TTL ≈ 0.57s"
     ]
   },
   {
@@ -213,7 +213,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 9204,
+    "duration_ms": 3273,
     "checks": {
       "audit_enabled": true,
       "login_fail_audited": false,

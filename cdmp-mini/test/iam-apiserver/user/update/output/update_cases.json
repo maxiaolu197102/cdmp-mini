@@ -6,7 +6,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "用户更新成功",
-    "duration_ms": 5,
+    "duration_ms": 12,
     "checks": {
       "payload_applied": true,
       "response": true
@@ -22,7 +22,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "用户更新成功",
-    "duration_ms": 3,
+    "duration_ms": 4,
     "checks": {
       "payload_applied": true,
       "response": true
@@ -53,7 +53,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "用户更新成功",
-    "duration_ms": 4,
+    "duration_ms": 13,
     "checks": {
       "payload_applied": true,
       "response": true

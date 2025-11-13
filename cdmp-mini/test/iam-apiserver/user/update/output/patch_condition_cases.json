@@ -6,7 +6,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "用户信息更新成功",
-    "duration_ms": 62,
+    "duration_ms": 5,
     "checks": {
       "response": true
     },
@@ -21,27 +21,12 @@
     "http_status": 200,
     "code": 100001,
     "message": "用户信息更新成功",
-    "duration_ms": 31,
+    "duration_ms": 5,
     "checks": {
       "response": true
     },
     "notes": [
       "条件无匹配时应安全返回"
-    ]
-  },
-  {
-    "name": "range_condition_isadmin",
-    "description": "范围条件 isAdmin.gte 命中已提升的管理员",
-    "success": true,
-    "http_status": 200,
-    "code": 100001,
-    "message": "用户信息更新成功",
-    "duration_ms": 3,
-    "checks": {
-      "response": true
-    },
-    "notes": [
-      "范围条件 isAdmin.gte 命中已提升的管理员"
     ]
   },
   {
@@ -51,7 +36,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "用户信息更新成功",
-    "duration_ms": 4,
+    "duration_ms": 2,
     "checks": {
       "response": true
     },

@@ -475,6 +475,33 @@ func (p *UserProducer) handleErrors() {
 	}
 }
 
+// SendUserCreateMessage 将用户创建事件发送至 Kafka
+//
+// 封装用户实体并投递到创建主题，附带链路追踪与限流控制，失败时会按配置走降级写文件。
+//
+// 参数：
+//
+//	ctx: 请求上下文，携带 trace 与取消信号
+//	user: 待发送的用户实体，需包含用户名等基础字段
+//
+// 返回值：
+//
+//	error: 发送失败时返回具体错误，nil 表示成功入队
+//
+// 示例：
+//
+//	err := producer.SendUserCreateMessage(ctx, user)
+//	if err != nil {
+//	    // 处理发送异常
+//	}
+//
+// 注意事项：
+//   - 会尊重生产者限流器，可能阻塞等待
+//   - 失败时会记录指标并可能落盘到降级文件
+//
+// 异常情况：
+//   - 序列化或发送失败返回对应错误码
+//   - 限流被拒绝时返回 ErrRateLimitExceeded
 func (p *UserProducer) SendUserCreateMessage(ctx context.Context, user *v1.User) error {
 	trace.AddRequestTag(ctx, "username", user.Name)
 	log.Debugf("[Producer] SendUserCreateMessage: username=%s", user.Name)

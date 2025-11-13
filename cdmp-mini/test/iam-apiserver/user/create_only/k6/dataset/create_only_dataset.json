@@ -1,0 +1,43 @@
+{
+    "usernamePrefix": "create-only-user",
+    "basePassword": "Test@1234",
+    "emailDomain": "example.com",
+    "seedNicknamePrefix": "create",
+    "sleepBetween": 0.05,
+    "sleepBaseline": 0.08,
+    "sleepParallel": 0.05,
+    "sleepPending": 0.2,
+    "requestTimeout": "60s",
+    "userReadyTimeoutMs": 20000,
+    "loginFallbackTimeoutMs": 4000,
+    "maxUsernameLength": 40,
+    "pendingRetryInitialSleepMs": 200,
+    "pendingRetryBackoffMultiplier": 1.6,
+    "pendingRetryMaxSleepMs": 1200,
+    "pendingLogThresholdMs": 1200,
+    "visibilityPollIntervalMs": 200,
+    "waitForVisibilityBaseline": true,
+    "waitForVisibilityParallel": false,
+    "seedExtras": {
+        "seed": true
+    },
+    "seedLabels": {
+        "tier": "baseline"
+    },
+    "extendTemplates": [
+        {
+            "profile": "full",
+            "region": "ap-south-1"
+        },
+        {
+            "profile": "partial",
+            "region": "cn-north-1"
+        }
+    ],
+    "labels": {
+        "env": "perf"
+    },
+    "extras": {
+        "source": "k6"
+    }
+}

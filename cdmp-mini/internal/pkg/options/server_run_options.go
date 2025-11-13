@@ -1,6 +1,8 @@
 package options
 
 import (
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -127,6 +129,8 @@ func NewServerRunOptions() *ServerRunOptions {
 }
 
 func (s *ServerRunOptions) Complete() {
+	s.applyEnvOverrides()
+
 	// EnableRateLimiter: 如果为零值，设置默认值 true
 	// 注意：bool类型零值为false，只有未配置时才设为true
 	// 若希望默认关闭，改为 false
@@ -283,6 +287,40 @@ func (s *ServerRunOptions) Complete() {
 	}
 	if s.UserPendingCreateTTL < MinUserPendingCreateTTL {
 		s.UserPendingCreateTTL = MinUserPendingCreateTTL
+	}
+}
+
+func (s *ServerRunOptions) applyEnvOverrides() {
+	if v := strings.TrimSpace(os.Getenv("TRACE_SAMPLE_RATE")); v != "" {
+		if parsed, err := strconv.ParseFloat(v, 64); err == nil {
+			s.UserTraceLogSampleRate = parsed
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("TRACE_FORCE_LOG_ERRORS")); v != "" {
+		if parsed, err := strconv.ParseBool(v); err == nil {
+			s.UserTraceForceLogErrors = parsed
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("TRACE_DISABLE_LOGGING")); v != "" {
+		if parsed, err := strconv.ParseBool(v); err == nil {
+			s.UserTraceDisableLogging = parsed
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("TRACE_ENABLE_LOGGING")); v != "" {
+		if parsed, err := strconv.ParseBool(v); err == nil {
+			s.EnableUserTraceLogging = parsed
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("TRACE_EXPORT")); v != "" {
+		switch strings.ToLower(v) {
+		case "stdout":
+			s.EnableUserTraceLogging = true
+			s.UserTraceDisableLogging = false
+			s.UserTraceLogSampleRate = 1
+		case "off":
+			s.EnableUserTraceLogging = false
+			s.UserTraceDisableLogging = true
+		}
 	}
 }
 

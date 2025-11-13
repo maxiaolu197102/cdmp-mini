@@ -1,32 +1,8 @@
-/*
-聚焦分析 checkUserExist 新参数在各业务流程里的用法，我先拆成两步：1) 解释 checkUserExist 的内部机制与 forceRefresh 的作用；2) 对照 create/update/delete/list/changePassword 等调用点说明为何选择不同的布尔值。
-
-	}
-
-缓存优先 + 可选回源：入口在 user_service.go 的 checkUserExist(ctx, username, forceRefresh)。它先通过 tryGetFromCache 查询 Redis（见 get_service.go），命中真实用户就直接返回；命中的是我们自己写入的负缓存 RATE_LIMIT_PREVENTION 时，会根据 forceRefresh 判断是否继续。
-forceRefresh=false：直接把负缓存返回，认为“这个用户不存在”。
-forceRefresh=true：即便命中了负缓存，也会日志提示“命中负缓存, 强制回源校验”，然后继续往数据库查一遍。
-防止击穿的负缓存：getUserFromDBAndSetCache 查库找不到用户时，会调用 cacheNullValue，通过新改动后的 Redis.SetNX 写入带统一前缀的空值，短期内阻挡重复查询。
-数据库兜底：缓存未命中或强制回源时，使用 util.RetryWithBackoff + singleflight 查询数据库，再把结果写回缓存。这段逻辑保证并发下只打一次 DB，同时对临时错误做重试。
-不同业务场景如何传 forceRefresh
-场景	代码位置	参数	理由
-创建	create_service.go 第 15 行附近 checkUserExist(ctx, user.Name, false)	false	创建时我们只需要知道“目前是否有人占用这个用户名”。如果缓存里已经有负缓存，说明之前查库确认过不存在，可以放心创建；命中真实用户则阻止重复创建。
-更新	update_service.go 第 14 行 checkUserExist(ctx, user.Name, true)	true	更新必须保证用户真实存在。即便缓存说不存在（可能是老的负缓存），也要强制回源 DB，避免误报“用户不存在”导致 404。
-删除 / 批量删除	delete_service.go 第 17、31 行	true	删除尤其是强制删时，需要跨缓存验证，防止负缓存阻挡真实存在的用户被删除。
-改密码	change_password_servcice.go 第 15 行	true	密码修改只针对现有用户，必须强制回源确认，不让负缓存阻塞。
-查询（List/Get 前置过滤）	list_service.go 第 33 行等	true	列表在进入存储层前也要确认用户存在；否则负缓存会让查询直接中断，实际库里的用户就查不到了。Get 本身通过缓存->singleflight 也是强制最终一致。
-总结来说，写操作里区分“是否需要强一致性”：
-
-创造性动作（Create）允许负缓存阻挡，避免多余回源；
-读取/变更/删除类操作为了强一致，统一传 true，强制绕过负缓存；
-配合 checkUserExist 新增的 forceRefresh 逻辑，就能既保留负缓存的抗击穿效果，又避免它影响后续真实存在的用户操作。
-
-GPT-5-Codex (Preview) • 1x
-*/
 package user
 
 import (
 	"context"
+	stdjson "encoding/json"
 	stdErrors "errors"
 	"fmt"
 	"math/rand"
@@ -39,6 +15,8 @@ import (
 	"github.com/bytedance/gopkg/util/logger"
 	jsoniter "github.com/json-iterator/go"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/options"
+
+	"github.com/google/uuid"
 
 	storectx "github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/store"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/store/interfaces"
@@ -271,11 +249,60 @@ func NewUserService(store interfaces.Factory, redis *storage.RedisCluster, opts 
 	}
 	if redis != nil {
 		cfg := usercache.PendingCoordinatorConfig{
-			LeaseTTL: svc.pendingCreateTTL(),
+			LeaseTTL:       svc.pendingCreateTTL(),
+			Component:      "user_service",
+			LogLeaseEvents: true,
+		}
+		if opts != nil && opts.KafkaOptions != nil {
+			kopts := opts.KafkaOptions
+			if kopts.PendingLeaseTTL > 0 {
+				cfg.LeaseTTL = kopts.PendingLeaseTTL
+			}
+			if strings.TrimSpace(kopts.PendingMetricsKey) != "" {
+				cfg.MetricsKey = strings.TrimSpace(kopts.PendingMetricsKey)
+			}
+			if kopts.PendingBackpressureWindow > 0 {
+				cfg.BackpressureWindow = kopts.PendingBackpressureWindow
+			}
+			if kopts.PendingBackpressureSoft > 0 {
+				cfg.BackpressureSoftLimit = kopts.PendingBackpressureSoft
+			}
+			if kopts.PendingBackpressureHard > 0 {
+				cfg.BackpressureHardLimit = kopts.PendingBackpressureHard
+			}
+			if kopts.PendingReleaseRetention > 0 {
+				cfg.ReleaseRetention = kopts.PendingReleaseRetention
+			}
+			if kopts.PendingExpiredRetention > 0 {
+				cfg.ExpiredRetention = kopts.PendingExpiredRetention
+			}
+			if kopts.PendingExpiredGrace >= 0 {
+				cfg.ExpiredGracePeriod = kopts.PendingExpiredGrace
+			}
+			if kopts.PendingDelayElevated > 0 {
+				cfg.ElevatedDelayBase = kopts.PendingDelayElevated
+			}
+			if kopts.PendingDelayElevatedMax > 0 {
+				cfg.ElevatedDelayMax = kopts.PendingDelayElevatedMax
+			}
+			if kopts.PendingDelaySevere > 0 {
+				cfg.SevereDelayBase = kopts.PendingDelaySevere
+			}
+			if kopts.PendingDelaySevereMax > 0 {
+				cfg.SevereDelayMax = kopts.PendingDelaySevereMax
+			}
 		}
 		svc.pendingCoordinator = usercache.NewPendingCoordinator(redis, cfg)
 	}
 	return svc
+}
+
+// PendingCoordinator exposes the pending lease coordinator for downstream components (e.g. HTTP middleware).
+func (u *UserService) PendingCoordinator() *usercache.PendingCoordinator {
+	if u == nil {
+		return nil
+	}
+	return u.pendingCoordinator
 }
 
 func (u *UserService) userStoreReadOnly() interfaces.UserStore {
@@ -854,7 +881,38 @@ func (u *UserService) pendingCreatePayload(ctx context.Context, username string)
 	return string(data)
 }
 
-// markUserPendingCreate 将用户名的 pending 标记写入 Redis，确保 Kafka 侧能够做最终一致性校验。
+// markUserPendingCreate 为用户创建流程写入 Redis 占位标记
+//
+// 通过 SetNX 和 TTL 刷新机制标识某个用户名处于“创建中”状态，供消费侧和并发请求识别；同时记录相关耗时指标。
+//
+// 参数：
+//
+//	ctx: 调用上下文，需携带 trace 与取消控制
+//	username: 需要设置占位标记的用户名
+//
+// 返回值：
+//
+//	bool: 是否首次创建占位
+//	bool: 是否刷新了已有占位
+//	time.Duration: 占位剩余 TTL
+//	time.Duration: SetNX 操作耗时
+//	time.Duration: TTL 刷新耗时
+//	error: 写入或刷新过程中出现的错误，nil 表示占位成功
+//
+// 示例：
+//
+//	created, refreshed, ttl, setCost, refreshCost, err := u.markUserPendingCreate(ctx, "alice")
+//	if err != nil {
+//	    // 处理占位异常
+//	}
+//
+// 注意事项：
+//   - 当 Redis 未初始化时会直接返回错误
+//   - 调用方需根据返回值判断是否需要额外处理并发情况
+//
+// 异常情况：
+//   - Redis 操作失败会返回 ErrRedis 相关错误码
+//   - 当上下文超时时会提前终止并返回错误
 func (u *UserService) markUserPendingCreate(ctx context.Context, username string) (bool, bool, time.Duration, time.Duration, time.Duration, error) {
 	if u == nil {
 		return false, false, 0, 0, 0, nil
@@ -863,8 +921,34 @@ func (u *UserService) markUserPendingCreate(ctx context.Context, username string
 	if trimmed == "" {
 		return false, false, 0, 0, 0, nil
 	}
-	if u.pendingCoordinator == nil || u.Redis == nil {
+	if u.pendingCoordinator == nil {
 		return u.legacyMarkUserPendingCreate(ctx, trimmed)
+	}
+	if depth, level, sampleErr := u.pendingCoordinator.SampleQueueDepth(ctx); sampleErr != nil {
+		trace.AddRequestTag(ctx, "pending_queue_sample_error", sampleErr.Error())
+	} else {
+		if depth > 0 {
+			trace.AddRequestTag(ctx, "pending_queue_depth", depth)
+		}
+		if level != usercache.BackpressureNone {
+			trace.AddRequestTag(ctx, "pending_backpressure_level", string(level))
+			if metrics.PendingLeaseEvents != nil {
+				metrics.PendingLeaseEvents.WithLabelValues("user_service", "pre_acquire_backpressure").Inc()
+			}
+			if delay := u.pendingCoordinator.BackpressureDelay(level, depth); delay > 0 {
+				trace.AddRequestTag(ctx, "pending_backpressure_delay_ms", delay.Milliseconds())
+				log.Infow("pending lease pre-acquire delay", "component", "user_service", "username", trimmed, "queue_depth", depth, "backpressure", string(level), "delay_ms", delay.Milliseconds())
+				if !waitWithContext(ctx, delay) {
+					if ctx != nil {
+						return false, false, 0, 0, 0, ctx.Err()
+					}
+					return false, false, 0, 0, 0, context.Canceled
+				}
+				if metrics.PendingLeaseEvents != nil {
+					metrics.PendingLeaseEvents.WithLabelValues("user_service", "pre_acquire_delay").Inc()
+				}
+			}
+		}
 	}
 	meta := u.pendingLeaseMetadata(ctx, trimmed)
 	result, err := u.pendingCoordinator.Acquire(ctx, trimmed, meta)
@@ -878,9 +962,24 @@ func (u *UserService) markUserPendingCreate(ctx context.Context, username string
 				if acquireErr.State.Backpressure != usercache.BackpressureNone {
 					trace.AddRequestTag(ctx, "pending_backpressure_level", string(acquireErr.State.Backpressure))
 				}
+				if acquireErr.State.State == usercache.PendingStateExpired {
+					trace.AddRequestTag(ctx, "pending_expired", true)
+					if !acquireErr.State.ExpiredAt.IsZero() {
+						trace.AddRequestTag(ctx, "pending_expired_at", acquireErr.State.ExpiredAt.Format(time.RFC3339Nano))
+					}
+					u.handleExpiredPendingConflict(ctx, trimmed, acquireErr.State)
+					return false, false, 0, 0, 0, errors.WithCode(code.ErrServerBusy, "用户创建任务正在恢复，请稍后再试")
+				}
 			}
 			switch acquireErr.Reason {
 			case usercache.AcquireFailureBackpressure:
+				var depth int64
+				var level usercache.BackpressureLevel
+				if acquireErr.State != nil {
+					depth = acquireErr.State.QueueDepth
+					level = acquireErr.State.Backpressure
+				}
+				log.Warnw("pending lease rejected by backpressure", "component", "user_service", "username", trimmed, "queue_depth", depth, "backpressure", string(level))
 				return false, false, 0, 0, 0, errors.WithCode(code.ErrServerBusy, "用户创建排队中，请稍后重试")
 			case usercache.AcquireFailureConflict:
 				return false, false, 0, 0, 0, errors.WithCode(code.ErrServerBusy, "用户创建正在进行，请稍后再试")
@@ -912,6 +1011,27 @@ func (u *UserService) markUserPendingCreate(ctx context.Context, username string
 	return true, false, pendingTTL, result.SetNXDuration, 0, nil
 }
 
+func (u *UserService) handleExpiredPendingConflict(ctx context.Context, username string, state *usercache.PendingState) {
+	if state == nil {
+		return
+	}
+	fields := []interface{}{"component", "user_service", "username", username}
+	if !state.ExpiredAt.IsZero() {
+		fields = append(fields, "expired_at", state.ExpiredAt.Format(time.RFC3339Nano))
+	}
+	if state.QueueDepth > 0 {
+		fields = append(fields, "queue_depth", state.QueueDepth)
+	}
+	if level := string(state.Backpressure); level != "" {
+		fields = append(fields, "backpressure", level)
+	}
+	log.Warnw("pending lease expired conflict detected", fields...)
+	if metrics.PendingLeaseEvents != nil {
+		metrics.PendingLeaseEvents.WithLabelValues("user_service", "expired_conflict").Inc()
+	}
+	trace.AddRequestTag(ctx, "pending_expired_conflict", true)
+}
+
 func (u *UserService) legacyMarkUserPendingCreate(ctx context.Context, username string) (bool, bool, time.Duration, time.Duration, time.Duration, error) {
 	trimmed := strings.TrimSpace(username)
 	if trimmed == "" || u == nil || u.Redis == nil {
@@ -928,7 +1048,53 @@ func (u *UserService) legacyMarkUserPendingCreate(ctx context.Context, username 
 	if jitter := time.Duration(rand.Intn(5)) * time.Second; jitter > 0 {
 		ttl += jitter
 	}
-	payload := u.pendingCreatePayload(ctx, trimmed)
+	meta := u.pendingLeaseMetadata(ctx, trimmed)
+	now := time.Now().UTC()
+	expiresAt := now.Add(ttl)
+	ownerID := uuid.New().String()
+	degraded := userctx.IsCreateDegraded(ctx)
+	status := "pending"
+	if degraded {
+		status = "degraded"
+	}
+	snapshot := struct {
+		Status          string `json:"status"`
+		Degraded        bool   `json:"degraded,omitempty"`
+		State           string `json:"state"`
+		OwnerID         string `json:"owner_id"`
+		Version         int64  `json:"version"`
+		LeaseExpiresAt  string `json:"lease_expires_at"`
+		AcquireAt       string `json:"acquire_at"`
+		UpdatedAt       string `json:"updated_at"`
+		Username        string `json:"username,omitempty"`
+		RequestID       string `json:"request_id,omitempty"`
+		Operator        string `json:"operator,omitempty"`
+		ClientIP        string `json:"client_ip,omitempty"`
+		LegacyRequestID string `json:"legacy_request_id,omitempty"`
+	}{
+		Status:          status,
+		Degraded:        degraded,
+		State:           string(usercache.PendingStateLease),
+		OwnerID:         ownerID,
+		Version:         now.UnixNano(),
+		LeaseExpiresAt:  expiresAt.Format(time.RFC3339Nano),
+		AcquireAt:       now.Format(time.RFC3339Nano),
+		UpdatedAt:       now.Format(time.RFC3339Nano),
+		Username:        trimmed,
+		RequestID:       strings.TrimSpace(meta.RequestID),
+		Operator:        strings.TrimSpace(meta.Operator),
+		ClientIP:        strings.TrimSpace(meta.ClientIP),
+		LegacyRequestID: strings.TrimSpace(meta.LegacyRequestID),
+	}
+	payloadBytes, marshalErr := stdjson.Marshal(&snapshot)
+	leaseOwnerForTrace := ""
+	if marshalErr != nil {
+		log.Warnw("构造 pending 租约快照失败，回退旧格式", "username", trimmed, "error", marshalErr)
+		payloadBytes = []byte(u.pendingCreatePayload(ctx, trimmed))
+	} else {
+		leaseOwnerForTrace = ownerID
+	}
+	payload := string(payloadBytes)
 	redisCtx, cancel := u.redisOpContext(ctx)
 	defer cancel()
 	setNXStart := time.Now()
@@ -936,6 +1102,9 @@ func (u *UserService) legacyMarkUserPendingCreate(ctx context.Context, username 
 	setNXDuration := time.Since(setNXStart)
 	metrics.RecordRedisOperation("pending_marker_setnx", setNXDuration.Seconds(), err)
 	trace.AddRequestTag(ctx, "pending_marker_setnx_ms", setNXDuration.Milliseconds())
+	if leaseOwnerForTrace != "" {
+		trace.AddRequestTag(ctx, "pending_lease_owner", leaseOwnerForTrace)
+	}
 	if err != nil {
 		log.Errorw("设置用户创建幂等标记失败", "username", trimmed, "error", err)
 		trace.AddRequestTag(ctx, "pending_marker_setnx_error", err.Error())
@@ -1164,6 +1333,29 @@ func (u *UserService) normalizeUserContacts(user *v1.User) {
 	user.Phone = usercache.NormalizePhone(user.Phone)
 }
 
+// ensureContactCacheReady 确保邮箱和手机号唯一性缓存处于预热状态
+//
+// 通过原子标记与定时重试机制判断是否需要异步触发 warmContactCache，避免高并发写入时命中冷缓存。
+// 适用于用户创建等入口在首次访问时触发缓存预热，依赖 Redis 与用户存储已初始化。
+// 参数：
+//
+//	无: 此函数无显式入参
+//
+// 返回值：
+//
+//	无: 无返回值
+//
+// 示例：
+//
+//	u.ensureContactCacheReady()
+//
+// 注意事项：
+//   - 预热过程在独立 goroutine 中执行，调用方无需等待结果
+//   - 若依赖未就绪会直接返回，不会强制重试
+//
+// 异常情况：
+//   - 预热失败会记录下一次重试时间并输出警告日志
+//   - 上一次预热仍在运行时会跳过本次触发
 func (u *UserService) ensureContactCacheReady() {
 	if u.contactCacheReady.Load() {
 		return
@@ -1219,6 +1411,35 @@ func (u *UserService) contactRefreshTimeout() time.Duration {
 	return serveropts.DefaultContactRefreshTimeout
 }
 
+// shouldRunPreflight 判断当前请求是否需要执行数据库预检查
+//
+// 返回 true 表示需要跑预检；返回 false 则跳过预检直接依赖缓存或后续流程。
+// 会根据上下文强一致标记、用户字段是否为空、缓存预热状态等条件综合决定是否访问数据库。
+//
+// 参数：
+//
+//	ctx: 当前请求上下文，可能携带强一致性标记
+//	user: 待创建或校验的用户对象
+//
+// 返回值：
+//
+//	bool: true 代表执行预检，false 代表不执行
+//
+// 示例：
+//
+//	if u.shouldRunPreflight(ctx, user) {
+//	    // 调用 store.PreflightConflicts 做数据库预检
+//	}
+//
+// 注意事项：
+//   - 当缓存尚未预热或 Redis 不可用时，会主动要求执行预检
+//   - 强一致性请求（如删除、强制刷新）会始终执行预检
+//
+// forceCacheRefreshFromContext(ctx)强制刷新标记时会执行预检
+// isStrongConsistencyRequest(ctx)强一致性请求时会执行预检
+//
+// 异常情况：
+//   - 入参 user 为空时直接返回 false
 func (u *UserService) shouldRunPreflight(ctx context.Context, user *v1.User) bool {
 	if user == nil {
 		return false
@@ -1261,6 +1482,7 @@ func shouldDegradeForError(err error) bool {
 	if err == nil {
 		return false
 	}
+	//数据库超时错误
 	if errors.IsCode(err, code.ErrDatabaseTimeout) {
 		return true
 	}
@@ -1268,13 +1490,16 @@ func shouldDegradeForError(err error) bool {
 	if cause == nil {
 		cause = err
 	}
+	//上下文取消或超时错误 上下文被取消
 	if cause == context.DeadlineExceeded || cause == context.Canceled {
 		return true
 	}
+	//检查是否为超时类型错误
 	if te, ok := cause.(interface{ Timeout() bool }); ok && te.Timeout() {
 		return true
 	}
 	msg := strings.ToLower(cause.Error())
+	//错误信息中包含超时关键词
 	return strings.Contains(msg, "deadline exceeded") || strings.Contains(msg, "timeout")
 }
 
@@ -1344,6 +1569,7 @@ func (u *UserService) ensureContactPlaceholder(ctx context.Context, cacheKey, ow
 		}
 		return
 	}
+	/// 判断是否需要刷新占位符：若现有值与当前占位符匹配（或为特殊标记/空），则延长过期时间
 	if strings.EqualFold(existing, placeholder) || existing == "" || existing == RATE_LIMIT_PREVENTION {
 		refreshCtx, refreshCancel := u.redisOpContext(ctx)
 		refreshStart := time.Now()
@@ -1368,6 +1594,36 @@ func (u *UserService) ensureDegradedContactPlaceholders(ctx context.Context, use
 	}
 }
 
+// ensureContactUniqueness 校验用户的邮箱与手机号在全局范围内唯一
+//
+// 结合数据库预检、Redis 占位和本地降级标记，确保在创建或更新场景下不会写入重复的联系方式，并返回预检命中的冲突用户。
+// 适用于用户创建、资料修改等需要严格联系方式唯一性的流程。
+//
+// 参数：
+//
+//	ctx: 调用上下文，携带 trace、deadline 等信息
+//	user: 待检查的用户实体，需提前执行 Normalize 以确保键一致
+//
+// 返回值：
+//
+//	map[string]*v1.User: 预检冲突列表，键为 "email"/"phone"/"username" 等，值为冲突用户
+//	bool: 是否已在预检阶段确认用户名占用
+//	error: 校验过程中出现的错误，nil 表示唯一性通过
+//
+// 示例：
+//
+//	conflicts, preflighted, err := u.ensureContactUniqueness(ctx, user)
+//	if err != nil {
+//	    // 处理唯一性冲突或外部错误
+//	}
+//
+// 注意事项：
+//   - 当 Redis 或数据库超时时会尝试降级，必要时写入占位以降低后续风险
+//   - 调用方应根据返回的冲突列表决定是否继续后续流程
+//
+// 异常情况：
+//   - 数据库不可用时可能返回 ErrDatabase、ErrDatabaseTimeout 等错误码
+//   - 数据不一致时会返回 ErrValidation 指示具体占用字段
 func (u *UserService) ensureContactUniqueness(ctx context.Context, user *v1.User) (map[string]*v1.User, bool, error) {
 	limiter := u.preflightLimiter
 	if limiter != nil {
@@ -1417,25 +1673,31 @@ func (u *UserService) ensureContactUniqueness(ctx context.Context, user *v1.User
 			defer cancel()
 			ranPreflight = true
 			dbStart := time.Now()
+			// 执行数据库预检
 			conflicts, confErr := store.PreflightConflicts(dbCtx, user.Name, email, phone, u.Options)
 			u.recordUserCreateStep(ctx, "preflight_query", "database", user.Name, time.Since(dbStart), confErr)
 			return conflicts, confErr
 		})
+		//处理预检结果
 		if err != nil {
 			preflightErr = err
 		} else if result != nil {
+			//类型转换：将结果转为冲突用户的map（key为scope：username/email/phone）
 			if typed, ok := result.(map[string]*v1.User); ok {
 				preflight = typed
 			}
 		}
 	} else if !runPreflight {
+		// 记录跳过预检的情况--实际执行时，由于传入 0 耗时，并不会产生 “慢操作日志”，只是走了一个统一的流程入口。
 		u.recordUserCreateStep(ctx, "preflight_query_skip", "database", user.Name, 0, nil)
 	}
-
+	// 标记用户名是否经过有效检查
 	if ranPreflight && strings.TrimSpace(user.Name) != "" && preflightErr == nil {
 		usernameChecked = true
 	}
+	// 处理预检错误：根据配置决定是否降级
 	if runPreflight && preflightErr != nil {
+		//通过 Redis 写入临时占位符避免并发冲突
 		if shouldDegradeForError(preflightErr) {
 			u.markCreateDegraded(ctx, "preflight_timeout", "username", user.Name)
 			u.ensureDegradedContactPlaceholders(ctx, user.Name, email, phone)
@@ -1500,47 +1762,6 @@ func (u *UserService) ensureContactUniqueness(ctx context.Context, user *v1.User
 	}
 
 	return preflight, usernameChecked, nil
-}
-
-func (u *UserService) ensureEmailUnique(ctx context.Context, email, owner string) (err error) {
-	start := time.Now()
-	defer func() {
-		u.recordUserCreateStep(ctx, "ensure_email_unique", "email", owner, time.Since(start), err)
-	}()
-	normalized := usercache.NormalizeEmail(email)
-	if normalized == "" {
-		err = errors.WithCode(code.ErrInvalidParameter, "邮箱不能为空")
-		return err
-	}
-	store := u.userStoreReadOnly()
-	if store == nil {
-		err = errors.WithCode(code.ErrDatabase, "用户存储未就绪")
-		return err
-	}
-	cacheKey := u.generateEmailCacheKey(normalized)
-	return u.ensureContactUnique(ctx, cacheKey, owner, "邮箱", normalized, "email", func(dbCtx context.Context) (*v1.User, error) {
-		return store.GetByEmail(dbCtx, normalized, u.Options)
-	})
-}
-
-func (u *UserService) ensurePhoneUnique(ctx context.Context, phone, owner string) (err error) {
-	start := time.Now()
-	defer func() {
-		u.recordUserCreateStep(ctx, "ensure_phone_unique", "phone", owner, time.Since(start), err)
-	}()
-	normalized := usercache.NormalizePhone(phone)
-	if normalized == "" {
-		return nil
-	}
-	store := u.userStoreReadOnly()
-	if store == nil {
-		err = errors.WithCode(code.ErrDatabase, "用户存储未就绪")
-		return err
-	}
-	cacheKey := u.generatePhoneCacheKey(normalized)
-	return u.ensureContactUnique(ctx, cacheKey, owner, "手机号", normalized, "phone", func(dbCtx context.Context) (*v1.User, error) {
-		return store.GetByPhone(dbCtx, normalized, u.Options)
-	})
 }
 
 func (u *UserService) ensureContactUnique(
@@ -1763,6 +1984,35 @@ func (u *UserService) warmContactCache() error {
 // 从缓存和数据库查询用户是否存在
 // 通用重试工具
 
+// checkUserExist 根据用户名判断用户是否存在
+//
+// 优先查询批量预读缓存，其次命中 Redis 或数据库；支持强制跳过缓存并记录耗时与错误信息，用于用户创建、删除等场景的存在性确认。
+//
+// 参数：
+//
+//	ctx: 请求上下文，需携带 trace、取消信号等
+//	username: 需要检查的用户名，大小写不敏感
+//	forceRefresh: 是否强制绕过缓存直接走数据库查询
+//
+// 返回值：
+//
+//	*v1.User: 当用户存在时返回用户实体，否则返回 nil
+//	error: 查询过程中发生的错误，nil 表示查询成功（即使用户不存在）
+//
+// 示例：
+//
+//	user, err := u.checkUserExist(ctx, "alice", false)
+//	if err != nil {
+//	    // 处理查询异常
+//	}
+//
+// 注意事项：
+//   - 当 forceRefresh 为 true 时会短路缓存，增加数据库压力
+//   - 调用方需根据返回的 user 是否为空判断存在性
+//
+// 异常情况：
+//   - Redis/数据库超时将返回相应错误码
+//   - 当批量缓存不可用时会自动降级到单条查询
 func (u *UserService) checkUserExist(ctx context.Context, username string, forceRefresh bool) (*v1.User, error) {
 	batchCache := batchLookupCacheFromContext(ctx)
 	recordBatchResult := func(user *v1.User, notFound bool) {

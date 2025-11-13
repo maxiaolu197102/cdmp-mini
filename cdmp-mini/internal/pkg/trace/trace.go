@@ -160,35 +160,36 @@ type traceLogPayload struct {
 }
 
 // Trace captures spans and metadata for a single logical request or async flow.
+// 四级定位:服务-组件-操作-阶段
 type Trace struct {
-	ID        string
-	Service   string
-	Component string
-	Operation string
-	Phase     Phase
+	ID        string //唯一追踪ID（通常是UUID）
+	Service   string //服务名称
+	Component string //组件名称
+	Operation string //操作名称
+	Phase     Phase  //阶段（HTTP/异步）
 
-	Start time.Time
-	End   time.Time
+	Start time.Time //开始时间
+	End   time.Time //结束时间
 
-	RequestContext  RequestContext
-	BusinessMetrics BusinessMetrics
+	RequestContext  RequestContext  //请求上下文
+	BusinessMetrics BusinessMetrics //业务指标
 
-	level           string
-	status          string
-	businessCode    string
-	businessMsg     string
-	httpStatusCode  int
-	logEnabled      bool
-	logSampleRate   float64
-	forceLogOnError bool
-	logDecisionOnce sync.Once
-	logEmitDecision bool
+	level           string    //日志级别
+	status          string    //状态（成功/失败/降级）
+	businessCode    string    //业务代码
+	businessMsg     string    //业务消息
+	httpStatusCode  int       //HTTP状态码
+	logEnabled      bool      //是否启用日志记录
+	logSampleRate   float64   //日志采样率
+	forceLogOnError bool      //是否在错误时强制记录日志
+	logDecisionOnce sync.Once //日志决策执行一次
+	logEmitDecision bool      //日志发出决策
 
-	mu    sync.Mutex
-	spans []*Span
+	mu    sync.Mutex //互斥锁，保护对spans切片的并发访问
+	spans []*Span    //跟踪的跨度列表
 
-	asyncExpected bool
-	asyncDeadline time.Time
+	asyncExpected bool      //是否预期异步
+	asyncDeadline time.Time //异步截止时间
 }
 
 type traceContextKey struct{}

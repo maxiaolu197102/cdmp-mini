@@ -6,7 +6,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "用户强制删除成功",
-    "duration_ms": 218,
+    "duration_ms": 224,
     "checks": {
       "post_validation": true,
       "response": true
@@ -22,7 +22,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "用户强制删除成功",
-    "duration_ms": 71,
+    "duration_ms": 88,
     "checks": {
       "post_validation": true,
       "response": true
@@ -53,7 +53,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "用户删除成功",
-    "duration_ms": 1645,
+    "duration_ms": 1676,
     "checks": {
       "deleted_set_match": true,
       "response": true,
@@ -70,7 +70,7 @@
     "http_status": 400,
     "code": 110101,
     "message": "[code: 110101] 一次最多删除100个用户",
-    "duration_ms": 1,
+    "duration_ms": 2,
     "checks": {
       "limit_enforced": true
     },
@@ -85,7 +85,7 @@
     "http_status": 400,
     "code": 110004,
     "message": "[code: 110004] 请通过以下方式传入用户名列表：\n1. ?names=user1\u0026names=user2（推荐）\n2. ?names=user1,user2,user3",
-    "duration_ms": 1,
+    "duration_ms": 2,
     "checks": {
       "invalid_parameter": true
     },
@@ -97,7 +97,7 @@
     "name": "concurrent_delete_same_user",
     "description": "并发删除同一用户应保持幂等",
     "success": true,
-    "duration_ms": 6977,
+    "duration_ms": 630,
     "checks": {
       "idempotent": true
     },
@@ -112,7 +112,7 @@
     "http_status": 403,
     "code": 100207,
     "message": "[code: 100207] 非管理员无权限访问此接口",
-    "duration_ms": 886,
+    "duration_ms": 868,
     "checks": {
       "permission_denied": true,
       "victim_intact": true
@@ -128,7 +128,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "用户强制删除成功",
-    "duration_ms": 712,
+    "duration_ms": 733,
     "checks": {
       "login_blocked": true,
       "response": true,
@@ -146,7 +146,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "用户强制删除成功",
-    "duration_ms": 1074,
+    "duration_ms": 1073,
     "checks": {
       "other_user_intact": true,
       "response": true,

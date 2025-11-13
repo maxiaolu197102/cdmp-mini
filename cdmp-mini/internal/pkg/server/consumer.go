@@ -310,7 +310,49 @@ func NewUserConsumer(opts *options.KafkaOptions, topic, groupID string, instance
 	} else {
 		consumer.sqlxDB = sqlx.NewDb(sqlCore, "mysql").Unsafe()
 	}
-	consumer.pendingCoordinator = usercache.NewPendingCoordinator(redis, usercache.PendingCoordinatorConfig{})
+	pcCfg := usercache.PendingCoordinatorConfig{
+		Component:      fmt.Sprintf("user_consumer_%s", groupID),
+		LogLeaseEvents: true,
+	}
+	if opts != nil {
+		if opts.PendingLeaseTTL > 0 {
+			pcCfg.LeaseTTL = opts.PendingLeaseTTL
+		}
+		if strings.TrimSpace(opts.PendingMetricsKey) != "" {
+			pcCfg.MetricsKey = strings.TrimSpace(opts.PendingMetricsKey)
+		}
+		if opts.PendingBackpressureWindow > 0 {
+			pcCfg.BackpressureWindow = opts.PendingBackpressureWindow
+		}
+		if opts.PendingBackpressureSoft > 0 {
+			pcCfg.BackpressureSoftLimit = opts.PendingBackpressureSoft
+		}
+		if opts.PendingBackpressureHard > 0 {
+			pcCfg.BackpressureHardLimit = opts.PendingBackpressureHard
+		}
+		if opts.PendingReleaseRetention > 0 {
+			pcCfg.ReleaseRetention = opts.PendingReleaseRetention
+		}
+		if opts.PendingExpiredRetention > 0 {
+			pcCfg.ExpiredRetention = opts.PendingExpiredRetention
+		}
+		if opts.PendingExpiredGrace >= 0 {
+			pcCfg.ExpiredGracePeriod = opts.PendingExpiredGrace
+		}
+		if opts.PendingDelayElevated > 0 {
+			pcCfg.ElevatedDelayBase = opts.PendingDelayElevated
+		}
+		if opts.PendingDelayElevatedMax > 0 {
+			pcCfg.ElevatedDelayMax = opts.PendingDelayElevatedMax
+		}
+		if opts.PendingDelaySevere > 0 {
+			pcCfg.SevereDelayBase = opts.PendingDelaySevere
+		}
+		if opts.PendingDelaySevereMax > 0 {
+			pcCfg.SevereDelayMax = opts.PendingDelaySevereMax
+		}
+	}
+	consumer.pendingCoordinator = usercache.NewPendingCoordinator(redis, pcCfg)
 	//go consumer.startLagMonitor(context.Background())
 	return consumer
 
@@ -475,7 +517,7 @@ func (c *UserConsumer) StartConsuming(ctx context.Context, workerCount int, read
 				trace.RecordOutcome(msgCtx, businessCode, message, status, 0)
 				trace.Complete(msgCtx)
 
-				c.recordConsumerMetrics(operation, messageKey, processStart, err, job.workerID)
+				c.recordConsumerMetrics(operation, messageKey, job.msg, processStart, err, job.workerID)
 
 				ack := consumerAck{message: job.msg, workerID: job.workerID, readerIdx: job.readerIdx, err: err}
 				select {
@@ -835,6 +877,10 @@ func (c *UserConsumer) runFetchLoop(ctx context.Context, readerIdx int, reader *
 	status := "success"
 	statusCode := strconv.Itoa(code.ErrSuccess)
 	processed := 0
+	backpressureSampleInterval := 250 * time.Millisecond
+	lastBackpressureSample := time.Time{}
+	currentBackpressure := usercache.BackpressureNone
+	currentQueueDepth := int64(0)
 	defer func() {
 		details := map[string]any{"processed": processed}
 		trace.EndSpan(span, status, statusCode, details)
@@ -885,6 +931,36 @@ func (c *UserConsumer) runFetchLoop(ctx context.Context, readerIdx int, reader *
 			trace.AddRequestTag(loopCtx, "loop_cancelled", true)
 			return
 		default:
+		}
+
+		if c.pendingCoordinator != nil {
+			now := time.Now()
+			if now.Sub(lastBackpressureSample) >= backpressureSampleInterval {
+				if depth, level, sampleErr := c.pendingCoordinator.SampleQueueDepth(loopCtx); sampleErr == nil {
+					currentQueueDepth = depth
+					currentBackpressure = level
+					lastBackpressureSample = now
+					if depth > 0 {
+						trace.AddRequestTag(loopCtx, "pending_queue_depth", depth)
+					}
+					if level != usercache.BackpressureNone {
+						trace.AddRequestTag(loopCtx, "pending_backpressure_level", string(level))
+					}
+				} else {
+					trace.AddRequestTag(loopCtx, "pending_queue_sample_error", sampleErr.Error())
+				}
+			}
+			if delay := c.fetchDelayForBackpressure(currentBackpressure, currentQueueDepth); delay > 0 {
+				trace.AddRequestTag(loopCtx, "pending_backpressure_delay_ms", delay.Milliseconds())
+				select {
+				case <-time.After(delay):
+				case <-loopCtx.Done():
+					status = "error"
+					statusCode = strconv.Itoa(code.ErrUnknown)
+					trace.AddRequestTag(loopCtx, "loop_cancelled", true)
+					return
+				}
+			}
 		}
 
 		stats := reader.Stats()
@@ -957,6 +1033,20 @@ func (c *UserConsumer) runFetchLoop(ctx context.Context, readerIdx int, reader *
 			continue
 		}
 
+		postStats := reader.Stats()
+		fetchLag := postStats.Lag
+		if fetchLag < 0 {
+			fetchLag = 0
+		}
+		msg.Headers = setOrReplaceHeader(msg.Headers, HeaderConsumerLag, strconv.FormatInt(fetchLag, 10))
+		if !msg.Time.IsZero() {
+			recordAge := time.Since(msg.Time)
+			if recordAge < 0 {
+				recordAge = 0
+			}
+			msg.Headers = setOrReplaceHeader(msg.Headers, HeaderConsumerRecordAge, strconv.FormatInt(recordAge.Milliseconds(), 10))
+		}
+
 		op := c.getOperationFromHeaders(msg.Headers)
 		if op == OperationCreate {
 			batchItem := consumerBatchItem{op: op, message: msg, readerIdx: readerIdx}
@@ -999,6 +1089,22 @@ func (c *UserConsumer) runFetchLoop(ctx context.Context, readerIdx int, reader *
 		}
 
 		nextWorker = (nextWorker + 1) % workerCount
+	}
+}
+
+func (c *UserConsumer) fetchDelayForBackpressure(level usercache.BackpressureLevel, queueDepth int64) time.Duration {
+	if c.pendingCoordinator != nil {
+		if delay := c.pendingCoordinator.BackpressureDelay(level, queueDepth); delay > 0 {
+			return delay
+		}
+	}
+	switch level {
+	case usercache.BackpressureSevere:
+		return 80 * time.Millisecond
+	case usercache.BackpressureElevated:
+		return 20 * time.Millisecond
+	default:
+		return 0
 	}
 }
 
@@ -1054,7 +1160,30 @@ func (c *UserConsumer) commitWithRetry(ctx context.Context, msg kafka.Message, w
 	return lastErr
 }
 
-// 业务处理
+// processMessage 根据消息头判断操作类型并调度到具体处理逻辑
+//
+// 会识别创建/更新/删除操作，分别调用对应的处理函数，其中创建操作将进入 processCreateOperation 链路。
+//
+// 参数：
+//
+//	ctx: 当前处理上下文，包含追踪标签和取消信号
+//	msg: Kafka 消息体，需携带 operation 头
+//
+// 返回值：
+//
+//	error: 分发或具体处理出现错误时返回，nil 表示处理完成
+//
+// 示例：
+//
+//	if err := consumer.processMessage(ctx, msg); err != nil { /* 处理 */ }
+//
+// 注意事项：
+//   - 未识别的操作类型将落入死信队列
+//   - 创建操作会继续调用 processCreateOperation 触发数据库写入
+//
+// 异常情况：
+//   - 解析 operation 失败返回 UNKNOWN_OPERATION
+//   - 下游处理返回的错误会原样上传
 func (c *UserConsumer) processMessage(ctx context.Context, msg kafka.Message) error {
 	operation := c.getOperationFromHeaders(msg.Headers)
 
@@ -1074,6 +1203,30 @@ func (c *UserConsumer) processMessage(ctx context.Context, msg kafka.Message) er
 	}
 }
 
+// processCreateOperation 处理单条用户创建消息
+//
+// 完成消息反序列化、字段校验、pending 标记验证、数据库写入以及缓存更新，确保创建流程幂等。
+//
+// 参数：
+//
+//	ctx: 消费上下文，包含追踪信息与取消信号
+//	msg: Kafka 消息，Value 中携带用户实体数据
+//
+// 返回值：
+//
+//	error: 出现解析、校验或写库错误时返回，nil 表示成功
+//
+// 示例：
+//
+//	if err := consumer.processCreateOperation(ctx, message); err != nil { /* 重试 */ }
+//
+// 注意事项：
+//   - 会根据 pending 标记判断是否需要降级或跳过重复创建
+//   - 验证失败的消息会被写入死信或重试主题
+//
+// 异常情况：
+//   - 反序列化失败返回错误并写入死信
+//   - 数据库写入或缓存操作异常会触发重试
 func (c *UserConsumer) processCreateOperation(ctx context.Context, msg kafka.Message) error {
 	user := userMessagePool.Get().(*v1.User)
 	defer func() {
@@ -1161,6 +1314,7 @@ func (c *UserConsumer) processCreateOperation(ctx context.Context, msg kafka.Mes
 	persistStart := time.Now()
 	persistCtx, persistSpan := trace.StartSpan(ctx, "kafka-consumer", "persist_user")
 	trace.AddRequestTag(persistCtx, "username", user.Name)
+	c.applyLagTagsFromMessage(persistCtx, msg)
 	created, err := c.createUserInDB(persistCtx, user, pendingDegraded)
 	persistDuration := time.Since(persistStart)
 	persistStatus := "success"
@@ -1678,7 +1832,37 @@ func (c *UserConsumer) createUserInDB(ctx context.Context, user *v1.User, marker
 	}
 	user.ObjectMeta.Version = version
 	metrics.BusinessSuccess.WithLabelValues("consumer", "create_user_db", "db_exec").Inc()
-	log.Infow("用户插入完成", "username", user.Name, "prepare_duration", prepareDuration, "db_duration", createDuration, "total_duration", totalDuration, "marker_degraded", markerDegraded, "version", user.ObjectMeta.Version)
+	logFields := []interface{}{
+		"username", user.Name,
+		"prepare_duration", prepareDuration,
+		"db_duration", createDuration,
+		"total_duration", totalDuration,
+		"marker_degraded", markerDegraded,
+		"version", user.ObjectMeta.Version,
+	}
+	if fetchLag, ok := trace.GetRequestTag(ctx, "kafka_fetch_lag"); ok {
+		logFields = append(logFields, "kafka_fetch_lag", fetchLag)
+	}
+	if recordAge, ok := trace.GetRequestTag(ctx, "kafka_record_age_ms"); ok {
+		logFields = append(logFields, "kafka_record_age_ms", recordAge)
+	}
+	if currentAge, ok := trace.GetRequestTag(ctx, "kafka_record_age_now_ms"); ok {
+		logFields = append(logFields, "kafka_record_age_now_ms", currentAge)
+	}
+	log.Infow("用户插入完成", logFields...)
+
+	slowReasons := make([]string, 0, 2)
+	if createDuration > time.Second {
+		slowReasons = append(slowReasons, "db")
+	}
+	if totalDuration > time.Second {
+		slowReasons = append(slowReasons, "total")
+	}
+	if len(slowReasons) > 0 {
+		slowFields := append([]interface{}{}, logFields...)
+		slowFields = append(slowFields, "slow_reasons", strings.Join(slowReasons, ","), "threshold_ms", 1000)
+		log.Warnw("用户插入耗时超过阈值", slowFields...)
+	}
 
 	return true, nil
 }
@@ -1964,13 +2148,83 @@ func (c *UserConsumer) clearPendingCreateMarker(ctx context.Context, username st
 	}
 	c.markerCache.Delete(trimmed)
 	if c.pendingCoordinator != nil {
-		duration, err := c.pendingCoordinator.Release(ctx, trimmed, cached.ownerID)
+		releaseOwner := strings.TrimSpace(cached.ownerID)
+		var observedState *usercache.PendingState
+		if releaseOwner == "" {
+			state, observeErr := c.pendingCoordinator.Observe(ctx, trimmed)
+			if observeErr != nil {
+				trace.AddRequestTag(ctx, "pending_marker_release_observe_error", observeErr.Error())
+			} else {
+				observedState = state
+				if state != nil {
+					if state.QueueDepth > 0 {
+						trace.AddRequestTag(ctx, "pending_marker_release_queue_depth", state.QueueDepth)
+					}
+					if level := string(state.Backpressure); level != "" && state.Backpressure != usercache.BackpressureNone {
+						trace.AddRequestTag(ctx, "pending_marker_release_backpressure", level)
+					}
+					if state.Exists && strings.TrimSpace(state.LeaseOwner) != "" {
+						releaseOwner = strings.TrimSpace(state.LeaseOwner)
+						trace.AddRequestTag(ctx, "pending_marker_release_owner_filled", true)
+					}
+				}
+			}
+		}
+		if observedState != nil && !observedState.Exists {
+			trace.AddRequestTag(ctx, "pending_marker_release_state_missing", true)
+			return 0, nil
+		}
+		releaseOwner = strings.TrimSpace(releaseOwner)
+		trace.AddRequestTag(ctx, "pending_marker_release_owner_present", releaseOwner != "")
+		if releaseOwner == "" {
+			trace.AddRequestTag(ctx, "pending_marker_release_owner_missing", true)
+			log.Warnf("pending lease release skipped due to empty owner: username=%s", trimmed)
+			return 0, usercache.ErrPendingLeaseOwnerMismatch
+		}
+		duration, err := c.pendingCoordinator.Release(ctx, trimmed, releaseOwner)
 		trace.AddRequestTag(ctx, "pending_marker_clear_ms", duration.Milliseconds())
 		if err != nil {
 			trace.AddRequestTag(ctx, "pending_marker_clear_error", err.Error())
+			if stderrs.Is(err, usercache.ErrPendingLeaseOwnerMismatch) {
+				trace.AddRequestTag(ctx, "pending_marker_release_owner_mismatch", true)
+				if releaseOwner != "" {
+					trace.AddRequestTag(ctx, "pending_marker_release_expected_owner", releaseOwner)
+				}
+				if observedState == nil {
+					if latest, latestErr := c.pendingCoordinator.Observe(ctx, trimmed); latestErr == nil {
+						observedState = latest
+					} else {
+						trace.AddRequestTag(ctx, "pending_marker_release_observe_post_error", latestErr.Error())
+					}
+				}
+				if observedState != nil {
+					if strings.TrimSpace(observedState.LeaseOwner) != "" {
+						trace.AddRequestTag(ctx, "pending_marker_release_current_owner", strings.TrimSpace(observedState.LeaseOwner))
+					}
+					if observedState.QueueDepth > 0 {
+						trace.AddRequestTag(ctx, "pending_marker_release_queue_depth_latest", observedState.QueueDepth)
+					}
+					if level := string(observedState.Backpressure); level != "" && observedState.Backpressure != usercache.BackpressureNone {
+						trace.AddRequestTag(ctx, "pending_marker_release_backpressure_latest", level)
+					}
+				}
+			}
 			return duration, err
 		}
 		trace.AddRequestTag(ctx, "pending_marker_cleared", true)
+		fields := []interface{}{"username", trimmed, "release_owner", releaseOwner, "duration_ms", duration.Milliseconds()}
+		if cached.queueDepth > 0 {
+			fields = append(fields, "cached_queue_depth", cached.queueDepth)
+		}
+		if observedState != nil {
+			if observedState.QueueDepth > 0 {
+				fields = append(fields, "observed_queue_depth", observedState.QueueDepth)
+			}
+			if level := string(observedState.Backpressure); level != "" {
+				fields = append(fields, "observed_backpressure", level)
+			}
+		}
+		log.Infow("pending marker cleared", fields...)
 		return duration, nil
 	}
 	return c.legacyClearPendingCreateMarker(ctx, trimmed)
@@ -1994,6 +2248,7 @@ func (c *UserConsumer) legacyClearPendingCreateMarker(ctx context.Context, usern
 	metrics.RecordRedisOperation("pending_marker_delete", deleteDuration.Seconds(), deleteMetricErr)
 	trace.AddRequestTag(ctx, "pending_marker_clear_ms", deleteDuration.Milliseconds())
 	if err == redis.Nil {
+		log.Infow("pending marker cleared (legacy)", "username", username, "duration_ms", deleteDuration.Milliseconds(), "deleted", false)
 		return deleteDuration, nil
 	}
 	if err != nil {
@@ -2001,6 +2256,7 @@ func (c *UserConsumer) legacyClearPendingCreateMarker(ctx context.Context, usern
 		return deleteDuration, err
 	}
 	trace.AddRequestTag(ctx, "pending_marker_cleared", deleted)
+	log.Infow("pending marker cleared (legacy)", "username", username, "duration_ms", deleteDuration.Milliseconds(), "deleted", deleted)
 	return deleteDuration, nil
 }
 
@@ -2635,8 +2891,18 @@ func (c *UserConsumer) calculateBackoff(attempt int) time.Duration {
 }
 
 // 记录消费信息
-func (c *UserConsumer) recordConsumerMetrics(operation, messageKey string, processStart time.Time, processingErr error, workerID int) {
+func (c *UserConsumer) recordConsumerMetrics(operation, messageKey string, msg kafka.Message, processStart time.Time, processingErr error, workerID int) {
 	processingDuration := time.Since(processStart).Seconds()
+	if !msg.Time.IsZero() && metrics.ConsumerMessageAgeSeconds != nil {
+		age := processStart.Sub(msg.Time)
+		if age < 0 {
+			age = 0
+		}
+		metrics.ConsumerMessageAgeSeconds.WithLabelValues("primary", c.topic, c.groupID).Observe(age.Seconds())
+		if age > 5*time.Second {
+			log.Warnf("Worker %d 消费滞后: topic=%s key=%s age=%.3fs", workerID, c.topic, messageKey, age.Seconds())
+		}
+	}
 
 	// 添加详细的处理时间日志
 	if processingErr != nil {
@@ -2713,6 +2979,48 @@ func (c *UserConsumer) getHeaderValue(headers []kafka.Header, key string) string
 	return ""
 }
 
+func setOrReplaceHeader(headers []kafka.Header, key, value string) []kafka.Header {
+	updated := false
+	for i := range headers {
+		if headers[i].Key == key {
+			headers[i].Value = []byte(value)
+			updated = true
+			break
+		}
+	}
+	if !updated {
+		headers = append(headers, kafka.Header{Key: key, Value: []byte(value)})
+	}
+	return headers
+}
+
+func (c *UserConsumer) applyLagTagsFromMessage(ctx context.Context, msg kafka.Message) {
+	if ctx == nil {
+		return
+	}
+	if header := c.getHeaderValue(msg.Headers, HeaderConsumerLag); header != "" {
+		if lagVal, err := strconv.ParseInt(header, 10, 64); err == nil {
+			trace.AddRequestTag(ctx, "kafka_fetch_lag", lagVal)
+		} else {
+			trace.AddRequestTag(ctx, "kafka_fetch_lag_parse_error", err.Error())
+		}
+	}
+	if header := c.getHeaderValue(msg.Headers, HeaderConsumerRecordAge); header != "" {
+		if ageMs, err := strconv.ParseInt(header, 10, 64); err == nil {
+			trace.AddRequestTag(ctx, "kafka_record_age_ms", ageMs)
+		} else {
+			trace.AddRequestTag(ctx, "kafka_record_age_parse_error", err.Error())
+		}
+	}
+	if !msg.Time.IsZero() {
+		nowAge := time.Since(msg.Time)
+		if nowAge < 0 {
+			nowAge = 0
+		}
+		trace.AddRequestTag(ctx, "kafka_record_age_now_ms", nowAge.Milliseconds())
+	}
+}
+
 func (c *UserConsumer) startAsyncTraceContext(parentCtx context.Context, msg kafka.Message, operation string, workerID int) (context.Context, *trace.Span) {
 	traceID := c.getTraceIDFromHeaders(msg.Headers)
 	if traceID == "" {
@@ -2749,6 +3057,27 @@ func (c *UserConsumer) startAsyncTraceContext(parentCtx context.Context, msg kaf
 	}
 	if attemptHeader := c.getHeaderValue(msg.Headers, HeaderRetryCount); attemptHeader != "" {
 		trace.AddRequestTag(asyncCtx, "retry_count", attemptHeader)
+	}
+	if lagHeader := c.getHeaderValue(msg.Headers, HeaderConsumerLag); lagHeader != "" {
+		if lagVal, err := strconv.ParseInt(lagHeader, 10, 64); err == nil {
+			trace.AddRequestTag(asyncCtx, "kafka_fetch_lag", lagVal)
+		} else {
+			trace.AddRequestTag(asyncCtx, "kafka_fetch_lag_parse_error", err.Error())
+		}
+	}
+	if ageHeader := c.getHeaderValue(msg.Headers, HeaderConsumerRecordAge); ageHeader != "" {
+		if ageVal, err := strconv.ParseInt(ageHeader, 10, 64); err == nil {
+			trace.AddRequestTag(asyncCtx, "kafka_record_age_ms", ageVal)
+		} else {
+			trace.AddRequestTag(asyncCtx, "kafka_record_age_parse_error", err.Error())
+		}
+	}
+	if !msg.Time.IsZero() {
+		recordAge := time.Since(msg.Time)
+		if recordAge < 0 {
+			recordAge = 0
+		}
+		trace.AddRequestTag(asyncCtx, "kafka_record_age_now_ms", recordAge.Milliseconds())
 	}
 
 	spanName := fmt.Sprintf("process_%s", opName)
@@ -3251,7 +3580,7 @@ func (c *UserConsumer) batchCreateToDB(ctx context.Context, msgs []kafka.Message
 		return
 	}
 	for i := range users {
-
+		c.applyLagTagsFromMessage(ctx, validMsgs[i])
 		created, err := c.createUserInDB(ctx, &users[i], false)
 		if err != nil {
 			opErr = err

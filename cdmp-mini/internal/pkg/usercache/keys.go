@@ -82,3 +82,8 @@ func PendingCreateKey(username string) string {
 	}
 	return pendingCreatePrefix + trimmed
 }
+
+// PendingCreatePrefix 返回 pending 租约Key的前缀，便于扫描。
+func PendingCreatePrefix() string {
+	return pendingCreatePrefix
+}

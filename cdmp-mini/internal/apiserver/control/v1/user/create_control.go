@@ -1,7 +1,3 @@
-// Copyright 2020 Lingfei Kong <colin404@foxmail.com>. All rights reserved.
-// Use of this source code is governed by a MIT style
-// license that can be found in the LICENSE file.
-
 package user
 
 import (
@@ -31,10 +27,35 @@ import (
 	jsoniter "github.com/json-iterator/go"
 )
 
+// 使用 jsoniter 库来替换 Go 标准库的 encoding/json
 var json = jsoniter.ConfigCompatibleWithStandardLibrary
 
+// Create 处理用户创建的 HTTP 请求入口
+//
+// 负责完成请求体解析、参数校验、审计记录、链路追踪以及调用 service 层执行创建逻辑，并将结果写回给调用方。
+// 适用于外部调用用户创建 API 的场景，依赖 Gin 上下文、审计组件和用户 service 已初始化。
+//
+// 参数：
+//
+//	ctx: 当前的 Gin 上下文，包含请求、响应及链路追踪信息
+//
+// 返回值：
+//
+//	无: 函数内部直接写响应并记录审计
+//
+// 示例：
+//
+//	controller.Create(c)
+//
+// 注意事项：
+//   - 会根据 ServerRunOptions 设置请求超时，避免长时间阻塞
+//   - 所有错误都会转换为标准业务码并写入审计与指标
+//
+// 异常情况：
+//   - 参数绑定或校验失败会返回 ErrBind/ErrValidation
+//   - service 层返回的业务错误会透传对应错误码
 func (u *UserController) Create(ctx *gin.Context) {
-	// 从Gin上下文获取中间件设置的信息
+	// 从Gin上下文获取操作员信息
 	operator := common.GetUsername(ctx.Request.Context())
 	traceCtx := ctx.Request.Context()
 	trace.SetOperator(traceCtx, operator)

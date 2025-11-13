@@ -6,7 +6,7 @@
     "sleepBetween": 0.02,
     "requestTimeout": "60s",
     "userReadyTimeoutMs": 18000,
-    "deleteVerifyTimeoutMs": 10000,
+    "deleteVerifyTimeoutMs": 25000,
     "maxUsernameLength": 40,
     "batchSize": 15,
     "verifyDeletion": true,

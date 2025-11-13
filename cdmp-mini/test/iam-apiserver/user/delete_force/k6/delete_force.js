@@ -81,6 +81,19 @@ if (GLOBAL_SCENARIO_DURATION) {
     console.log(`[config] 使用全局场景时长覆盖: ${GLOBAL_SCENARIO_DURATION}`);
 }
 
+const RATE_MULTIPLIER = resolveMultiplier(['DELETE_FORCE_RATE_MULTIPLIER', 'K6_RATE_MULTIPLIER'], 1);
+const VUS_MULTIPLIER = resolveMultiplier(['DELETE_FORCE_VUS_MULTIPLIER', 'K6_VUS_MULTIPLIER'], 1);
+const MAX_VUS_MULTIPLIER = resolveMultiplier(['DELETE_FORCE_MAX_VUS_MULTIPLIER', 'K6_MAX_VUS_MULTIPLIER'], VUS_MULTIPLIER);
+if (RATE_MULTIPLIER !== 1) {
+    console.log(`[config] 场景请求速率整体放大倍数: x${RATE_MULTIPLIER}`);
+}
+if (VUS_MULTIPLIER !== 1) {
+    console.log(`[config] 预分配 VU 整体放大倍数: x${VUS_MULTIPLIER}`);
+}
+if (MAX_VUS_MULTIPLIER !== 1) {
+    console.log(`[config] 最大 VU 整体放大倍数: x${MAX_VUS_MULTIPLIER}`);
+}
+
 export const options = {
     setupTimeout: '300s',
     thresholds: {
@@ -926,14 +939,17 @@ function scenarioConfig(prefix, defaults) {
     const duration = (durationOverride || defaults.duration).trim();
     const preAllocatedVUs = parsePositiveIntEnv(`${prefix}_VUS`, defaults.preAllocatedVUs);
     const maxVUs = parsePositiveIntEnv(`${prefix}_MAX_VUS`, defaults.maxVUs);
+    const scaledRate = scalePositiveNumber(rate, RATE_MULTIPLIER, 1);
+    const scaledPreAllocated = scalePositiveNumber(preAllocatedVUs, VUS_MULTIPLIER, 1);
+    const scaledMaxVUs = Math.max(scaledPreAllocated, scalePositiveNumber(maxVUs, MAX_VUS_MULTIPLIER, scaledPreAllocated));
     const resolved = {
         executor: 'constant-arrival-rate',
         exec: defaults.exec,
-        rate,
+        rate: scaledRate,
         timeUnit: '1s',
         duration,
-        preAllocatedVUs,
-        maxVUs,
+        preAllocatedVUs: scaledPreAllocated,
+        maxVUs: scaledMaxVUs,
     };
     scenarioRegistry[defaults.exec] = Object.assign({}, resolved);
     return resolved;
@@ -1069,6 +1085,38 @@ function parsePositiveIntEnv(name, fallback) {
         fail(`${name} 必须为正整数`);
     }
     return value;
+}
+
+function resolveMultiplier(keys, fallback) {
+    const candidates = Array.isArray(keys) ? keys : [keys];
+    for (let i = 0; i < candidates.length; i += 1) {
+        const key = candidates[i];
+        if (!key) {
+            continue;
+        }
+        const raw = (__ENV[key] || '').trim();
+        if (!raw) {
+            continue;
+        }
+        const value = Number(raw);
+        if (!Number.isFinite(value) || value <= 0) {
+            fail(`${key} 必须为正数`);
+        }
+        return value;
+    }
+    return fallback;
+}
+
+function scalePositiveNumber(value, multiplier, minimum) {
+    if (!Number.isFinite(value) || value <= 0) {
+        return value;
+    }
+    if (!Number.isFinite(multiplier) || multiplier <= 0 || multiplier === 1) {
+        return Math.max(value, minimum || 1);
+    }
+    const scaled = Math.ceil(value * multiplier);
+    const floor = Number.isFinite(minimum) && minimum > 0 ? minimum : 1;
+    return Math.max(scaled, floor);
 }
 
 function parseIntSafe(value, fallback) {

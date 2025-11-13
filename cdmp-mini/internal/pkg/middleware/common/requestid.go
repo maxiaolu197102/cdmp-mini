@@ -95,13 +95,13 @@ const (
 
 func RequestID() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		rid := c.GetHeader(XRequestIDKey)
-		if rid == "" {
-			rid = uuid.Must(uuid.NewV4()).String()
-			c.Request.Header.Set(XRequestIDKey, rid)
-			c.Set(XRequestIDKey, rid)
-		}
+
+		rid := uuid.Must(uuid.NewV4()).String()
+		c.Request.Header.Set(XRequestIDKey, rid)
+		c.Set(XRequestIDKey, rid)
+		// 设置响应头（此时还未发送给客户端）
 		c.Writer.Header().Set(XRequestIDKey, rid)
+		//传递给下一个插件
 		c.Next()
 	}
 }

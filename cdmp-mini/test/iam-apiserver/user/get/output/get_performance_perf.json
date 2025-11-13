@@ -4,18 +4,18 @@
     "requests": 50,
     "success_rate": 1,
     "error_rate": 0,
-    "duration_ms": 178,
-    "qps": 279.4720163244747,
+    "duration_ms": 88,
+    "qps": 561.8393983652924,
     "error_count": 0,
     "success_count": 50,
     "latency": {
-      "min_ms": 1.567629,
-      "max_ms": 8.920396,
-      "avg_ms": 3.555579,
-      "p50_ms": 3.520119,
-      "p90_ms": 4.797464,
-      "p95_ms": 5.736618,
-      "p99_ms": 7.556572
+      "min_ms": 1.530361,
+      "max_ms": 2.158713,
+      "avg_ms": 1.770053,
+      "p50_ms": 1.754625,
+      "p90_ms": 1.912172,
+      "p95_ms": 1.934605,
+      "p99_ms": 2.056912
     },
     "counters": {
       "cache_checks": 50,
@@ -36,18 +36,18 @@
     "requests": 1,
     "success_rate": 1,
     "error_rate": 0,
-    "duration_ms": 1,
-    "qps": 521.7262460648798,
+    "duration_ms": 2,
+    "qps": 407.338446517073,
     "error_count": 0,
     "success_count": 1,
     "latency": {
-      "min_ms": 1.881529,
-      "max_ms": 1.881529,
-      "avg_ms": 1.881529,
-      "p50_ms": 1.881529,
-      "p90_ms": 1.881529,
-      "p95_ms": 1.881529,
-      "p99_ms": 1.881529
+      "min_ms": 2.397206,
+      "max_ms": 2.397206,
+      "avg_ms": 2.397206,
+      "p50_ms": 2.397206,
+      "p90_ms": 2.397206,
+      "p95_ms": 2.397206,
+      "p99_ms": 2.397206
     },
     "counters": {
       "cache_checks": 1,
@@ -68,18 +68,18 @@
     "requests": 160,
     "success_rate": 1,
     "error_rate": 0,
-    "duration_ms": 24,
-    "qps": 6500.479207201555,
+    "duration_ms": 37,
+    "qps": 4294.135161446868,
     "error_count": 0,
     "success_count": 160,
     "latency": {
-      "min_ms": 1.596191,
-      "max_ms": 5.555355,
-      "avg_ms": 2.303385,
-      "p50_ms": 2.123021,
-      "p90_ms": 2.937538,
-      "p95_ms": 3.593789,
-      "p99_ms": 5.154685
+      "min_ms": 1.935169,
+      "max_ms": 12.730679,
+      "avg_ms": 3.479274,
+      "p50_ms": 2.452946,
+      "p90_ms": 6.329871,
+      "p95_ms": 7.452438,
+      "p99_ms": 11.810478
     },
     "counters": {
       "cache_checks": 160,
@@ -100,22 +100,22 @@
     "requests": 320,
     "success_rate": 1,
     "error_rate": 0,
-    "duration_ms": 38,
-    "qps": 8360.667490610449,
+    "duration_ms": 103,
+    "qps": 3104.463940715139,
     "error_count": 0,
     "success_count": 320,
     "latency": {
-      "min_ms": 1.688713,
-      "max_ms": 8.371413,
-      "avg_ms": 3.578928,
-      "p50_ms": 3.110452,
-      "p90_ms": 5.577007,
-      "p95_ms": 6.005344,
-      "p99_ms": 7.173
+      "min_ms": 2.450938,
+      "max_ms": 55.78105,
+      "avg_ms": 9.93194,
+      "p50_ms": 4.426222,
+      "p90_ms": 13.997151,
+      "p95_ms": 53.42267,
+      "p99_ms": 55.192274
     },
     "counters": {
       "cache_checks": 320,
-      "cache_hits": 320,
+      "cache_hits": 289,
       "failures": 0,
       "http_200": 320,
       "http_401": 0,
@@ -124,7 +124,7 @@
     "notes": [
       "索引命中率近似验证 (基于响应时延)",
       "索引命中率",
-      "cache_hit_rate=100.00%"
+      "cache_hit_rate=90.31%"
     ]
   },
   {
@@ -132,22 +132,22 @@
     "requests": 400,
     "success_rate": 1,
     "error_rate": 0,
-    "duration_ms": 49,
-    "qps": 8041.908637645188,
+    "duration_ms": 331,
+    "qps": 1207.0968725719435,
     "error_count": 0,
     "success_count": 400,
     "latency": {
-      "min_ms": 1.56903,
-      "max_ms": 8.109176,
-      "avg_ms": 2.409855,
-      "p50_ms": 2.053933,
-      "p90_ms": 3.525755,
-      "p95_ms": 4.784533,
-      "p99_ms": 5.238211
+      "min_ms": 1.79042,
+      "max_ms": 239.608251,
+      "avg_ms": 12.667199,
+      "p50_ms": 3.348489,
+      "p90_ms": 13.294815,
+      "p95_ms": 14.005783,
+      "p99_ms": 233.39992
     },
     "counters": {
       "cache_checks": 400,
-      "cache_hits": 400,
+      "cache_hits": 386,
       "failures": 0,
       "http_200": 400,
       "http_401": 0,
@@ -156,7 +156,7 @@
     "notes": [
       "低并发(20) 连续读取稳定性",
       "低并发稳定性",
-      "cache_hit_rate=100.00%"
+      "cache_hit_rate=96.50%"
     ]
   },
   {
@@ -164,22 +164,22 @@
     "requests": 1280,
     "success_rate": 1,
     "error_rate": 0,
-    "duration_ms": 210,
-    "qps": 6081.808795315172,
+    "duration_ms": 190,
+    "qps": 6701.973009542029,
     "error_count": 0,
     "success_count": 1280,
     "latency": {
-      "min_ms": 1.615624,
-      "max_ms": 107.066621,
-      "avg_ms": 19.75812,
-      "p50_ms": 12.477264,
-      "p90_ms": 44.509698,
-      "p95_ms": 90.429153,
-      "p99_ms": 99.264547
+      "min_ms": 1.970597,
+      "max_ms": 105.177242,
+      "avg_ms": 17.82974,
+      "p50_ms": 6.364071,
+      "p90_ms": 58.780951,
+      "p95_ms": 62.665823,
+      "p99_ms": 75.038371
     },
     "counters": {
       "cache_checks": 1280,
-      "cache_hits": 1179,
+      "cache_hits": 1268,
       "failures": 0,
       "http_200": 1280,
       "http_401": 0,
@@ -188,7 +188,7 @@
     "notes": [
       "高并发(128) 吞吐量测量",
       "高并发吞吐",
-      "cache_hit_rate=92.11%"
+      "cache_hit_rate=99.06%"
     ]
   },
   {
@@ -196,22 +196,22 @@
     "requests": 2048,
     "success_rate": 1,
     "error_rate": 0,
-    "duration_ms": 6889,
-    "qps": 297.27116939920074,
+    "duration_ms": 243,
+    "qps": 8409.881425065741,
     "error_count": 0,
     "success_count": 2048,
     "latency": {
-      "min_ms": 2.734638,
-      "max_ms": 6621.632888,
-      "avg_ms": 1707.947088,
-      "p50_ms": 122.243258,
-      "p90_ms": 6608.737529,
-      "p95_ms": 6610.91418,
-      "p99_ms": 6618.591775
+      "min_ms": 4.742235,
+      "max_ms": 233.512705,
+      "avg_ms": 53.718938,
+      "p50_ms": 46.760327,
+      "p90_ms": 138.14642,
+      "p95_ms": 141.927422,
+      "p99_ms": 173.399509
     },
     "counters": {
       "cache_checks": 2048,
-      "cache_hits": 1011,
+      "cache_hits": 1783,
       "failures": 0,
       "http_200": 2048,
       "http_401": 0,
@@ -220,7 +220,7 @@
     "notes": [
       "峰值并发(512) 降级策略观察",
       "峰值并发",
-      "cache_hit_rate=49.37%"
+      "cache_hit_rate=87.06%"
     ]
   },
   {
@@ -228,22 +228,22 @@
     "requests": 1024,
     "success_rate": 1,
     "error_rate": 0,
-    "duration_ms": 199,
-    "qps": 5130.842110735247,
+    "duration_ms": 93,
+    "qps": 10981.928903528506,
     "error_count": 0,
     "success_count": 1024,
     "latency": {
-      "min_ms": 1.504757,
-      "max_ms": 44.651725,
-      "avg_ms": 12.158662,
-      "p50_ms": 9.830617,
-      "p90_ms": 23.600218,
-      "p95_ms": 30.035854,
-      "p99_ms": 40.65321
+      "min_ms": 1.908054,
+      "max_ms": 37.837522,
+      "avg_ms": 5.66532,
+      "p50_ms": 4.646816,
+      "p90_ms": 8.185664,
+      "p95_ms": 14.741553,
+      "p99_ms": 22.678258
     },
     "counters": {
       "cache_checks": 1024,
-      "cache_hits": 887,
+      "cache_hits": 1004,
       "failures": 0,
       "http_200": 1024,
       "http_401": 0,
@@ -252,7 +252,7 @@
     "notes": [
       "连接池效率 (64 并发, 热点轮询)",
       "连接池利用率",
-      "cache_hit_rate=86.62%"
+      "cache_hit_rate=98.05%"
     ]
   }
 ]

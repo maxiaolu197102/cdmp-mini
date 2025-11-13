@@ -72,7 +72,49 @@ func NewRetryConsumer(db *gorm.DB, redis *storage.RedisCluster, producer *UserPr
 	} else {
 		rc.sqlxDB = sqlx.NewDb(core, "mysql").Unsafe()
 	}
-	rc.pendingCoordinator = usercache.NewPendingCoordinator(redis, usercache.PendingCoordinatorConfig{})
+	pcCfg := usercache.PendingCoordinatorConfig{
+		Component:      fmt.Sprintf("retry_consumer_%s", groupid),
+		LogLeaseEvents: true,
+	}
+	if kafkaOptions != nil {
+		if kafkaOptions.PendingLeaseTTL > 0 {
+			pcCfg.LeaseTTL = kafkaOptions.PendingLeaseTTL
+		}
+		if strings.TrimSpace(kafkaOptions.PendingMetricsKey) != "" {
+			pcCfg.MetricsKey = strings.TrimSpace(kafkaOptions.PendingMetricsKey)
+		}
+		if kafkaOptions.PendingBackpressureWindow > 0 {
+			pcCfg.BackpressureWindow = kafkaOptions.PendingBackpressureWindow
+		}
+		if kafkaOptions.PendingBackpressureSoft > 0 {
+			pcCfg.BackpressureSoftLimit = kafkaOptions.PendingBackpressureSoft
+		}
+		if kafkaOptions.PendingBackpressureHard > 0 {
+			pcCfg.BackpressureHardLimit = kafkaOptions.PendingBackpressureHard
+		}
+		if kafkaOptions.PendingReleaseRetention > 0 {
+			pcCfg.ReleaseRetention = kafkaOptions.PendingReleaseRetention
+		}
+		if kafkaOptions.PendingExpiredRetention > 0 {
+			pcCfg.ExpiredRetention = kafkaOptions.PendingExpiredRetention
+		}
+		if kafkaOptions.PendingExpiredGrace >= 0 {
+			pcCfg.ExpiredGracePeriod = kafkaOptions.PendingExpiredGrace
+		}
+		if kafkaOptions.PendingDelayElevated > 0 {
+			pcCfg.ElevatedDelayBase = kafkaOptions.PendingDelayElevated
+		}
+		if kafkaOptions.PendingDelayElevatedMax > 0 {
+			pcCfg.ElevatedDelayMax = kafkaOptions.PendingDelayElevatedMax
+		}
+		if kafkaOptions.PendingDelaySevere > 0 {
+			pcCfg.SevereDelayBase = kafkaOptions.PendingDelaySevere
+		}
+		if kafkaOptions.PendingDelaySevereMax > 0 {
+			pcCfg.SevereDelayMax = kafkaOptions.PendingDelaySevereMax
+		}
+	}
+	rc.pendingCoordinator = usercache.NewPendingCoordinator(redis, pcCfg)
 	return rc
 }
 
@@ -156,6 +198,10 @@ func (rc *RetryConsumer) StartConsuming(ctx context.Context, workerCount int, re
 		}
 	}
 
+	if rc.pendingCoordinator != nil {
+		go rc.runExpiredLeaseScanner(ctx)
+	}
+
 	for i := 0; i < workerCount; i++ {
 		wg.Add(1)
 		go func(workerID int) {
@@ -195,13 +241,76 @@ func (rc *RetryConsumer) retryWorker(ctx context.Context, workerID int) {
 				continue
 			}
 
-			if err := rc.processRetryMessage(ctx, msg); err != nil {
-				log.Errorf("重试Worker %d (groupInstanceID=%s): 处理消息失败: %v", workerID, rc.groupInstanceID, err)
+			processStart := time.Now()
+			procErr := rc.processRetryMessage(ctx, msg)
+			rc.recordRetryMetrics(msg, processStart, procErr, workerID)
+			if procErr != nil {
+				log.Errorf("重试Worker %d (groupInstanceID=%s): 处理消息失败: %v", workerID, rc.groupInstanceID, procErr)
 				continue
 			}
 
 			if err := rc.commitWithRetry(ctx, msg, workerID); err != nil {
 				log.Errorf("重试Worker %d (groupInstanceID=%s): 提交偏移量失败: %v", workerID, rc.groupInstanceID, err)
+			}
+		}
+	}
+}
+
+func (rc *RetryConsumer) runExpiredLeaseScanner(ctx context.Context) {
+	if rc.pendingCoordinator == nil {
+		return
+	}
+	interval := 5 * time.Second
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	component := rc.poolComponent
+	if rc.pendingCoordinator != nil {
+		if pcComponent := rc.pendingCoordinator.ComponentName(); strings.TrimSpace(pcComponent) != "" {
+			component = pcComponent
+		}
+	}
+	if strings.TrimSpace(component) == "" {
+		component = "retry_consumer"
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			states, err := rc.pendingCoordinator.ListExpired(ctx, 64)
+			if err != nil {
+				log.Warnf("RetryConsumer扫描expired租约失败: %v", err)
+				continue
+			}
+			if len(states) == 0 {
+				continue
+			}
+			for _, state := range states {
+				if state == nil {
+					continue
+				}
+				username := strings.TrimSpace(state.Username)
+				if username == "" {
+					continue
+				}
+				expiredAt := ""
+				if !state.ExpiredAt.IsZero() {
+					expiredAt = state.ExpiredAt.Format(time.RFC3339Nano)
+				}
+				fields := []interface{}{"username", username}
+				if expiredAt != "" {
+					fields = append(fields, "expired_at", expiredAt)
+				}
+				if state.QueueDepth > 0 {
+					fields = append(fields, "queue_depth", state.QueueDepth)
+				}
+				if level := string(state.Backpressure); level != "" && state.Backpressure != usercache.BackpressureNone {
+					fields = append(fields, "backpressure", level)
+				}
+				log.Warnw("pending租约超时未完成，已标记为expired", fields...)
+				if metrics.PendingLeaseEvents != nil {
+					metrics.PendingLeaseEvents.WithLabelValues(component, "expired_scan_detected").Inc()
+				}
 			}
 		}
 	}
@@ -230,6 +339,46 @@ func (rc *RetryConsumer) commitWithRetry(ctx context.Context, msg kafka.Message,
 	}
 	log.Errorf("RetryWorker %d: 提交偏移量最终失败: %v", workerID, lastErr)
 	return lastErr
+}
+
+func (rc *RetryConsumer) recordRetryMetrics(msg kafka.Message, processStart time.Time, processingErr error, workerID int) {
+	operation := rc.getOperationFromHeaders(msg.Headers)
+	var topic, group string
+	if rc.reader != nil {
+		cfg := rc.reader.Config()
+		topic = cfg.Topic
+		group = cfg.GroupID
+	}
+
+	if metrics.ConsumerMessagesReceived != nil && topic != "" {
+		metrics.ConsumerMessagesReceived.WithLabelValues(topic, group, operation).Inc()
+	}
+
+	if !msg.Time.IsZero() && metrics.ConsumerMessageAgeSeconds != nil {
+		age := processStart.Sub(msg.Time)
+		if age < 0 {
+			age = 0
+		}
+		metrics.ConsumerMessageAgeSeconds.WithLabelValues("retry", topic, group).Observe(age.Seconds())
+		if age > 10*time.Second {
+			log.Warnf("RetryWorker %d 消费滞后: topic=%s key=%s age=%.3fs", workerID, topic, string(msg.Key), age.Seconds())
+		}
+	}
+
+	if processingErr != nil {
+		if metrics.ConsumerProcessingErrors != nil && topic != "" {
+			metrics.ConsumerProcessingErrors.WithLabelValues(topic, group, operation, getErrorType(processingErr)).Inc()
+			metrics.ConsumerProcessingTime.WithLabelValues(topic, group, operation, "error").Observe(time.Since(processStart).Seconds())
+		}
+		return
+	}
+
+	if metrics.ConsumerMessagesProcessed != nil && topic != "" {
+		metrics.ConsumerMessagesProcessed.WithLabelValues(topic, group, operation).Inc()
+	}
+	if metrics.ConsumerProcessingTime != nil && topic != "" {
+		metrics.ConsumerProcessingTime.WithLabelValues(topic, group, operation, "success").Observe(time.Since(processStart).Seconds())
+	}
 }
 
 func (rc *RetryConsumer) processRetryMessage(ctx context.Context, msg kafka.Message) error {
@@ -933,8 +1082,36 @@ func (rc *RetryConsumer) clearPendingCreateMarker(ctx context.Context, username 
 		return nil
 	}
 	if rc.pendingCoordinator != nil {
-		_, err := rc.pendingCoordinator.Release(ctx, trimmed, "")
-		return err
+		releaseOwner := ""
+		state, observeErr := rc.pendingCoordinator.Observe(ctx, trimmed)
+		if observeErr != nil {
+			log.Warnw("retry consumer observe pending lease before release failed", "username", trimmed, "error", observeErr)
+		} else if state != nil {
+			if !state.Exists {
+				return nil
+			}
+			releaseOwner = strings.TrimSpace(state.LeaseOwner)
+			if releaseOwner == "" {
+				log.Warnw("retry consumer pending lease owner missing, skip release", "username", trimmed)
+				return usercache.ErrPendingLeaseOwnerMismatch
+			}
+		} else {
+			log.Warnw("retry consumer observe pending lease returned empty state", "username", trimmed)
+			return usercache.ErrPendingLeaseOwnerMismatch
+		}
+		releaseOwner = strings.TrimSpace(releaseOwner)
+		if releaseOwner == "" {
+			log.Warnw("retry consumer pending lease release owner empty", "username", trimmed)
+			return usercache.ErrPendingLeaseOwnerMismatch
+		}
+		_, err := rc.pendingCoordinator.Release(ctx, trimmed, releaseOwner)
+		if err != nil {
+			if errors.Is(err, usercache.ErrPendingLeaseOwnerMismatch) {
+				log.Warnw("retry consumer pending lease release mismatch", "username", trimmed, "expected_owner", releaseOwner)
+			}
+			return err
+		}
+		return nil
 	}
 	if rc.redis == nil {
 		return nil

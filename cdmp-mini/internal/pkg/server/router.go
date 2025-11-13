@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -14,6 +13,7 @@ import (
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/store"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/code"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/middleware"
+	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/usercache"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/pkg/log"
 
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/middleware/business"
@@ -156,11 +156,13 @@ func (g *GenericAPIServer) installApiRoutes() error {
 	}
 	// 写入类接口使用分布式写限流 + 滞后保护，保护后端（可按需调整阈值）
 	writeLimit := common.WriteRateLimiter(g.redis, g.options.ServerRunOptions.WriteRateLimit, 1*time.Minute)
-	// lagProtect 查询所有消费者实例是否处于保护模式
-	lagProtect := common.LagProtectMiddleware(func() bool {
-		// 直接查redis全局保护key
-		v, err := g.redis.GetKey(context.Background(), "kafka:lag:protect:ALL")
-		return err == nil && v == "1"
+
+	var pendingCoordinator *usercache.PendingCoordinator
+	if g.userService != nil {
+		pendingCoordinator = g.userService.PendingCoordinator()
+	}
+	lagProtect := common.LagProtectMiddleware(common.LagProtectOptions{
+		Coordinator: pendingCoordinator,
 	})
 
 	v1 := g.Group("/v1")

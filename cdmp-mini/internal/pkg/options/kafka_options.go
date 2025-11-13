@@ -74,6 +74,19 @@ type KafkaOptions struct {
 	// 批量聚合的最小/最大超时时间边界
 	MinBatchTimeout time.Duration `json:"minBatchTimeout" mapstructure:"minBatchTimeout" validate:"min=1ms"`
 	MaxBatchTimeout time.Duration `json:"maxBatchTimeout" mapstructure:"maxBatchTimeout" validate:"min=1ms"`
+	// Pending lease coordination configuration shared between producer (API) and consumers
+	PendingLeaseTTL           time.Duration `json:"pendingLeaseTTL" mapstructure:"pendingLeaseTTL"`
+	PendingMetricsKey         string        `json:"pendingMetricsKey" mapstructure:"pendingMetricsKey"`
+	PendingBackpressureWindow time.Duration `json:"pendingBackpressureWindow" mapstructure:"pendingBackpressureWindow"`
+	PendingBackpressureSoft   int           `json:"pendingBackpressureSoft" mapstructure:"pendingBackpressureSoft"`
+	PendingBackpressureHard   int           `json:"pendingBackpressureHard" mapstructure:"pendingBackpressureHard"`
+	PendingReleaseRetention   time.Duration `json:"pendingReleaseRetention" mapstructure:"pendingReleaseRetention"`
+	PendingExpiredRetention   time.Duration `json:"pendingExpiredRetention" mapstructure:"pendingExpiredRetention"`
+	PendingExpiredGrace       time.Duration `json:"pendingExpiredGrace" mapstructure:"pendingExpiredGrace"`
+	PendingDelayElevated      time.Duration `json:"pendingDelayElevated" mapstructure:"pendingDelayElevated"`
+	PendingDelayElevatedMax   time.Duration `json:"pendingDelayElevatedMax" mapstructure:"pendingDelayElevatedMax"`
+	PendingDelaySevere        time.Duration `json:"pendingDelaySevere" mapstructure:"pendingDelaySevere"`
+	PendingDelaySevereMax     time.Duration `json:"pendingDelaySevereMax" mapstructure:"pendingDelaySevereMax"`
 	// Producer in-flight limit: maximum concurrent synchronous sends allowed
 	ProducerMaxInFlight int `json:"producerMaxInFlight" mapstructure:"producerMaxInFlight" validate:"min=1"`
 	// 当前是否处于滞后保护状态（true 表示滞后超过阈值）
@@ -116,40 +129,52 @@ type KafkaOptions struct {
 // NewKafkaOptions 创建带有默认值的Kafka配置
 func NewKafkaOptions() *KafkaOptions {
 	return &KafkaOptions{
-		Brokers:                []string{"192.168.10.8:9092", "192.168.10.8:9093", "192.168.10.8:9094"},
-		Topic:                  "default-topic",
-		ConsumerGroup:          "default-consumer-group",
-		RequiredAcks:           1, // leader确认
-		BatchSize:              80,
-		BatchTimeout:           60 * time.Millisecond,
-		MaxRetries:             4,
-		MinBytes:               60 * 1024,        // 10KB
-		MaxBytes:               10 * 1024 * 1024, // 10MB
-		WorkerCount:            64,
-		FetcherCount:           4,
-		RetryWorkerCount:       3,
-		EnableMetricsRefresh:   true,
-		MetricsRefreshInterval: 30 * time.Second,
-		EnableSSL:              false,
-		SSLCertFile:            "",
-		BaseRetryDelay:         5 * time.Second,
-		MaxRetryDelay:          2 * time.Minute,
-		AutoCreateTopic:        true,
-		DesiredPartitions:      64, // 默认按照现有 64 个分区并发消费
-		AutoExpandPartitions:   true,
-		ProducerMaxInFlight:    40000,
-		LagScaleThreshold:      10000,            // 默认滞后阈值
-		LagCheckInterval:       30 * time.Second, // 默认滞后检查间隔
-		MaxDBBatchSize:         230,              // 默认批量写DB大小
-		BatchChannelCapacity:   1024,
-		MinDBBatchSize:         120,
-		MinBatchTimeout:        40 * time.Millisecond,
-		MaxBatchTimeout:        200 * time.Millisecond,
-		InstanceID:             "", // 新增字段默认值为空，建议启动时赋值
-		StartingRate:           10000,
-		MinRate:                10000,
-		MaxRate:                20000,
-		AdjustPeriod:           2 * time.Second,
+		Brokers:                   []string{"192.168.10.8:9092", "192.168.10.8:9093", "192.168.10.8:9094"},
+		Topic:                     "default-topic",
+		ConsumerGroup:             "default-consumer-group",
+		RequiredAcks:              1, // leader确认
+		BatchSize:                 80,
+		BatchTimeout:              60 * time.Millisecond,
+		MaxRetries:                4,
+		MinBytes:                  60 * 1024,        // 10KB
+		MaxBytes:                  10 * 1024 * 1024, // 10MB
+		WorkerCount:               64,
+		FetcherCount:              4,
+		RetryWorkerCount:          3,
+		EnableMetricsRefresh:      true,
+		MetricsRefreshInterval:    30 * time.Second,
+		EnableSSL:                 false,
+		SSLCertFile:               "",
+		BaseRetryDelay:            5 * time.Second,
+		MaxRetryDelay:             2 * time.Minute,
+		AutoCreateTopic:           true,
+		DesiredPartitions:         64, // 默认按照现有 64 个分区并发消费
+		AutoExpandPartitions:      true,
+		ProducerMaxInFlight:       40000,
+		LagScaleThreshold:         10000,            // 默认滞后阈值
+		LagCheckInterval:          30 * time.Second, // 默认滞后检查间隔
+		MaxDBBatchSize:            230,              // 默认批量写DB大小
+		BatchChannelCapacity:      1024,
+		MinDBBatchSize:            120,
+		MinBatchTimeout:           40 * time.Millisecond,
+		MaxBatchTimeout:           200 * time.Millisecond,
+		PendingLeaseTTL:           MinUserPendingCreateTTL,
+		PendingMetricsKey:         "user:pending:active",
+		PendingBackpressureWindow: 5 * time.Second,
+		PendingBackpressureSoft:   1000,
+		PendingBackpressureHard:   1500,
+		PendingReleaseRetention:   3 * time.Second,
+		PendingExpiredRetention:   30 * time.Second,
+		PendingExpiredGrace:       2 * time.Second,
+		PendingDelayElevated:      20 * time.Millisecond,
+		PendingDelayElevatedMax:   45 * time.Millisecond,
+		PendingDelaySevere:        80 * time.Millisecond,
+		PendingDelaySevereMax:     150 * time.Millisecond,
+		InstanceID:                "", // 新增字段默认值为空，建议启动时赋值
+		StartingRate:              10000,
+		MinRate:                   10000,
+		MaxRate:                   20000,
+		AdjustPeriod:              2 * time.Second,
 		// 默认关闭基于时间的 flush，仅依靠批量阈值触发，避免 200ms 定时器带来的额外 ACK 延迟
 		FlushFrequency:           0,
 		FlushMaxMessages:         256,
@@ -306,6 +331,54 @@ func (k *KafkaOptions) Complete() {
 	} else if k.BatchTimeout > k.MaxBatchTimeout {
 		k.BatchTimeout = k.MaxBatchTimeout
 	}
+	if k.PendingLeaseTTL <= 0 {
+		k.PendingLeaseTTL = MinUserPendingCreateTTL
+	}
+	if k.PendingLeaseTTL < MinUserPendingCreateTTL {
+		k.PendingLeaseTTL = MinUserPendingCreateTTL
+	}
+	if k.PendingMetricsKey == "" {
+		k.PendingMetricsKey = "user:pending:active"
+	}
+	if k.PendingBackpressureWindow <= 0 {
+		k.PendingBackpressureWindow = 5 * time.Second
+	}
+	if k.PendingBackpressureSoft <= 0 {
+		k.PendingBackpressureSoft = 1000
+	}
+	if k.PendingBackpressureHard <= 0 {
+		k.PendingBackpressureHard = k.PendingBackpressureSoft + 500
+	}
+	if k.PendingBackpressureHard < k.PendingBackpressureSoft {
+		k.PendingBackpressureHard = k.PendingBackpressureSoft
+	}
+	if k.PendingReleaseRetention <= 0 {
+		k.PendingReleaseRetention = 3 * time.Second
+	}
+	if k.PendingExpiredRetention <= 0 {
+		k.PendingExpiredRetention = 30 * time.Second
+	}
+	if k.PendingExpiredGrace < 0 {
+		k.PendingExpiredGrace = 0
+	}
+	if k.PendingDelayElevated <= 0 {
+		k.PendingDelayElevated = 20 * time.Millisecond
+	}
+	if k.PendingDelayElevatedMax <= 0 {
+		k.PendingDelayElevatedMax = k.PendingDelayElevated
+	}
+	if k.PendingDelayElevatedMax < k.PendingDelayElevated {
+		k.PendingDelayElevatedMax = k.PendingDelayElevated
+	}
+	if k.PendingDelaySevere <= 0 {
+		k.PendingDelaySevere = 80 * time.Millisecond
+	}
+	if k.PendingDelaySevereMax <= 0 {
+		k.PendingDelaySevereMax = k.PendingDelaySevere
+	}
+	if k.PendingDelaySevereMax < k.PendingDelaySevere {
+		k.PendingDelaySevereMax = k.PendingDelaySevere
+	}
 }
 
 // Validate 验证配置的有效性
@@ -402,6 +475,42 @@ func (k *KafkaOptions) Validate() []error {
 	if k.MaxBatchTimeout < k.MinBatchTimeout {
 		errs = append(errs, field.Invalid(field.NewPath("kafka", "maxBatchTimeout"), k.MaxBatchTimeout, "必须不小于minBatchTimeout"))
 	}
+	if k.PendingLeaseTTL < MinUserPendingCreateTTL {
+		errs = append(errs, field.Invalid(field.NewPath("kafka", "pendingLeaseTTL"), k.PendingLeaseTTL, "不能小于最小租约TTL"))
+	}
+	if k.PendingMetricsKey == "" {
+		errs = append(errs, field.Required(field.NewPath("kafka", "pendingMetricsKey"), "必须指定pending指标Key"))
+	}
+	if k.PendingBackpressureWindow <= 0 {
+		errs = append(errs, field.Invalid(field.NewPath("kafka", "pendingBackpressureWindow"), k.PendingBackpressureWindow, "必须大于0"))
+	}
+	if k.PendingBackpressureSoft < 1 {
+		errs = append(errs, field.Invalid(field.NewPath("kafka", "pendingBackpressureSoft"), k.PendingBackpressureSoft, "必须大于0"))
+	}
+	if k.PendingBackpressureHard < k.PendingBackpressureSoft {
+		errs = append(errs, field.Invalid(field.NewPath("kafka", "pendingBackpressureHard"), k.PendingBackpressureHard, "必须不小于soft limit"))
+	}
+	if k.PendingReleaseRetention < 0 {
+		errs = append(errs, field.Invalid(field.NewPath("kafka", "pendingReleaseRetention"), k.PendingReleaseRetention, "不能小于0"))
+	}
+	if k.PendingExpiredRetention < 0 {
+		errs = append(errs, field.Invalid(field.NewPath("kafka", "pendingExpiredRetention"), k.PendingExpiredRetention, "不能小于0"))
+	}
+	if k.PendingExpiredGrace < 0 {
+		errs = append(errs, field.Invalid(field.NewPath("kafka", "pendingExpiredGrace"), k.PendingExpiredGrace, "不能小于0"))
+	}
+	if k.PendingDelayElevated <= 0 {
+		errs = append(errs, field.Invalid(field.NewPath("kafka", "pendingDelayElevated"), k.PendingDelayElevated, "必须大于0"))
+	}
+	if k.PendingDelayElevatedMax < k.PendingDelayElevated {
+		errs = append(errs, field.Invalid(field.NewPath("kafka", "pendingDelayElevatedMax"), k.PendingDelayElevatedMax, "不能小于pendingDelayElevated"))
+	}
+	if k.PendingDelaySevere <= 0 {
+		errs = append(errs, field.Invalid(field.NewPath("kafka", "pendingDelaySevere"), k.PendingDelaySevere, "必须大于0"))
+	}
+	if k.PendingDelaySevereMax < k.PendingDelaySevere {
+		errs = append(errs, field.Invalid(field.NewPath("kafka", "pendingDelaySevereMax"), k.PendingDelaySevereMax, "不能小于pendingDelaySevere"))
+	}
 
 	// 如果启用SSL，验证证书文件
 	if k.EnableSSL && k.SSLCertFile != "" {
@@ -471,6 +580,31 @@ func (k *KafkaOptions) AddFlags(fs *pflag.FlagSet) {
 
 	fs.DurationVar(&k.MaxBatchTimeout, "kafka.max-batch-timeout", k.MaxBatchTimeout,
 		"Kafka消费者批量聚合的最大超时时间，用于在空闲期降低写入频次")
+
+	fs.DurationVar(&k.PendingLeaseTTL, "kafka.pending-lease-ttl", k.PendingLeaseTTL,
+		"Pending租约TTL，用于确保创建链路在高延迟时仍可恢复")
+	fs.StringVar(&k.PendingMetricsKey, "kafka.pending-metrics-key", k.PendingMetricsKey,
+		"Pending租约活跃指标计数使用的Redis Key")
+	fs.DurationVar(&k.PendingBackpressureWindow, "kafka.pending-backpressure-window", k.PendingBackpressureWindow,
+		"Pending租约采样窗口，用于计算活跃队列深度")
+	fs.IntVar(&k.PendingBackpressureSoft, "kafka.pending-backpressure-soft", k.PendingBackpressureSoft,
+		"Pending租约软阈值，超过后进入Elevated背压")
+	fs.IntVar(&k.PendingBackpressureHard, "kafka.pending-backpressure-hard", k.PendingBackpressureHard,
+		"Pending租约硬阈值，超过后进入Severe背压")
+	fs.DurationVar(&k.PendingReleaseRetention, "kafka.pending-release-retention", k.PendingReleaseRetention,
+		"Pending租约释放快照保留时长")
+	fs.DurationVar(&k.PendingExpiredRetention, "kafka.pending-expired-retention", k.PendingExpiredRetention,
+		"Pending租约过期快照保留时长")
+	fs.DurationVar(&k.PendingExpiredGrace, "kafka.pending-expired-grace", k.PendingExpiredGrace,
+		"Pending租约过期后的宽限期")
+	fs.DurationVar(&k.PendingDelayElevated, "kafka.pending-delay-elevated", k.PendingDelayElevated,
+		"Elevated背压等级建议的最小延迟")
+	fs.DurationVar(&k.PendingDelayElevatedMax, "kafka.pending-delay-elevated-max", k.PendingDelayElevatedMax,
+		"Elevated背压等级建议的最大延迟")
+	fs.DurationVar(&k.PendingDelaySevere, "kafka.pending-delay-severe", k.PendingDelaySevere,
+		"Severe背压等级建议的最小延迟")
+	fs.DurationVar(&k.PendingDelaySevereMax, "kafka.pending-delay-severe-max", k.PendingDelaySevereMax,
+		"Severe背压等级建议的最大延迟")
 
 	fs.BoolVar(&k.EnableSSL, "kafka.enable-ssl", k.EnableSSL,
 		"是否启用SSL连接")

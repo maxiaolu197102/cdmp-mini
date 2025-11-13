@@ -1,0 +1,433 @@
+{
+    "root_group": {
+        "name": "",
+        "path": "",
+        "id": "d41d8cd98f00b204e9800998ecf8427e",
+        "groups": {},
+        "checks": {
+                "missing_password_http_400": {
+                    "name": "missing_password_http_400",
+                    "path": "::missing_password_http_400",
+                    "id": "70bd165386dc49e23be2f160429579af",
+                    "passes": 577,
+                    "fails": 0
+                },
+                "missing_password_code_validation": {
+                    "name": "missing_password_code_validation",
+                    "path": "::missing_password_code_validation",
+                    "id": "78c734aa4d50fdd4be67237a98637ad8",
+                    "passes": 577,
+                    "fails": 0
+                },
+                "duplicate_http_409": {
+                    "name": "duplicate_http_409",
+                    "path": "::duplicate_http_409",
+                    "id": "51ec9efac32cf151720edf5f4180d26f",
+                    "passes": 3841,
+                    "fails": 0
+                },
+                "duplicate_code_conflict": {
+                    "name": "duplicate_code_conflict",
+                    "path": "::duplicate_code_conflict",
+                    "id": "d3204729a5d2da74ce84d0ce4d959ed6",
+                    "passes": 3841,
+                    "fails": 0
+                },
+                "variant_full_profile_http_201": {
+                    "fails": 1188,
+                    "name": "variant_full_profile_http_201",
+                    "path": "::variant_full_profile_http_201",
+                    "id": "c31c20849ceea8da33b86ccfa1058aa6",
+                    "passes": 6923
+                },
+                "variant_full_profile_code_success": {
+                    "path": "::variant_full_profile_code_success",
+                    "id": "3f305bc601cb7f933a4f59c4e7ac1ae1",
+                    "passes": 6923,
+                    "fails": 1188,
+                    "name": "variant_full_profile_code_success"
+                },
+                "baseline_http_201": {
+                    "id": "0747172bb0af4bf87582e6938d956233",
+                    "passes": 4798,
+                    "fails": 0,
+                    "name": "baseline_http_201",
+                    "path": "::baseline_http_201"
+                },
+                "baseline_code_success": {
+                    "name": "baseline_code_success",
+                    "path": "::baseline_code_success",
+                    "id": "0b20310325875bb15e66f07f159165d8",
+                    "passes": 4798,
+                    "fails": 0
+                },
+                "baseline_created_username": {
+                    "id": "2578c4f15e09b7329cad1d4aa95e9d48",
+                    "passes": 4798,
+                    "fails": 0,
+                    "name": "baseline_created_username",
+                    "path": "::baseline_created_username"
+                },
+                "variant_disabled_user_http_201": {
+                    "name": "variant_disabled_user_http_201",
+                    "path": "::variant_disabled_user_http_201",
+                    "id": "2d8d4e9bfa5e86a67589330af5eabb3a",
+                    "passes": 6898,
+                    "fails": 1204
+                },
+                "variant_disabled_user_code_success": {
+                    "name": "variant_disabled_user_code_success",
+                    "path": "::variant_disabled_user_code_success",
+                    "id": "210d2374cb4132f8dd037eb111afb24e",
+                    "passes": 6898,
+                    "fails": 1204
+                },
+                "invalid_email_http_400": {
+                    "name": "invalid_email_http_400",
+                    "path": "::invalid_email_http_400",
+                    "id": "26ca7745f1d0b047b33dd1d71bb7b454",
+                    "passes": 576,
+                    "fails": 0
+                },
+                "invalid_email_code_validation": {
+                    "passes": 576,
+                    "fails": 0,
+                    "name": "invalid_email_code_validation",
+                    "path": "::invalid_email_code_validation",
+                    "id": "10235e1ac1fdd7d43d1ad0c7576c19a0"
+                },
+                "variant_admin_user_http_201": {
+                    "path": "::variant_admin_user_http_201",
+                    "id": "e0693b196440101dd986d670db48b66f",
+                    "passes": 6880,
+                    "fails": 1215,
+                    "name": "variant_admin_user_http_201"
+                },
+                "variant_admin_user_code_success": {
+                    "name": "variant_admin_user_code_success",
+                    "path": "::variant_admin_user_code_success",
+                    "id": "2ffe39184b629546fd55d58c06ac72d9",
+                    "passes": 6880,
+                    "fails": 1215
+                },
+                "short_password_http_400": {
+                    "name": "short_password_http_400",
+                    "path": "::short_password_http_400",
+                    "id": "5528bc11d9671089376da820783b09bf",
+                    "passes": 576,
+                    "fails": 0
+                },
+                "short_password_code_validation": {
+                    "path": "::short_password_code_validation",
+                    "id": "4dc4e6febc48a1c4655d8608bad94979",
+                    "passes": 576,
+                    "fails": 0,
+                    "name": "short_password_code_validation"
+                },
+                "variant_extended_metadata_http_201": {
+                    "name": "variant_extended_metadata_http_201",
+                    "path": "::variant_extended_metadata_http_201",
+                    "id": "dc5e921e80dc50e29029293d3c6ba35f",
+                    "passes": 6919,
+                    "fails": 1169
+                },
+                "variant_extended_metadata_code_success": {
+                    "path": "::variant_extended_metadata_code_success",
+                    "id": "e9b479a11c76d8205065b2c017296eb6",
+                    "passes": 6919,
+                    "fails": 1169,
+                    "name": "variant_extended_metadata_code_success"
+                },
+                "missing_name_http_400": {
+                    "name": "missing_name_http_400",
+                    "path": "::missing_name_http_400",
+                    "id": "0f643afa99e976409c3b2e0865df2990",
+                    "passes": 576,
+                    "fails": 0
+                },
+                "missing_name_code_validation": {
+                    "passes": 576,
+                    "fails": 0,
+                    "name": "missing_name_code_validation",
+                    "path": "::missing_name_code_validation",
+                    "id": "68ff1721948a7266d2484e80a74ffe50"
+                },
+                "invalid_phone_http_400": {
+                    "id": "5a6b27b49eab4954e9ac0ecd5ef27b1a",
+                    "passes": 576,
+                    "fails": 0,
+                    "name": "invalid_phone_http_400",
+                    "path": "::invalid_phone_http_400"
+                },
+                "invalid_phone_code_validation": {
+                    "name": "invalid_phone_code_validation",
+                    "path": "::invalid_phone_code_validation",
+                    "id": "6c45bd26676110d5504f926413065785",
+                    "passes": 576,
+                    "fails": 0
+                }
+            }
+    },
+    "metrics": {
+        "http_req_receiving": {
+            "p(95)": 0.17111705,
+            "avg": 0.1059393417277645,
+            "min": 0.029999,
+            "med": 0.0884375,
+            "max": 18.313491,
+            "p(90)": 0.1485816
+        },
+        "data_sent": {
+            "count": 44065351,
+            "rate": 244644.9818282906
+        },
+        "checks": {
+            "passes": 83078,
+            "fails": 9552,
+            "value": 0.896880060455576
+        },
+        "create_baseline_latency": {
+            "p(90)": 33.634548800000005,
+            "p(95)": 40.7953895,
+            "avg": 22.19735726198419,
+            "min": 11.446812,
+            "med": 19.467787,
+            "max": 175.588744,
+            "thresholds": {
+                "p(95)<350": false
+            }
+        },
+        "http_req_blocked": {
+            "p(95)": 0.016209150000000002,
+            "avg": 0.01060395997085481,
+            "min": 0.003565,
+            "med": 0.009028,
+            "max": 9.766636,
+            "p(90)": 0.014116600000000005
+        },
+        "create_parallel_latency": {
+            "med": 19.089803500000002,
+            "max": 173.979753,
+            "p(90)": 32.7149835,
+            "p(95)": 38.572100250000005,
+            "avg": 21.527816446135443,
+            "min": 9.326955,
+            "thresholds": {
+                "p(95)<900": false
+            }
+        },
+        "http_req_connecting": {
+            "min": 0,
+            "med": 0,
+            "max": 7.732595,
+            "p(90)": 0,
+            "p(95)": 0,
+            "avg": 0.0003827007832779271
+        },
+        "create_degraded_rate": {
+            "passes": 0,
+            "fails": 43916,
+            "thresholds": {
+                "rate<0.02": false
+            },
+            "value": 0
+        },
+        "create_duplicate_conflict_rate": {
+            "passes": 3841,
+            "fails": 0,
+            "thresholds": {
+                "rate>0.95": false
+            },
+            "value": 1
+        },
+        "http_req_sending": {
+            "min": 0.01313,
+            "med": 0.037861,
+            "max": 18.236597,
+            "p(90)": 0.06236390000000001,
+            "p(95)": 0.0725036,
+            "avg": 0.049176847169725584
+        },
+        "data_received": {
+            "rate": 148522.68825121273,
+            "count": 26751844
+        },
+        "iteration_duration": {
+            "avg": 34.32445389290912,
+            "min": 20.025205,
+            "med": 32.079203500000006,
+            "max": 205.265102,
+            "p(90)": 46.9058665,
+            "p(95)": 53.237597
+        },
+        "dropped_iterations": {
+            "count": 8,
+            "rate": 0.04441493849955546
+        },
+        "create_parallel_success_rate": {
+            "passes": 27620,
+            "fails": 4776,
+            "thresholds": {
+                "rate>0.95": true
+            },
+            "value": 0.8525743919002347
+        },
+        "http_reqs": {
+            "count": 43918,
+            "rate": 243.82690862793459
+        },
+        "create_validation_failure_rate": {
+            "passes": 2881,
+            "fails": 0,
+            "thresholds": {
+                "rate>0.95": false
+            },
+            "value": 1
+        },
+        "http_req_failed": {
+            "passes": 11499,
+            "fails": 32419,
+            "thresholds": {
+                "rate<0.05": true
+            },
+            "value": 0.26182886288082335
+        },
+        "http_req_duration{expected_response:true}": {
+            "avg": 22.1214568758754,
+            "min": 11.446812,
+            "med": 19.609684,
+            "max": 175.588744,
+            "p(90)": 33.429306000000004,
+            "p(95)": 39.46852429999999
+        },
+        "http_req_waiting": {
+            "min": 1.811092,
+            "med": 18.2100975,
+            "max": 175.422105,
+            "p(90)": 31.882104,
+            "p(95)": 37.81690290000001,
+            "avg": 20.145385223279707
+        },
+        "create_duplicate_latency": {
+            "avg": 19.72484165607918,
+            "min": 9.600419,
+            "med": 16.961704,
+            "max": 121.32469,
+            "p(90)": 30.254027,
+            "p(95)": 37.329391,
+            "thresholds": {
+                "p(95)<250": false
+            }
+        },
+        "vus_max": {
+            "value": 46,
+            "min": 38,
+            "max": 46
+        },
+        "http_req_tls_handshaking": {
+            "p(90)": 0,
+            "p(95)": 0,
+            "avg": 0,
+            "min": 0,
+            "med": 0,
+            "max": 0
+        },
+        "create_validation_latency": {
+            "med": 3.265731,
+            "max": 119.463203,
+            "p(90)": 5.540629,
+            "p(95)": 8.141874,
+            "avg": 4.091503927108641,
+            "min": 1.877152,
+            "thresholds": {
+                "p(95)<200": false
+            }
+        },
+        "create_baseline_success_rate": {
+            "passes": 4798,
+            "fails": 0,
+            "thresholds": {
+                "rate>0.98": false
+            },
+            "value": 1
+        },
+        "iterations": {
+            "count": 43916,
+            "rate": 243.81580489330972
+        },
+        "vus": {
+            "value": 8,
+            "min": 5,
+            "max": 19
+        },
+        "http_req_duration": {
+            "p(95)": 38.064517400000014,
+            "avg": 20.300501412177336,
+            "min": 1.877152,
+            "med": 18.3511465,
+            "max": 175.588744,
+            "p(90)": 32.120105200000005,
+            "thresholds": {
+                "p(99)<2000": false
+            }
+        }
+    },
+    "setup_data": {
+        "duplicateUser": {
+            "email": "loadtest-mini-create-duplicate@example.com",
+            "password": "InitPassw0rd!",
+            "phone": "16720000000",
+            "username": "loadtest-mini-create-duplicate"
+        },
+        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQiOiJodHRwczovL2dpdGh1Yi5jb20vbWF4aWFvbHUxOTgxL2NyZXRlbSIsImV4cCI6MTc2Mjg2MzE5NCwiaWF0IjoxNzYyODU5NTk0LCJpc2FkbWluIjoiMSIsImlzcyI6Imh0dHBzOi8vZ2l0aHViLmNvbS9tYXhpYW9sdTE5ODEvY3JldGVtIiwianRpIjoiand0X2x5NDU3a2o5M3o0MHZ3Iiwib3JpZ19pYXQiOjE3NjI4NTk1OTQsInJvbGUiOiJhZG1pbiIsInNlc3Npb25faWQiOiJzZXNzXzY1YTU2NzcyNmY5ODE0MTAiLCJzdWIiOiJhZG1pbiIsInR5cGUiOiJhY2Nlc3MiLCJ1c2VyX2lkIjoiMyIsInVzZXJfc3RhdHVzIjoxLCJ1c2VybmFtZSI6ImFkbWluIn0.vKUofT4V-9ThFtun9KAiIyVQONdz_LzbQI0tBYW4uTc",
+        "baseUrl": "http://127.0.0.1:8088",
+        "dataset": {
+            "isAdminRatio": 0.05,
+            "sleepBaseline": 0.02,
+            "sleepValidation": 0.02,
+            "duplicateUser": {
+                "username": "loadtest-mini-create-duplicate",
+                "email": "loadtest-mini-create-duplicate@example.com",
+                "password": "InitPassw0rd!",
+                "phone": "16720000000"
+            },
+            "extendTemplates": [
+                {
+                    "department": "perf",
+                    "tags": [
+                        "baseline"
+                    ]
+                },
+                {
+                    "department": "guard",
+                    "tags": [
+                        "parallel"
+                    ]
+                }
+            ],
+            "labels": {
+                "origin": "k6",
+                "module": "create"
+            },
+            "maxUsernameLength": 63,
+            "emailDomain": "example.com",
+            "nicknamePool": [
+                "PerfOps",
+                "PerfQA",
+                "PerfSvc"
+            ],
+            "phonePrefix": "167200",
+            "phoneSuffixLength": 5,
+            "requestTimeout": "60s",
+            "sleepParallel": 0.01,
+            "usernamePrefix": "loadtest-mini-create",
+            "basePassword": "InitPassw0rd!",
+            "defaultIsAdmin": 0,
+            "defaultStatus": 1,
+            "extras": {
+                "team": "iam-perf"
+            },
+            "sleepDuplicate": 0.02
+        }
+    }
+}

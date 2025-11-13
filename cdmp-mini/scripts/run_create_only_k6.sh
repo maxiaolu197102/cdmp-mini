@@ -3,11 +3,11 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-用法: run_delete_force_k6.sh -u BASE_URL -d DATASET.json [-t TOKEN | -a USER -p PASS] [-- k6参数]
+用法: run_create_only_k6.sh -u BASE_URL -d DATASET.json [-t TOKEN | -a USER -p PASS] [-- k6参数]
 
 必需参数:
   -u, --base-url        目标 IAM API 根地址 (例如 https://iam.example.com)
-  -d, --dataset         delete_force.js 使用的 JSON 数据集文件路径
+  -d, --dataset         create_only.js 使用的 JSON 数据集文件路径
 
 管理员凭据 (二选一):
   -t, --admin-token     直接传入管理员 access token
@@ -16,7 +16,7 @@ usage() {
 
 可选参数:
       --summary FILE    将 k6 summary 输出到指定文件 (默认写入 output/history 下)
-    --duration DUR    覆盖所有场景的运行时长 (例如 30m)
+    --duration DUR      覆盖所有场景的运行时长 (例如 20m)
     --rate-multiplier X    全局放大场景速率 (默认 1)
     --vus-multiplier X     全局放大预分配 VU 数量 (默认 1)
     --max-vus-multiplier X 全局放大最大 VU 数量 (默认跟随 --vus-multiplier)
@@ -30,8 +30,8 @@ EOF
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PROJECT_ROOT=$(cd "${SCRIPT_DIR}/.." && pwd)
-SCENARIO_FILE="${PROJECT_ROOT}/test/iam-apiserver/user/delete_force/k6/delete_force.js"
-DEFAULT_OUTPUT_DIR="${PROJECT_ROOT}/test/iam-apiserver/user/delete_force/output/history"
+SCENARIO_FILE="${PROJECT_ROOT}/test/iam-apiserver/user/create_only/k6/create_only.js"
+DEFAULT_OUTPUT_DIR="${PROJECT_ROOT}/test/iam-apiserver/user/create_only/output/history"
 
 BASE_URL=""
 ADMIN_TOKEN_VALUE=""
@@ -140,7 +140,7 @@ else
 fi
 
 if [[ ! -f "${SCENARIO_FILE}" ]]; then
-    echo "未找到 delete_force.js: ${SCENARIO_FILE}" >&2
+    echo "未找到 create_only.js: ${SCENARIO_FILE}" >&2
     exit 1
 fi
 
@@ -173,19 +173,19 @@ fi
 
 if [[ -z "${SUMMARY_FILE}" ]]; then
     mkdir -p "${DEFAULT_OUTPUT_DIR}"
-    SUMMARY_FILE="${DEFAULT_OUTPUT_DIR}/delete_force_k6_$(date +%Y%m%d-%H%M%S).json"
+    SUMMARY_FILE="${DEFAULT_OUTPUT_DIR}/create_only_k6_$(date +%Y%m%d-%H%M%S).json"
 else
     mkdir -p "$(dirname "${SUMMARY_FILE}")"
 fi
 
 if [[ -n "${RATE_MULTIPLIER}" ]]; then
-    export DELETE_FORCE_RATE_MULTIPLIER="${RATE_MULTIPLIER}"
+    export CREATE_ONLY_RATE_MULTIPLIER="${RATE_MULTIPLIER}"
 fi
 if [[ -n "${VUS_MULTIPLIER}" ]]; then
-    export DELETE_FORCE_VUS_MULTIPLIER="${VUS_MULTIPLIER}"
+    export CREATE_ONLY_VUS_MULTIPLIER="${VUS_MULTIPLIER}"
 fi
 if [[ -n "${MAX_VUS_MULTIPLIER}" ]]; then
-    export DELETE_FORCE_MAX_VUS_MULTIPLIER="${MAX_VUS_MULTIPLIER}"
+    export CREATE_ONLY_MAX_VUS_MULTIPLIER="${MAX_VUS_MULTIPLIER}"
 fi
 if [[ -n "${ENABLED_SCENARIOS_VALUE}" ]]; then
     export ENABLED_SCENARIOS="${ENABLED_SCENARIOS_VALUE}"
@@ -216,7 +216,7 @@ PY
 fi
 
 export BASE_URL="${BASE_URL}"
-export DELETE_FORCE_DATASET="${DATASET_JSON}"
+export CREATE_ONLY_DATASET="${DATASET_JSON}"
 unset ADMIN_TOKEN ADMIN_USERNAME ADMIN_PASSWORD
 
 if [[ -n "${ADMIN_TOKEN_VALUE}" ]]; then

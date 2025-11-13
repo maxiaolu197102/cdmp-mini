@@ -6,14 +6,14 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 29,
+    "duration_ms": 2,
     "checks": {
       "payload_present": true,
       "username_match": true
     },
     "notes": [
       "管理员精确查询存在的用户",
-      "响应耗时=29.883871ms"
+      "响应耗时=2.797626ms"
     ]
   },
   {
@@ -23,7 +23,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 22,
+    "duration_ms": 2,
     "checks": {
       "username_match": true
     },
@@ -38,7 +38,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 7064,
+    "duration_ms": 4,
     "checks": {
       "email_match": true,
       "single_result": true,
@@ -55,7 +55,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 5,
+    "duration_ms": 2,
     "checks": {
       "ignored_sort_param": true
     },
@@ -70,7 +70,7 @@
     "http_status": 400,
     "code": 110004,
     "message": "[code: 110004] 参数错误:map[ListOptions.Limit:Invalid value: -1: 必须在0到10000之间（包含边界）]",
-    "duration_ms": 16,
+    "duration_ms": 2,
     "checks": {
       "limit_rejected": true
     },
@@ -85,7 +85,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 52,
+    "duration_ms": 3,
     "checks": {
       "max_limit_success": true
     },
@@ -100,7 +100,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 8,
+    "duration_ms": 2,
     "checks": {
       "empty_result": true
     },
@@ -115,7 +115,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 4,
+    "duration_ms": 3,
     "checks": {
       "nickname_preserved": true
     },
@@ -130,7 +130,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 7,
+    "duration_ms": 4,
     "checks": {
       "length": true,
       "username_match": true
@@ -146,7 +146,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 50,
+    "duration_ms": 3,
     "checks": {
       "immediate_visible": true
     },
@@ -161,7 +161,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 127,
+    "duration_ms": 8,
     "checks": {
       "retrievable_post_update": true,
       "update_request_success": true
@@ -178,7 +178,7 @@
     "http_status": 404,
     "code": 110001,
     "message": "[code: 110001] 用户不存在或已删除",
-    "duration_ms": 538,
+    "duration_ms": 306,
     "checks": {
       "not_found_code": true
     },
@@ -193,7 +193,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 37,
+    "duration_ms": 2,
     "checks": {
       "deleted_not_listed": true
     },
@@ -223,7 +223,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "用户更新成功",
-    "duration_ms": 49,
+    "duration_ms": 5,
     "checks": {
       "status_update_success": true
     },
@@ -238,7 +238,7 @@
     "http_status": 404,
     "code": 100005,
     "message": "[code: 100005] 业务不存在",
-    "duration_ms": 1,
+    "duration_ms": 0,
     "checks": {
       "rejected": true
     },
@@ -253,7 +253,7 @@
     "http_status": 400,
     "code": 100004,
     "message": "[code: 100004] 用户名不合法:名称部分必须由字母、数字、'-'、'_'或'.'组成，且首尾必须为字母或数字（例如：'MyName'，或'my.name'，或'123-abc'，用于验证的正则表达式：'([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]'）",
-    "duration_ms": 3,
+    "duration_ms": 1,
     "checks": {
       "no_data_leak": true
     },
@@ -268,7 +268,7 @@
     "http_status": 400,
     "code": 100004,
     "message": "[code: 100004] 用户名不合法:名称部分长度不能超过63个字符",
-    "duration_ms": 43,
+    "duration_ms": 1,
     "checks": {
       "handled": true
     },
@@ -283,7 +283,7 @@
     "http_status": 401,
     "code": 100205,
     "message": "[code: 100205] 缺少Authorization头，支持格式：\n1. Basic认证：Authorization: Basic {base64(username:password)}\n2. JWT认证：Authorization: Bearer {jwt-token}",
-    "duration_ms": 1,
+    "duration_ms": 0,
     "checks": {
       "missing_header": true
     },
@@ -298,7 +298,7 @@
     "http_status": 401,
     "code": 100208,
     "message": "[code: 100208] invalid character '\\u008a' looking for beginning of value",
-    "duration_ms": 20,
+    "duration_ms": 0,
     "checks": {
       "token_invalid": true
     },
@@ -313,7 +313,7 @@
     "http_status": 403,
     "code": 100207,
     "message": "[code: 100207] 非管理员仅允许操作自己的账号，不允许修改他人信息",
-    "duration_ms": 8,
+    "duration_ms": 1,
     "checks": {
       "access_blocked": true
     },
@@ -328,7 +328,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 4,
+    "duration_ms": 1,
     "checks": {
       "no_password": true,
       "no_token_field": true
@@ -344,7 +344,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 7,
+    "duration_ms": 1,
     "checks": {
       "business_code": true,
       "duration_recorded": true,
@@ -352,7 +352,7 @@
     },
     "notes": [
       "记录查询延迟与业务码",
-      "duration=7.005934ms"
+      "duration=1.717044ms"
     ]
   },
   {
@@ -367,7 +367,7 @@
     "notes": [
       "批量测试数据分布验证",
       "bulk_count=12",
-      "hot_users=[get_bulk_00_1762773825770938522_94578 get_bulk_01_1762773832514678563_49958 get_bulk_02_1762773832959174542_60227]"
+      "hot_users=[get_bulk_00_1762933328360124005_18937 get_bulk_01_1762933328795428380_79488 get_bulk_02_1762933329443900309_49275]"
     ]
   }
 ]
