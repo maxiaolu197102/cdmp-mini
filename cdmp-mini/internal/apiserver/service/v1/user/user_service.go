@@ -20,6 +20,8 @@ import (
 
 	storectx "github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/store"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/store/interfaces"
+	createpipeline "github.com/maxiaolu1981/cretem/cdmp-mini/internal/common/service/create"
+	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/common/service/unique"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/audit"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/code"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/metrics"
@@ -67,6 +69,7 @@ type UserService struct {
 	Audit              *audit.Manager
 	pendingCoordinator *usercache.PendingCoordinator
 	group              singleflight.Group
+	createPipeline     *createpipeline.Pipeline[*v1.User]
 
 	contactWarmupMu        sync.Mutex
 	contactWarming         bool
@@ -294,6 +297,7 @@ func NewUserService(store interfaces.Factory, redis *storage.RedisCluster, opts 
 		}
 		svc.pendingCoordinator = usercache.NewPendingCoordinator(redis, cfg)
 	}
+	svc.initCreatePipeline()
 	return svc
 }
 
@@ -1716,15 +1720,20 @@ func (u *UserService) ensureContactUniqueness(ctx context.Context, user *v1.User
 
 	if email != "" {
 		emailCopy := email
-		if err := u.ensureContactUnique(ctx,
+		if err := u.ensureContactUnique(
+			ctx,
+			store,
 			u.generateEmailCacheKey(emailCopy),
 			user.Name,
 			"邮箱",
 			emailCopy,
 			"email",
-			func(lookupCtx context.Context) (*v1.User, error) {
+			func(lookupCtx context.Context, fieldStore interfaces.UserStore, value string) (*v1.User, error) {
 				if err := lookupCtx.Err(); err != nil {
 					return nil, err
+				}
+				if fieldStore == nil {
+					fieldStore = store
 				}
 				if existing := preflight["email"]; existing != nil {
 					return existing, nil
@@ -1732,7 +1741,7 @@ func (u *UserService) ensureContactUniqueness(ctx context.Context, user *v1.User
 				if runPreflight {
 					return nil, errors.WithCode(code.ErrUserNotFound, "用户不存在")
 				}
-				return store.GetByEmail(lookupCtx, emailCopy, u.Options)
+				return fieldStore.GetByEmail(lookupCtx, value, u.Options)
 			},
 		); err != nil {
 			return nil, false, err
@@ -1741,15 +1750,20 @@ func (u *UserService) ensureContactUniqueness(ctx context.Context, user *v1.User
 
 	if phone != "" {
 		phoneCopy := phone
-		if err := u.ensureContactUnique(ctx,
+		if err := u.ensureContactUnique(
+			ctx,
+			store,
 			u.generatePhoneCacheKey(phoneCopy),
 			user.Name,
 			"手机号",
 			phoneCopy,
 			"phone",
-			func(lookupCtx context.Context) (*v1.User, error) {
+			func(lookupCtx context.Context, fieldStore interfaces.UserStore, value string) (*v1.User, error) {
 				if err := lookupCtx.Err(); err != nil {
 					return nil, err
+				}
+				if fieldStore == nil {
+					fieldStore = store
 				}
 				if existing := preflight["phone"]; existing != nil {
 					return existing, nil
@@ -1757,7 +1771,7 @@ func (u *UserService) ensureContactUniqueness(ctx context.Context, user *v1.User
 				if runPreflight {
 					return nil, errors.WithCode(code.ErrUserNotFound, "用户不存在")
 				}
-				return store.GetByPhone(lookupCtx, phoneCopy, u.Options)
+				return fieldStore.GetByPhone(lookupCtx, value, u.Options)
 			},
 		); err != nil {
 			return nil, false, err
@@ -1767,134 +1781,116 @@ func (u *UserService) ensureContactUniqueness(ctx context.Context, user *v1.User
 	return preflight, usernameChecked, nil
 }
 
+// ensureContactUnique 利用泛型唯一性检查器验证单个联系方式的占用情况。
+// 该函数将用户服务的缓存、降级与错误码策略注入通用检查器，避免重复实现表字段的唯一性校验。
+//
+// param ctx: 请求上下文，建议包含 trace 与超时控制，不可为nil。
+// param store: 只读用户存储接口，需支持邮箱或手机号等字段查重。
+// param cacheKey: 联系方式对应的缓存键，不能为空。
+// param allowedOwner: 当前允许占用该字段的用户名，可为空字符串。
+// param fieldLabel: 字段中文名，用于提示信息。
+// param fieldValue: 待校验的字段值，需提前归一化。
+// param fieldKey: 字段标识，用于链路指标记录。
+// param lookup: 查重函数，接收上下文、存储与字段值，返回命中用户或 ErrUserNotFound。
+//
+// returns: 唯一性通过时返回nil；冲突时返回携带 ErrValidation 的错误；当底层依赖不可用且无法降级时返回对应错误码。
+//
+// note: 函数在降级模式下会自动写入占位符，并依赖数据库唯一索引兜底。
 func (u *UserService) ensureContactUnique(
 	ctx context.Context,
+	store interfaces.UserStore,
 	cacheKey string,
 	allowedOwner string,
 	fieldLabel string,
 	fieldValue string,
 	fieldKey string,
-	lookup func(context.Context) (*v1.User, error),
-) (err error) {
-	if cacheKey == "" {
+	lookup func(context.Context, interfaces.UserStore, string) (*v1.User, error),
+) error {
+	if strings.TrimSpace(cacheKey) == "" {
 		return nil
 	}
-
-	if userctx.IsCreateDegraded(ctx) {
-		if u.Redis != nil {
-			u.ensureContactPlaceholder(ctx, cacheKey, allowedOwner)
-		}
-		return nil
+	if store == nil {
+		return errors.WithCode(code.ErrDatabase, "用户存储未就绪")
 	}
 
-	if u.Redis == nil {
-		dbStart := time.Now()
-		existing, lookupErr := lookup(ctx)
-		u.recordUserCreateStep(ctx, "ensure_contact_lookup", fieldKey, allowedOwner, time.Since(dbStart), lookupErr)
-		if lookupErr != nil {
-			if errors.IsCode(lookupErr, code.ErrUserNotFound) {
-				return nil
-			}
-			err = lookupErr
-			return err
-		}
-		if existing == nil || strings.EqualFold(existing.Name, allowedOwner) {
-			return nil
-		}
-		err = errors.WithCode(code.ErrValidation, "%s已被占用: %s", fieldLabel, fieldValue)
-		return err
+	maxRetries := 1
+	if u.Options != nil && u.Options.RedisOptions != nil && u.Options.RedisOptions.MaxRetries > 0 {
+		maxRetries = u.Options.RedisOptions.MaxRetries
 	}
 
-	start := time.Now()
-	placeholderAcquired := false
-	defer func() {
-		u.recordUserCreateStep(ctx, "ensure_contact_unique", fieldKey, allowedOwner, time.Since(start), err)
-		if placeholderAcquired && err != nil && !errors.IsCode(err, code.ErrValidation) {
-			if _, delErr := u.Redis.DeleteKey(ctx, cacheKey); delErr != nil {
-				log.Warnw("释放唯一性占位失败", "key", cacheKey, "field", fieldKey, "error", delErr)
-			}
-		}
-	}()
-
-	cachedOwner, cacheErr := u.Redis.GetKey(ctx, cacheKey)
-	if cacheErr != nil {
-		if !errors.Is(cacheErr, redis.Nil) {
-			log.Warnf("%s唯一性缓存读取失败: key=%s err=%v", fieldLabel, cacheKey, cacheErr)
-		}
-	} else if cachedOwner != "" {
-		if strings.EqualFold(cachedOwner, allowedOwner) {
-			return nil
-		}
-		return errors.WithCode(code.ErrValidation, "%s已被占用: %s", fieldLabel, fieldValue)
-	}
-
-	// 缓存未命中或键不存在时，尝试基于 SETNX 占位，降低并发探库次数
-	if errors.Is(cacheErr, redis.Nil) || cachedOwner == "" {
-		placeholderValue := allowedOwner
-		if placeholderValue == "" {
-			placeholderValue = RATE_LIMIT_PREVENTION
-		}
-		ok, setErr := u.Redis.SetNX(ctx, cacheKey, placeholderValue, contactPlaceholderTTL)
-		if setErr != nil {
-			log.Warnf("%s唯一性占位失败: key=%s err=%v", fieldLabel, cacheKey, setErr)
-		} else if ok {
-			placeholderAcquired = true
-			cachedOwner = placeholderValue
-			if u.contactCacheReady.Load() && allowedOwner != "" && !strings.EqualFold(allowedOwner, RATE_LIMIT_PREVENTION) {
-				return nil
-			}
-		} else {
-			if refreshed, err := u.Redis.GetKey(ctx, cacheKey); err == nil {
-				cachedOwner = refreshed
-			}
-		}
-		if cachedOwner != "" {
-			if strings.EqualFold(cachedOwner, allowedOwner) && !placeholderAcquired {
-				return nil
-			}
-			if !strings.EqualFold(cachedOwner, allowedOwner) {
-				return errors.WithCode(code.ErrValidation, "%s已被占用: %s", fieldLabel, fieldValue)
-			}
-		}
-	}
-
-	result, retryErr := util.RetryWithBackoff(u.Options.RedisOptions.MaxRetries, isRetryableError, func() (interface{}, error) {
-		dbCtx, cancel := u.newDBContext(ctx, u.contactLookupTimeout())
-		defer cancel()
-
-		dbStart := time.Now()
-		existing, lookupErr := lookup(dbCtx)
-		u.recordUserCreateStep(ctx, "ensure_contact_lookup", fieldKey, allowedOwner, time.Since(dbStart), lookupErr)
-		if lookupErr != nil {
-			if errors.IsCode(lookupErr, code.ErrUserNotFound) {
-				return nil, nil
-			}
-			return nil, lookupErr
-		}
-		return existing, nil
+	checker := unique.NewChecker[interfaces.UserStore, *v1.User](unique.CheckerConfig[interfaces.UserStore, *v1.User]{
+		Store:               store,
+		Cache:               u.Redis,
+		PlaceholderTTL:      contactPlaceholderTTL,
+		CacheTTL:            contactCacheTTL,
+		PlaceholderFallback: RATE_LIMIT_PREVENTION,
+		CacheReady: func() bool {
+			return u.contactCacheReady.Load()
+		},
+		DegradeActive: userctx.IsCreateDegraded,
+		EnsurePlaceholder: func(innerCtx context.Context, key string, owner string) {
+			u.ensureContactPlaceholder(innerCtx, key, owner)
+		},
+		MarkDegraded: func(innerCtx context.Context, reason string, kv ...interface{}) {
+			u.markCreateDegraded(innerCtx, reason, kv...)
+		},
+		Retry:          util.RetryWithBackoff,
+		RetryPredicate: isRetryableError,
+		MaxRetries:     maxRetries,
+		ShouldDegrade:  shouldDegradeForError,
+		ShouldReleasePlaceholder: func(checkErr error) bool {
+			return !errors.IsCode(checkErr, code.ErrValidation)
+		},
+		NewLookupContext: u.newDBContext,
+		LookupTimeout:    u.contactLookupTimeout(),
+		IsNotFound: func(err error) bool {
+			return errors.IsCode(err, code.ErrUserNotFound)
+		},
+		IsCacheMiss: func(err error) bool {
+			return errors.Is(err, redis.Nil)
+		},
+		RecordStep: u.recordUserCreateStep,
+		Logger: unique.LoggerHooks{
+			Warn: func(msg string, kv ...interface{}) {
+				log.Warnw(msg, kv...)
+			},
+			Error: func(msg string, kv ...interface{}) {
+				log.Errorw(msg, kv...)
+			},
+		},
 	})
-	if retryErr != nil {
-		if shouldDegradeForError(retryErr) {
-			u.markCreateDegraded(ctx, "contact_lookup_timeout", "field", fieldKey, "owner", allowedOwner)
-			u.ensureContactPlaceholder(ctx, cacheKey, allowedOwner)
-			err = nil
-			return nil
-		}
-		err = retryErr
-		return err
-	}
-	if result == nil {
-		return nil
-	}
-	existing := result.(*v1.User)
-	if strings.EqualFold(existing.Name, allowedOwner) {
-		return nil
+
+	fieldCfg := unique.FieldConfig[interfaces.UserStore, *v1.User]{
+		FieldLabel:       fieldLabel,
+		FieldKey:         fieldKey,
+		FieldValue:       fieldValue,
+		AllowedOwner:     allowedOwner,
+		CacheKey:         cacheKey,
+		PlaceholderValue: allowedOwner,
+		Lookup: func(lookupCtx context.Context, fieldStore interfaces.UserStore, value string) (*v1.User, error) {
+			return lookup(lookupCtx, fieldStore, value)
+		},
+		ExtractOwner: func(entity *v1.User) string {
+			if entity == nil {
+				return ""
+			}
+			return entity.Name
+		},
+		ConflictError: func(label, value string) error {
+			return errors.WithCode(code.ErrValidation, "%s已被占用: %s", label, value)
+		},
+		IsAllowedOwner: func(existingOwner, owner string) bool {
+			return strings.EqualFold(existingOwner, owner)
+		},
+		SkipPlaceholderLookup: func(owner string) bool {
+			return owner != "" && !strings.EqualFold(owner, RATE_LIMIT_PREVENTION)
+		},
+		DegradeReason: "contact_lookup_timeout",
+		DegradeKV:     []interface{}{"field", fieldKey, "owner", allowedOwner},
+		StepName:      "ensure_contact_unique",
 	}
 
-	if setErr := u.Redis.SetKey(ctx, cacheKey, existing.Name, contactCacheTTL); setErr != nil {
-		log.Warnf("%s唯一性缓存写入失败: key=%s err=%v", fieldLabel, cacheKey, setErr)
-	}
-	return errors.WithCode(code.ErrValidation, "%s已被占用: %s", fieldLabel, fieldValue)
+	return checker.EnsureFieldUnique(ctx, fieldCfg)
 }
 
 func (u *UserService) warmContactCache() error {

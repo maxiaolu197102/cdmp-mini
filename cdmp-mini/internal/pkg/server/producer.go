@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/IBM/sarama"
+	createproducer "github.com/maxiaolu1981/cretem/cdmp-mini/internal/common/producer/create"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/code"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/metrics"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/options"
@@ -29,12 +30,13 @@ import (
 var _ producer.MessageProducer = (*UserProducer)(nil)
 
 type UserProducer struct {
-	producer     sarama.AsyncProducer
-	kafkaOptions *options.KafkaOptions
-	wg           sync.WaitGroup
-	shutdown     chan struct{}
-	limiter      *ratelimiter.RateLimiterController
-	fallbackDir  string // 新增：降级文件目录
+	producer       sarama.AsyncProducer
+	kafkaOptions   *options.KafkaOptions
+	wg             sync.WaitGroup
+	shutdown       chan struct{}
+	limiter        *ratelimiter.RateLimiterController
+	fallbackDir    string // 新增：降级文件目录
+	createPipeline *createproducer.Pipeline[*v1.User]
 }
 
 type fallbackMessage struct {
@@ -50,6 +52,8 @@ type fallbackHeader struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
 }
+
+type producerSpanKey struct{}
 
 type producerMetadata struct {
 	topic         string
@@ -432,6 +436,8 @@ func NewUserProducer(
 		go up.runFallbackCompensator()
 	}
 
+	up.initCreatePipeline()
+
 	return up, nil
 }
 
@@ -503,9 +509,125 @@ func (p *UserProducer) handleErrors() {
 //   - 序列化或发送失败返回对应错误码
 //   - 限流被拒绝时返回 ErrRateLimitExceeded
 func (p *UserProducer) SendUserCreateMessage(ctx context.Context, user *v1.User) error {
-	trace.AddRequestTag(ctx, "username", user.Name)
-	log.Debugf("[Producer] SendUserCreateMessage: username=%s", user.Name)
-	return p.sendUserMessage(ctx, user, OperationCreate, UserCreateTopic)
+	if p == nil {
+		return nil
+	}
+	if p.createPipeline == nil {
+		p.initCreatePipeline()
+	}
+	if p.createPipeline == nil {
+		return errors.WithCode(code.ErrServerBusy, "create message pipeline 未初始化")
+	}
+	return p.createPipeline.Execute(ctx, user)
+}
+
+func (p *UserProducer) initCreatePipeline() {
+	if p == nil || p.createPipeline != nil {
+		return
+	}
+
+	cfg := createproducer.PipelineConfig[*v1.User]{
+		Name:      "user-create",
+		Operation: OperationCreate,
+		Topic:     UserCreateTopic,
+		Begin: func(ctx context.Context, user *v1.User, operation, topic string) (context.Context, func(error)) {
+			spanCtx, span := trace.StartSpan(ctx, "kafka-producer", fmt.Sprintf("send_%s", operation))
+			if spanCtx != nil {
+				ctx = spanCtx
+			}
+			if user != nil {
+				trace.AddRequestTag(ctx, "username", user.Name)
+			}
+			trace.AddRequestTag(ctx, "topic", topic)
+			trace.AddRequestTag(ctx, "operation", operation)
+			ctx = context.WithValue(ctx, producerSpanKey{}, span)
+			start := time.Now()
+			return ctx, func(err error) {
+				status := "success"
+				codeStr := strconv.Itoa(code.ErrSuccess)
+				if err != nil {
+					status = "error"
+					if c := errors.GetCode(err); c != 0 {
+						codeStr = strconv.Itoa(c)
+					} else {
+						codeStr = strconv.Itoa(code.ErrUnknown)
+					}
+				}
+				username := ""
+				if user != nil {
+					username = user.Name
+				}
+				if span != nil {
+					trace.EndSpan(span, status, codeStr, map[string]interface{}{
+						"username":  username,
+						"topic":     topic,
+						"operation": operation,
+					})
+				}
+				metrics.RecordKafkaProducerOperation(topic, operation, time.Since(start).Seconds(), err, false)
+			}
+		},
+		Wait: func(ctx context.Context) error {
+			if p.limiter == nil {
+				return nil
+			}
+			if err := p.limiter.Wait(ctx); err != nil {
+				return errors.WithCode(code.ErrRateLimitExceeded, "producer rate limit exceeded: %v", err)
+			}
+			return nil
+		},
+		Marshal: func(user *v1.User) ([]byte, error) {
+			data, err := jsonCodec.Marshal(user)
+			if err != nil {
+				log.Errorf("Failed to marshal user %s for topic %s, operation %s: %v", user.Name, UserCreateTopic, OperationCreate, err)
+				return nil, errors.WithCode(code.ErrEncodingJSON, "failed to marshal user message: %v", err)
+			}
+			return data, nil
+		},
+		LogPayload: func(user *v1.User, payload []byte) {
+			log.Debugw("User message payload", "operation", OperationCreate, "topic", UserCreateTopic, "username", user.Name, "payload", string(payload))
+			if strings.HasPrefix(user.Name, "lock_case_") {
+				log.Infow("[lock-debug-producer]", "operation", OperationCreate, "topic", UserCreateTopic, "username", user.Name, "payload", string(payload))
+				appendLockDebug(fmt.Sprintf("producer|op=%s|user=%s|payload=%s", OperationCreate, user.Name, string(payload)))
+			}
+		},
+		Key: func(user *v1.User) string {
+			key := strings.TrimSpace(user.Name)
+			if key == "" {
+				key = strconv.FormatUint(user.ID, 10)
+			}
+			return key
+		},
+		Headers: func(_ *v1.User, ts time.Time) []sarama.RecordHeader {
+			return []sarama.RecordHeader{
+				{Key: []byte(HeaderOperation), Value: []byte(OperationCreate)},
+				{Key: []byte(HeaderOriginalTimestamp), Value: []byte(ts.Format(time.RFC3339))},
+				{Key: []byte(HeaderRetryCount), Value: []byte("0")},
+			}
+		},
+		Attach: func(ctx context.Context, msg *sarama.ProducerMessage) error {
+			injectTraceHeader(ctx, msg)
+			meta := attachProducerMetadata(msg, msg.Topic, OperationCreate, trace.TraceIDFromContext(ctx))
+			if meta != nil {
+				if span, ok := ctx.Value(producerSpanKey{}).(*trace.Span); ok && span != nil {
+					meta.parentSpanID = span.ID
+				}
+				meta.markEnqueued()
+			}
+			return nil
+		},
+		Description: func(user *v1.User) string {
+			return fmt.Sprintf("user message operation=%s topic=%s username=%s", OperationCreate, UserCreateTopic, user.Name)
+		},
+		Enqueue: func(ctx context.Context, msg *sarama.ProducerMessage, detail string) error {
+			if detail == "" {
+				detail = fmt.Sprintf("user message operation=%s topic=%s", OperationCreate, UserCreateTopic)
+			}
+			return p.enqueueOrFallback(ctx, msg, detail)
+		},
+	}
+
+	p.createPipeline = createproducer.NewPipeline[*v1.User](cfg)
 }
 
 func (p *UserProducer) SendUserUpdateMessage(ctx context.Context, user *v1.User) error {

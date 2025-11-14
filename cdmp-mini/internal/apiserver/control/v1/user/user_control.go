@@ -1,21 +1,25 @@
 package user
 
 import (
+	createcontrol "github.com/maxiaolu1981/cretem/cdmp-mini/internal/common/control/create"
+
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/options"
 	service "github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/service/v1"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/store/interfaces"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/server/producer"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/pkg/storage"
 
-	v1 "github.com/maxiaolu1981/cretem/nexuscore/component-base/meta/v1"
+	v1 "github.com/maxiaolu1981/cretem/nexuscore/api/apiserver/v1"
+	metav1 "github.com/maxiaolu1981/cretem/nexuscore/component-base/meta/v1"
 	"github.com/maxiaolu1981/cretem/nexuscore/component-base/validation"
 	"github.com/maxiaolu1981/cretem/nexuscore/component-base/validation/field"
 )
 
 type UserController struct {
-	srv      service.ServiceManager
-	options  *options.Options
-	Producer producer.MessageProducer
+	srv           service.ServiceManager
+	options       *options.Options
+	Producer      producer.MessageProducer
+	createHandler *createcontrol.Handler[*v1.User]
 }
 
 // NewUserController creates a user handler.
@@ -37,7 +41,7 @@ func NewUserController(store interfaces.Factory,
 }
 
 // BusinessValidateListOptions 业务层验证函数
-func (u *UserController) validateListOptions(opts *v1.ListOptions) field.ErrorList {
+func (u *UserController) validateListOptions(opts *metav1.ListOptions) field.ErrorList {
 
 	return validation.ValidateListOptionsBase(opts)
 }

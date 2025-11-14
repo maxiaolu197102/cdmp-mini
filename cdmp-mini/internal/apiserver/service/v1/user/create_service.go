@@ -2,17 +2,17 @@ package user
 
 import (
 	"context"
+	"strconv"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
-	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/options"
+	createpipeline "github.com/maxiaolu1981/cretem/cdmp-mini/internal/common/service/create"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/code"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/trace"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/usercache"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/userctx"
 
-	"strconv"
-
+	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/options"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/pkg/log"
 	v1 "github.com/maxiaolu1981/cretem/nexuscore/api/apiserver/v1"
 	"github.com/maxiaolu1981/cretem/nexuscore/component-base/auth"
@@ -22,46 +22,79 @@ import (
 
 // Create 处理用户创建请求的主流程
 //
-// 串联联系人唯一性预检、用户名存在性确认、Kafka 占位标记及消息发送，对整个创建链路进行追踪埋点并记录关键步骤耗时。
-// 支持前端或其他微服务发起的用户创建操作，默认依赖 Redis 缓存、数据库及 Kafka 生产者组件已初始化。
+// 调用通用创建管道完成字段归一化、唯一性校验、pending 标记和 Kafka 发送；
+// 通过 createPipeline 提供的钩子保持与历史逻辑一致，实现可配置的表级复用模式。
 //
-// 参数：
+// param ctx: 上下文，需传入调用方请求上下文，包含 trace、超时时间等控制信息。
+// param user: 待创建的用户实体，要求姓名、密码、邮箱/手机在进入函数前已做基本校验。
+// param opts: 标准创建选项，目前未使用，保留兼容性。
+// param opt: 服务运行期配置选项，目前未使用，保留兼容性。
 //
-//	ctx: 上下文，需传入调用方请求上下文，包含 trace、超时时间等控制信息
-//	user: 待创建的用户实体，要求姓名、密码、邮箱/手机在进入函数前已做基本校验
-//	opts: 标准的创建选项，控制乐观锁、幂等等行为
-//	opt: 服务运行期配置选项，提供缓存、哈希、Kafka 等依赖开关
+// returns: 若创建成功返回 nil；任一步骤失败则返回携带业务码的错误。
+func (u *UserService) Create(ctx context.Context, user *v1.User, opts metav1.CreateOptions, opt *options.Options) error {
+	if u == nil {
+		return errors.WithCode(code.ErrServerBusy, "用户服务未初始化")
+	}
+	if user == nil {
+		return errors.WithCode(code.ErrInvalidParameter, "用户信息为空")
+	}
+
+	// 保留参数以兼容接口签名
+	_ = opts
+	_ = opt
+
+	if u.createPipeline == nil {
+		u.initCreatePipeline()
+	}
+	if u.createPipeline == nil {
+		return errors.WithCode(code.ErrServerBusy, "创建管道未初始化")
+	}
+
+	return u.createPipeline.Execute(ctx, user)
+}
+
+// initCreatePipeline 根据用户表规则初始化通用创建管道。
 //
-// 返回值：
+// note: 该函数幂等，重复调用不会重新分配管道实例。
+func (u *UserService) initCreatePipeline() {
+	if u == nil || u.createPipeline != nil {
+		return
+	}
+
+	cfg := createpipeline.PipelineConfig[*v1.User]{
+		Name:              "users",
+		Begin:             u.createBeginHook,
+		Normalize:         u.normalizeUserForCreate,
+		BeforeUnique:      u.prepareUserForCreate,
+		EnsureUnique:      u.ensureUserUnique,
+		ResolveExistence:  u.resolveUserExistence,
+		HandleExisting:    u.handleUserExisting,
+		MarkPending:       u.markUserPendingForCreate,
+		AfterPending:      u.afterUserPending,
+		SendCreateMessage: u.sendUserCreateMessage,
+	}
+
+	u.createPipeline = createpipeline.NewPipeline[*v1.User](cfg)
+}
+
+// createBeginHook 创建顶层链路追踪并返回收尾函数。
 //
-//	err: 如果创建流程任何阶段失败，返回携带业务码的错误，nil 表示成功提交到 Kafka
+// param ctx: 调用方上下文。
+// param user: 当前待创建的用户。
 //
-// 示例：
-//
-//	err := userService.Create(ctx, user, metav1.CreateOptions{}, optionsInstance)
-//	if err != nil {
-//	    // 记录错误并反馈给调用方
-//	}
-//
-// 注意事项：
-//   - 调用前应确保 user.Name 已去除首尾空格且满足唯一性要求
-//   - 函数内部会对密码重新哈希，调用方无需重复加密
-//
-// 异常情况：
-//   - Kafka 未初始化或发送失败将导致返回 ErrKafkaFailed
-//   - 数据库或缓存超时会触发降级逻辑或直接返回相应错误码
-func (u *UserService) Create(ctx context.Context, user *v1.User, opts metav1.CreateOptions, opt *options.Options) (err error) {
-	// 创建请求入口：开启顶级链路追踪并写入用户名标签
-	ctx, span := trace.StartSpan(ctx, "user-service", "create")
-	ctx = userctx.WithCreateState(ctx)
-	trace.AddRequestTag(ctx, "username", user.Name)
+// returns: 带有创建状态的新上下文及结束函数。
+func (u *UserService) createBeginHook(ctx context.Context, user *v1.User) (context.Context, func(error)) {
+	spanCtx, span := trace.StartSpan(ctx, "user-service", "create")
+	spanCtx = userctx.WithCreateState(spanCtx)
+	trace.AddRequestTag(spanCtx, "username", user.Name)
+
 	businessCode := strconv.Itoa(code.ErrSuccess)
 	spanStatus := "success"
-	defer func() {
-		// 记录执行结果并收尾顶级 span
-		if err != nil {
+
+	end := func(execErr error) {
+		if execErr != nil {
 			spanStatus = "error"
-			if c := errors.GetCode(err); c != 0 {
+			if c := errors.GetCode(execErr); c != 0 {
 				businessCode = strconv.Itoa(c)
 			} else {
 				businessCode = strconv.Itoa(code.ErrUnknown)
@@ -70,18 +103,37 @@ func (u *UserService) Create(ctx context.Context, user *v1.User, opts metav1.Cre
 		trace.EndSpan(span, spanStatus, businessCode, map[string]interface{}{
 			"username": user.Name,
 		})
-	}()
+	}
 
-	// 统一规整邮箱和手机号，确保后续索引和缓存命中
+	return spanCtx, end
+}
+
+// normalizeUserForCreate 统一规整联系方式字段。
+//
+// param user: 当前待创建的用户。
+func (u *UserService) normalizeUserForCreate(user *v1.User) {
+	if user == nil {
+		return
+	}
 	user.Email = usercache.NormalizeEmail(user.Email)
 	user.Phone = usercache.NormalizePhone(user.Phone)
+}
 
-	// 对密码进行加密，避免在控制层重复执行
+// prepareUserForCreate 在唯一性校验前执行密码加密和缓存预热。
+//
+// param ctx: 链路上下文。
+// param user: 当前待创建的用户。
+//
+// returns: 成功返回 nil，失败时返回 ErrEncrypt 或相关错误。
+func (u *UserService) prepareUserForCreate(ctx context.Context, user *v1.User) error {
+	if user == nil {
+		return errors.WithCode(code.ErrInvalidParameter, "用户信息为空")
+	}
+
 	passwordStart := time.Now()
 	if user.Password != "" {
-		// 如果配置了自定义哈希参数，这里加载后执行加密
 		hashCfg := auth.HashConfig{}
-		if u != nil && u.Options != nil && u.Options.ServerRunOptions != nil {
+		if u.Options != nil && u.Options.ServerRunOptions != nil {
 			hashCfg = u.Options.ServerRunOptions.HashConfig()
 		}
 		hashed, hashErr := auth.EncryptWithConfig(user.Password, hashCfg)
@@ -93,164 +145,225 @@ func (u *UserService) Create(ctx context.Context, user *v1.User, opts metav1.Cre
 		user.Password = hashed
 	} else {
 		u.recordUserCreateStep(ctx, "encrypt_password", "password", user.Name, time.Since(passwordStart), nil)
-
 	}
-	// 首次写请求触发联系方式缓存预热，避免后续命中冷缓存
+
 	u.ensureContactCacheReady()
+	return nil
+}
 
-	var (
-		contactsErr       error         //联系人唯一性检查的错误
-		existingUser      *v1.User      // 已存在的用户（用于判断是否重复）
-		existErr          error         // 检查用户是否存在的错误
-		contactsDuration  time.Duration //		联系人检查耗时
-		existenceDuration time.Duration //		用户存在性检查耗时
-	)
+// ensureUserUnique 执行联系方式唯一性检查并包装返回值。
+//
+// param ctx: 链路上下文。
+// param user: 当前待创建的用户。
+//
+// returns: 返回预检结果与错误信息。
+func (u *UserService) ensureUserUnique(ctx context.Context, user *v1.User) (createpipeline.PreflightResult[*v1.User], error) {
+	result := createpipeline.PreflightResult[*v1.User]{
+		Conflicts: make(map[string]*v1.User),
+	}
 
-	// 执行邮箱/手机号唯一性检查，单独采样耗时
-	contactCtx, contactSpan := trace.StartSpan(ctx, "user-service", "ensure_contacts_unique")
-	contactsStart := time.Now()
-	contactHits, usernamePreflighted, errEnsure := u.ensureContactUniqueness(contactCtx, user)
-	contactsDuration = time.Since(contactsStart)
-	contactsErr = errEnsure
-	contactStatus := "success"
-	contactCode := strconv.Itoa(code.ErrSuccess)
-	if contactsErr != nil {
-		contactStatus = "error"
-		if c := errors.GetCode(contactsErr); c != 0 {
-			contactCode = strconv.Itoa(c)
+	ensureCtx, span := trace.StartSpan(ctx, "user-service", "ensure_contacts_unique")
+	start := time.Now()
+	conflicts, usernameChecked, err := u.ensureContactUniqueness(ensureCtx, user)
+	duration := time.Since(start)
+
+	status := "success"
+	codeStr := strconv.Itoa(code.ErrSuccess)
+	if err != nil {
+		status = "error"
+		if c := errors.GetCode(err); c != 0 {
+			codeStr = strconv.Itoa(c)
 		} else {
-			contactCode = strconv.Itoa(code.ErrUnknown)
+			codeStr = strconv.Itoa(code.ErrUnknown)
 		}
 	}
-	trace.EndSpan(contactSpan, contactStatus, contactCode, map[string]interface{}{
+
+	trace.EndSpan(span, status, codeStr, map[string]interface{}{
 		"username":    user.Name,
-		"duration_ms": contactsDuration.Milliseconds(),
+		"duration_ms": duration.Milliseconds(),
 	})
+	u.recordUserCreateStep(ctx, "ensure_contacts_unique", "all", user.Name, duration, err)
 
-	if contactsErr != nil {
-		err = contactsErr
-		u.recordUserCreateStep(ctx, "ensure_contacts_unique", "all", user.Name, contactsDuration, contactsErr)
-		return err
+	if err != nil {
+		return result, err
 	}
 
-	// 如果预检直接命中了用户名冲突，将用户实体缓存下来避免重复查询
-	if contactHits != nil {
-		if existing := contactHits["username"]; existing != nil {
-			existingUser = existing
+	if conflicts != nil {
+		result.Conflicts = conflicts
+	}
+	result.UsernameChecked = usernameChecked
+	return result, nil
+}
+
+// resolveUserExistence 处理用户名存在性的兜底查询。
+//
+// param ctx: 链路上下文。
+// param user: 当前待创建的用户。
+// param preflight: 唯一性预检结果。
+//
+// returns: 若已存在返回实体指针，未命中返回 nil，异常时返回 error。
+func (u *UserService) resolveUserExistence(ctx context.Context, user *v1.User, preflight createpipeline.PreflightResult[*v1.User]) (*v1.User, error) {
+	if preflight.Conflicts != nil {
+		if existing := preflight.Conflicts["username"]; existing != nil {
+			return existing, nil
 		}
 	}
 
-	// 用户名已在预检确认时，跳过后续数据库校验
-	if existingUser == nil && usernamePreflighted {
+	if preflight.UsernameChecked {
 		u.recordUserCreateStep(ctx, "check_user_exist", "username", user.Name, 0, nil)
 		trace.AddRequestTag(ctx, "username_preflight_verified", true)
-	} else if existingUser == nil {
-		// 未命中预检时走数据库兜底查询，继续链路追踪
-		checkCtx, checkSpan := trace.StartSpan(ctx, "user-service", "check_user_exist")
-		existenceStart := time.Now()
-		ruser, errCheck := u.checkUserExist(checkCtx, user.Name, false)
-		existenceDuration = time.Since(existenceStart)
-		existErr = errCheck
-		if errCheck == nil {
-			existingUser = ruser
-		}
-		status := "success"
-		codeStr := strconv.Itoa(code.ErrSuccess)
-		if errCheck != nil {
-			status = "error"
-			if c := errors.GetCode(errCheck); c != 0 {
-				codeStr = strconv.Itoa(c)
-			} else {
-				codeStr = strconv.Itoa(code.ErrUnknown)
-			}
-		}
-		trace.EndSpan(checkSpan, status, codeStr, map[string]interface{}{
-			"username":    user.Name,
-			"duration_ms": existenceDuration.Milliseconds(),
-		})
-	} else {
-		u.recordUserCreateStep(ctx, "check_user_exist", "username", user.Name, 0, nil)
+		return nil, nil
 	}
 
-	// 记录联系人唯一性与用户名存在性检查的结果
-	u.recordUserCreateStep(ctx, "ensure_contacts_unique", "all", user.Name, contactsDuration, contactsErr)
-	if existingUser == nil {
-		u.recordUserCreateStep(ctx, "check_user_exist", "username", user.Name, existenceDuration, existErr)
-	}
-	if existErr != nil {
-		log.Warnf("查询用户%s checkUserExist方法返回错误, 可能是系统繁忙, 将忽略是否存在的检查, 放行该用户: %v", user.Name, existErr)
-	}
-	if existingUser != nil && existingUser.Name != RATE_LIMIT_PREVENTION {
-		log.Warnf("用户%s已经存在,无法创建", user.Name)
-		err = errors.WithCode(code.ErrUserAlreadyExist, "用户已经存在")
-		return err
-	}
+	checkCtx, span := trace.StartSpan(ctx, "user-service", "check_user_exist")
+	start := time.Now()
+	existing, err := u.checkUserExist(checkCtx, user.Name, false)
+	duration := time.Since(start)
 
-	// 标记 Kafka 消费侧需要处理的“正在创建”占位，防止并发重复
-	pendingStart := time.Now()
-	pendingCtx, pendingSpan := trace.StartSpan(ctx, "user-service", "mark_pending_create")
-	trace.AddRequestTag(pendingCtx, "username", user.Name)
-	markerCreated, markerRefreshed, pendingTTL, setNXDuration, refreshDuration, pendingErr := u.markUserPendingCreate(pendingCtx, user.Name)
-	pendingDuration := time.Since(pendingStart)
-	pendingStatus := "success"
-	pendingCode := strconv.Itoa(code.ErrSuccess)
-	if pendingErr != nil {
-		pendingStatus = "error"
-		if c := errors.GetCode(pendingErr); c != 0 {
-			pendingCode = strconv.Itoa(c)
+	status := "success"
+	codeStr := strconv.Itoa(code.ErrSuccess)
+	if err != nil {
+		status = "error"
+		if c := errors.GetCode(err); c != 0 {
+			codeStr = strconv.Itoa(c)
 		} else {
-			pendingCode = strconv.Itoa(code.ErrUnknown)
+			codeStr = strconv.Itoa(code.ErrUnknown)
 		}
 	}
-	trace.EndSpan(pendingSpan, pendingStatus, pendingCode, map[string]interface{}{
+
+	trace.EndSpan(span, status, codeStr, map[string]interface{}{
+		"username":    user.Name,
+		"duration_ms": duration.Milliseconds(),
+	})
+
+	u.recordUserCreateStep(ctx, "check_user_exist", "username", user.Name, duration, err)
+	if err != nil {
+		log.Warnf("查询用户%s checkUserExist方法返回错误, 可能是系统繁忙, 将忽略是否存在的检查, 放行该用户: %v", user.Name, err)
+		return nil, nil
+	}
+
+	return existing, nil
+}
+
+// handleUserExisting 在确认实体已存在时返回业务冲突错误。
+//
+// param user: 当前待创建的用户。
+// param existing: 已存在的用户实体。
+//
+// returns: 冲突时返回 ErrUserAlreadyExist，其他情况返回 nil。
+func (u *UserService) handleUserExisting(user *v1.User, existing *v1.User) error {
+	if existing == nil {
+		return nil
+	}
+	if existing.Name == RATE_LIMIT_PREVENTION {
+		return nil
+	}
+
+	log.Warnf("用户%s已经存在,无法创建", user.Name)
+	return errors.WithCode(code.ErrUserAlreadyExist, "用户已经存在")
+}
+
+// markUserPendingForCreate 写入 pending 占位并返回占位信息。
+//
+// param ctx: 链路上下文。
+// param user: 当前待创建的用户。
+//
+// returns: PendingResult 描述占位详情。
+func (u *UserService) markUserPendingForCreate(ctx context.Context, user *v1.User) (createpipeline.PendingResult, error) {
+	pendingCtx, span := trace.StartSpan(ctx, "user-service", "mark_pending_create")
+	trace.AddRequestTag(pendingCtx, "username", user.Name)
+
+	start := time.Now()
+	created, refreshed, ttl, setNXDuration, refreshDuration, err := u.markUserPendingCreate(pendingCtx, user.Name)
+	duration := time.Since(start)
+
+	status := "success"
+	codeStr := strconv.Itoa(code.ErrSuccess)
+	if err != nil {
+		status = "error"
+		if c := errors.GetCode(err); c != 0 {
+			codeStr = strconv.Itoa(c)
+		} else {
+			codeStr = strconv.Itoa(code.ErrUnknown)
+		}
+	}
+
+	trace.EndSpan(span, status, codeStr, map[string]interface{}{
 		"username":         user.Name,
-		"duration_ms":      pendingDuration.Milliseconds(),
-		"marker_new":       markerCreated,
-		"marker_refresh":   markerRefreshed,
-		"marker_ttl_ms":    pendingTTL.Milliseconds(),
+		"duration_ms":      duration.Milliseconds(),
+		"marker_new":       created,
+		"marker_refresh":   refreshed,
+		"marker_ttl_ms":    ttl.Milliseconds(),
 		"redis_setnx_ms":   setNXDuration.Milliseconds(),
 		"redis_refresh_ms": refreshDuration.Milliseconds(),
 	})
-	u.recordUserCreateStep(ctx, "mark_pending_create", "redis", user.Name, pendingDuration, pendingErr)
-	trace.AddRequestTag(ctx, "pending_marker_new", markerCreated)
-	if markerRefreshed {
-		trace.AddRequestTag(ctx, "pending_marker_refreshed", true)
-	}
-	if pendingTTL > 0 {
-		trace.AddRequestTag(ctx, "pending_marker_ttl_ms", pendingTTL.Milliseconds())
-	}
-	if pendingErr != nil {
-		return pendingErr
+	u.recordUserCreateStep(ctx, "mark_pending_create", "redis", user.Name, duration, err)
+
+	if err != nil {
+		return createpipeline.PendingResult{}, err
 	}
 
+	return createpipeline.PendingResult{
+		Created:         created,
+		Refreshed:       refreshed,
+		TTL:             ttl,
+		SetDuration:     setNXDuration,
+		RefreshDuration: refreshDuration,
+	}, nil
+}
+
+// afterUserPending 在 pending 成功后写入 Trace 标签。
+//
+// param ctx: 链路上下文。
+// param user: 当前待创建的用户。
+// param pending: 占位结果元信息。
+func (u *UserService) afterUserPending(ctx context.Context, user *v1.User, pending createpipeline.PendingResult) {
+	trace.AddRequestTag(ctx, "pending_marker_new", pending.Created)
+	if pending.Refreshed {
+		trace.AddRequestTag(ctx, "pending_marker_refreshed", true)
+	}
+	if pending.TTL > 0 {
+		trace.AddRequestTag(ctx, "pending_marker_ttl_ms", pending.TTL.Milliseconds())
+	}
+}
+
+// sendUserCreateMessage 将创建事件发送至 Kafka。
+//
+// param ctx: 链路上下文。
+// param user: 当前待创建的用户。
+//
+// returns: 发送失败时返回 ErrKafkaFailed。
+func (u *UserService) sendUserCreateMessage(ctx context.Context, user *v1.User) error {
 	if u.Producer == nil {
 		log.Errorf("生产者转换错误")
-		err = errors.WithCode(code.ErrKafkaFailed, "Kafka生产者未初始化")
-		return err
+		return errors.WithCode(code.ErrKafkaFailed, "Kafka生产者未初始化")
 	}
-	// 发送创建事件到 Kafka，链路追踪记录发送阶段
+
 	sendStart := time.Now()
-	sendCtx, sendSpan := trace.StartSpan(ctx, "user-service", "producer_send_create")
+	sendCtx, span := trace.StartSpan(ctx, "user-service", "producer_send_create")
 	trace.AddRequestTag(sendCtx, "username", user.Name)
+
 	errKafka := u.Producer.SendUserCreateMessage(sendCtx, user)
 	u.recordUserCreateStep(ctx, "kafka_send_create_user", "kafka", user.Name, time.Since(sendStart), errKafka)
-	sendStatus := "success"
-	sendCode := strconv.Itoa(code.ErrSuccess)
+
+	status := "success"
+	codeStr := strconv.Itoa(code.ErrSuccess)
 	if errKafka != nil {
 		log.Errorf("requestID=%v: 生产者消息发送失败 username=%s, err=%v", ctx.Value("requestID"), user.Name, errKafka)
-		sendStatus = "error"
+		status = "error"
 		if c := errors.GetCode(errKafka); c != 0 {
-			sendCode = strconv.Itoa(c)
+			codeStr = strconv.Itoa(c)
 		} else {
-			sendCode = strconv.Itoa(code.ErrUnknown)
+			codeStr = strconv.Itoa(code.ErrUnknown)
 		}
-		err = errors.WithCode(code.ErrKafkaFailed, "kafka生产者消息发送失败")
 	}
-	trace.EndSpan(sendSpan, sendStatus, sendCode, map[string]interface{}{
+
+	trace.EndSpan(span, status, codeStr, map[string]interface{}{
 		"username": user.Name,
 	})
+
 	if errKafka != nil {
-		return err
+		return errors.WithCode(code.ErrKafkaFailed, "kafka生产者消息发送失败")
 	}
 
 	return nil

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/go-sql-driver/mysql"
+	createconsumer "github.com/maxiaolu1981/cretem/cdmp-mini/internal/common/consumer/create"
 	"github.com/maxiaolu1981/cretem/nexuscore/component-base/util/idutil"
 	"github.com/maxiaolu1981/cretem/nexuscore/component-base/validation"
 	"github.com/redis/go-redis/v9"
@@ -46,6 +47,7 @@ type UserConsumer struct {
 	opts               *options.KafkaOptions
 	markerCache        *pendingMarkerCache
 	pendingCoordinator *usercache.PendingCoordinator
+	createPipeline     *createconsumer.Pipeline[*v1.User]
 	// 移除本地保护状态，全部走redis全局key
 	// 主控选举相关
 	isMaster      bool
@@ -151,6 +153,91 @@ func (c *pendingMarkerCache) Delete(key string) {
 	c.mu.Lock()
 	delete(c.entries, key)
 	c.mu.Unlock()
+}
+
+func (c *UserConsumer) initCreatePipeline() {
+	if c == nil || c.createPipeline != nil {
+		return
+	}
+
+	c.createPipeline = createconsumer.NewPipeline[*v1.User](createconsumer.PipelineConfig[*v1.User]{
+		Decode: func(ctx context.Context, msg kafka.Message) (*v1.User, error) {
+			user := userMessagePool.Get().(*v1.User)
+			*user = v1.User{}
+			if err := decodeUserMessage(msg.Value, user); err != nil {
+				userMessagePool.Put(user)
+				return nil, err
+			}
+			return user, nil
+		},
+		OnDecodeError: func(ctx context.Context, msg kafka.Message, err error) {
+			log.Errorf("批量创建: 反序列化失败: %v", err)
+			if c.producer != nil {
+				_ = c.producer.SendToDeadLetterTopic(ctx, msg, "BATCH_UNMARSHAL_ERROR: "+err.Error())
+			}
+		},
+		Validate: func(ctx context.Context, msg kafka.Message, user *v1.User) error {
+			if err := validation.ValidateUserFields(user.Name, user.Nickname, user.Password, user.Email, user.Phone); err != nil {
+				return err
+			}
+			return nil
+		},
+		OnValidationError: func(ctx context.Context, msg kafka.Message, user *v1.User, err error) {
+			log.Errorf("批量创建: %v", err)
+			if c.producer != nil {
+				_ = c.producer.SendToDeadLetterTopic(ctx, msg, err.Error())
+			}
+			userMessagePool.Put(user)
+		},
+		Normalize: func(user *v1.User) {
+			if user == nil {
+				return
+			}
+			user.Email = usercache.NormalizeEmail(user.Email)
+			user.Phone = usercache.NormalizePhone(user.Phone)
+		},
+		Prepare: func(user *v1.User) error {
+			if user == nil {
+				return nil
+			}
+			now := time.Now()
+			user.CreatedAt = now
+			user.UpdatedAt = now
+			ensureUserInstanceID(user)
+			return nil
+		},
+		BeforePersist: func(ctx context.Context, msg kafka.Message, user *v1.User) error {
+			c.applyLagTagsFromMessage(ctx, msg)
+			return nil
+		},
+		Persist: func(ctx context.Context, msg kafka.Message, user *v1.User) (bool, error) {
+			created, err := c.createUserInDB(ctx, user, false)
+			if err != nil {
+				return false, err
+			}
+			return created, nil
+		},
+		OnPersistError: func(ctx context.Context, msg kafka.Message, user *v1.User, err error) {
+			errorType := getErrorType(err)
+			log.Errorf("[批量插入] 单条失败: username=%s err=%v", user.Name, err)
+			metrics.BusinessFailures.WithLabelValues("consumer", "batch_create", errorType).Inc()
+			if c.producer != nil {
+				_ = c.producer.sendToRetryTopic(ctx, msg, "BATCH_CREATE_DB_ERROR: "+err.Error())
+			}
+			userMessagePool.Put(user)
+		},
+		AfterSuccess: func(ctx context.Context, msg kafka.Message, user *v1.User, created bool) error {
+			defer userMessagePool.Put(user)
+			if created {
+				if err := c.setUserCache(ctx, user, nil); err != nil {
+					log.Warnf("批量创建后缓存设置失败: username=%s, error=%v", user.Name, err)
+				}
+				return nil
+			}
+			log.Warnf("检测到批量创建中的重复用户，已忽略: username=%s", user.Name)
+			return nil
+		},
+	})
 }
 
 var (
@@ -354,6 +441,7 @@ func NewUserConsumer(opts *options.KafkaOptions, topic, groupID string, instance
 	}
 	consumer.pendingCoordinator = usercache.NewPendingCoordinator(redis, pcCfg)
 	//go consumer.startLagMonitor(context.Background())
+	consumer.initCreatePipeline()
 	return consumer
 
 }
@@ -3518,10 +3606,10 @@ func (c *UserConsumer) sendToDeadLetter(ctx context.Context, msg kafka.Message, 
 
 // batchCreateToDB 使用 GORM 批量创建用户实体
 func (c *UserConsumer) batchCreateToDB(ctx context.Context, msgs []kafka.Message) {
-
 	if len(msgs) == 0 {
 		return
 	}
+
 	batchCtx, span := trace.StartSpan(ctx, "kafka-consumer", "batch_create_db")
 	trace.AddRequestTag(batchCtx, "batch_size", len(msgs))
 	trace.AddRequestTag(batchCtx, "topic", c.topic)
@@ -3539,89 +3627,54 @@ func (c *UserConsumer) batchCreateToDB(ctx context.Context, msgs []kafka.Message
 		if opErr != nil {
 			details["error"] = opErr.Error()
 		}
-		trace.EndSpan(span, status, statusCode, details)
+		if span != nil {
+			trace.EndSpan(span, status, statusCode, details)
+		}
 	}()
 
 	start := time.Now()
 	metrics.BusinessOperationsTotal.WithLabelValues("consumer", "batch_create", "kafka").Inc()
 	metrics.BusinessInProgress.WithLabelValues("consumer", "batch_create").Inc()
 	defer metrics.BusinessInProgress.WithLabelValues("consumer", "batch_create").Dec()
-	var (
-		users     []v1.User
-		validMsgs []kafka.Message
-	)
-	for _, m := range msgs {
-		var u v1.User
-		if err := decodeUserMessage(m.Value, &u); err != nil {
-			log.Errorf("批量创建: 反序列化失败: %v", err)
-			if c.producer != nil {
-				_ = c.producer.SendToDeadLetterTopic(ctx, m, "BATCH_UNMARSHAL_ERROR: "+err.Error())
-			}
-			continue
-		}
-		if err := validation.ValidateUserFields(u.Name, u.Nickname, u.Password, u.Email, u.Phone); err != nil {
-			log.Errorf("批量创建: %v", err)
-			if c.producer != nil {
-				_ = c.producer.SendToDeadLetterTopic(ctx, m, err.Error())
-			}
-			continue
-		}
-		u.Email = usercache.NormalizeEmail(u.Email)
-		u.Phone = usercache.NormalizePhone(u.Phone)
-		now := time.Now()
-		u.CreatedAt = now
-		u.UpdatedAt = now
-		ensureUserInstanceID(&u)
-		users = append(users, u)
-		validMsgs = append(validMsgs, m)
-	}
 
-	if len(users) == 0 {
+	if c.createPipeline == nil {
+		c.initCreatePipeline()
+	}
+	if c.createPipeline == nil {
+		log.Errorf("批量创建: pipeline 未初始化")
+		status = "error"
+		statusCode = strconv.Itoa(code.ErrServerBusy)
 		return
 	}
-	for i := range users {
-		c.applyLagTagsFromMessage(ctx, validMsgs[i])
-		created, err := c.createUserInDB(ctx, &users[i], false)
-		if err != nil {
-			opErr = err
-			errorType := getErrorType(err)
-			log.Errorf("[批量插入] 单条失败: username=%s err=%v", users[i].Name, err)
-			metrics.BusinessFailures.WithLabelValues("consumer", "batch_create", errorType).Inc()
-			if c.producer != nil {
-				_ = c.producer.sendToRetryTopic(ctx, validMsgs[i], "BATCH_CREATE_DB_ERROR: "+err.Error())
-			}
-			continue
+
+	for _, msg := range msgs {
+		outcome := c.createPipeline.Process(ctx, msg)
+		if outcome.Err != nil {
+			opErr = outcome.Err
 		}
-		if created {
+		if outcome.Created {
 			successful++
-			if err := c.setUserCache(ctx, &users[i], nil); err != nil {
-				log.Warnf("批量创建后缓存设置失败: username=%s, error=%v", users[i].Name, err)
-			}
-		} else {
-			log.Warnf("检测到批量创建中的重复用户，已忽略: username=%s", users[i].Name)
 		}
 	}
+
 	if successful > 0 {
 		metrics.BusinessSuccess.WithLabelValues("consumer", "batch_create", "success").Inc()
-
 	}
+
 	duration := time.Since(start).Seconds()
 	metrics.BusinessProcessingTime.WithLabelValues("consumer", "batch_create").Observe(duration)
 	metrics.BusinessThroughputStats.WithLabelValues("consumer", "batch_create").Observe(duration)
+
 	if opErr != nil {
-		errorRate := 1.0
-		metrics.BusinessErrorRate.WithLabelValues("consumer", "batch_create").Set(errorRate)
-	} else {
-		errorRate := 0.0
-		metrics.BusinessErrorRate.WithLabelValues("consumer", "batch_create").Set(errorRate)
-	}
-	if opErr != nil {
+		metrics.BusinessErrorRate.WithLabelValues("consumer", "batch_create").Set(1.0)
 		status = "degraded"
 		if c := errors.GetCode(opErr); c != 0 {
 			statusCode = strconv.Itoa(c)
 		} else {
 			statusCode = strconv.Itoa(code.ErrUnknown)
 		}
+	} else {
+		metrics.BusinessErrorRate.WithLabelValues("consumer", "batch_create").Set(0.0)
 	}
 }
 

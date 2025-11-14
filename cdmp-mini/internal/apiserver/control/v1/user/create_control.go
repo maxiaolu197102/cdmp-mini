@@ -1,6 +1,7 @@
 package user
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -10,21 +11,18 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	jsoniter "github.com/json-iterator/go"
+	createcontrol "github.com/maxiaolu1981/cretem/cdmp-mini/internal/common/control/create"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/audit"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/code"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/metrics"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/middleware/common"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/trace"
-	"github.com/maxiaolu1981/cretem/nexuscore/component-base/core"
-
 	"github.com/maxiaolu1981/cretem/cdmp-mini/pkg/log"
-
 	v1 "github.com/maxiaolu1981/cretem/nexuscore/api/apiserver/v1"
-
+	"github.com/maxiaolu1981/cretem/nexuscore/component-base/core"
 	metav1 "github.com/maxiaolu1981/cretem/nexuscore/component-base/meta/v1"
 	"github.com/maxiaolu1981/cretem/nexuscore/errors"
-
-	jsoniter "github.com/json-iterator/go"
 )
 
 // 使用 jsoniter 库来替换 Go 标准库的 encoding/json
@@ -32,37 +30,18 @@ var json = jsoniter.ConfigCompatibleWithStandardLibrary
 
 // Create 处理用户创建的 HTTP 请求入口
 //
-// 负责完成请求体解析、参数校验、审计记录、链路追踪以及调用 service 层执行创建逻辑，并将结果写回给调用方。
-// 适用于外部调用用户创建 API 的场景，依赖 Gin 上下文、审计组件和用户 service 已初始化。
-//
-// 参数：
-//
-//	ctx: 当前的 Gin 上下文，包含请求、响应及链路追踪信息
-//
-// 返回值：
-//
-//	无: 函数内部直接写响应并记录审计
-//
-// 示例：
-//
-//	controller.Create(c)
-//
-// 注意事项：
-//   - 会根据 ServerRunOptions 设置请求超时，避免长时间阻塞
-//   - 所有错误都会转换为标准业务码并写入审计与指标
-//
-// 异常情况：
-//   - 参数绑定或校验失败会返回 ErrBind/ErrValidation
-//   - service 层返回的业务错误会透传对应错误码
+// 利用通用控制层管道完成参数解析、校验、调用 service 层以及响应输出；
+// 同时保留审计、链路追踪与指标上报，确保行为与历史实现一致。
 func (u *UserController) Create(ctx *gin.Context) {
-	// 从Gin上下文获取操作员信息
 	operator := common.GetUsername(ctx.Request.Context())
 	traceCtx := ctx.Request.Context()
 	trace.SetOperator(traceCtx, operator)
+
 	controllerCtx, controllerSpan := trace.StartSpan(traceCtx, "user-controller", "create_user")
 	ctx.Request = ctx.Request.WithContext(controllerCtx)
 	trace.SetOperator(controllerCtx, operator)
 	trace.AddRequestTag(controllerCtx, "controller", "create_user")
+
 	controllerStatus := "success"
 	controllerCode := strconv.Itoa(code.ErrSuccess)
 	controllerDetails := map[string]interface{}{
@@ -78,6 +57,7 @@ func (u *UserController) Create(ctx *gin.Context) {
 	outcomeCode := strconv.Itoa(code.ErrSuccess)
 	outcomeMessage := ""
 	outcomeHTTP := http.StatusOK
+
 	auditBase := func(outcome, message string) {
 		event := audit.BuildEventFromRequest(ctx.Request)
 		event.Action = "user.create"
@@ -89,147 +69,224 @@ func (u *UserController) Create(ctx *gin.Context) {
 		}
 		submitAudit(ctx, event)
 	}
-	err := metrics.MonitorBusinessOperation("user_service", "get", "http", func() error {
-		body, err := io.ReadAll(ctx.Request.Body)
+
+	handler := u.ensureCreateHandler()
+	if handler == nil {
+		err := errors.WithCode(code.ErrServerBusy, "创建控制流程未初始化")
+		controllerStatus = "error"
+		controllerCode = strconv.Itoa(errors.GetCode(err))
+		outcomeStatus = "error"
+		outcomeCode = controllerCode
+		outcomeMessage = errors.GetMessage(err)
+		outcomeHTTP = errors.GetHTTPStatus(err)
+		if outcomeHTTP == 0 {
+			outcomeHTTP = http.StatusInternalServerError
+		}
+		core.WriteResponse(ctx, err, nil)
+		auditBase("fail", err.Error())
+		trace.RecordOutcome(controllerCtx, outcomeCode, outcomeMessage, outcomeStatus, outcomeHTTP)
+		return
+	}
+
+	execErr := metrics.MonitorBusinessOperation("user_service", "create", "http", func() error {
+		result, err := handler.Execute(ctx)
 		if err != nil {
-			log.Errorw("读取请求体失败", "requestID", ctx.Request.Header.Get("X-Request-ID"), "error", err)
-			errBind := errors.WithCode(code.ErrBind, "读取请求体失败:%v", err.Error())
+			codeVal := errors.GetCode(err)
+			if codeVal == 0 {
+				codeVal = code.ErrUnknown
+			}
 			controllerStatus = "error"
-			controllerCode = strconv.Itoa(errors.GetCode(errBind))
-			outcomeStatus = "error"
-			outcomeCode = controllerCode
-			outcomeMessage = errors.GetMessage(errBind)
-			outcomeHTTP = errors.GetHTTPStatus(errBind)
-			core.WriteResponse(ctx, errBind, nil)
-			auditBase("fail", errBind.Error())
-			return errBind
-		}
-
-		var r v1.User
-		if err := json.Unmarshal(body, &r); err != nil {
-			log.Errorw("请求体绑定结构体失败", "requestID", ctx.Request.Header.Get("X-Request-ID"), "error", err)
-			errBind := errors.WithCode(code.ErrBind, "参数绑定失败:%v", err.Error())
-			controllerStatus = "error"
-			controllerCode = strconv.Itoa(errors.GetCode(errBind))
-			outcomeStatus = "error"
-			outcomeCode = controllerCode
-			outcomeMessage = errors.GetMessage(errBind)
-			outcomeHTTP = errors.GetHTTPStatus(errBind)
-			core.WriteResponse(ctx, errBind, nil)
-			auditBase("fail", errBind.Error())
-			return errBind
-		}
-
-		trace.AddRequestTag(controllerCtx, "requested_username", r.Name)
-		trace.AddRequestTag(controllerCtx, "requested_email", r.Email)
-		trace.AddRequestTag(controllerCtx, "requested_phone", r.Phone)
-
-		var statusPayload struct {
-			Status *int `json:"status"`
-		}
-		if err := json.Unmarshal(body, &statusPayload); err != nil {
-			log.Warnf("解析status字段失败: username=%s, err=%v", r.Name, err)
-		}
-		if statusPayload.Status != nil {
-			r.Status = *statusPayload.Status
-		} else if r.Status == 0 {
-			r.Status = 1
-		}
-
-		username := r.Name
-
-		if strings.TrimSpace(username) == "" {
-			err := errors.WithCode(code.ErrValidation, "用户名不能为空")
-			controllerStatus = "error"
-			controllerCode = strconv.Itoa(errors.GetCode(err))
+			controllerCode = strconv.Itoa(codeVal)
 			outcomeStatus = "error"
 			outcomeCode = controllerCode
 			outcomeMessage = errors.GetMessage(err)
 			outcomeHTTP = errors.GetHTTPStatus(err)
-			core.WriteResponse(ctx, err, nil)
+			if outcomeHTTP == 0 {
+				outcomeHTTP = http.StatusInternalServerError
+			}
 			auditBase("fail", err.Error())
 			return err
 		}
 
-		validationErrs := r.Validate()
-		if len(validationErrs) > 0 {
-			errDetails := make(map[string]string, len(validationErrs))
-			for _, fieldErr := range validationErrs {
-				errDetails[fieldErr.Field] = fieldErr.ErrorBody()
-			}
-			detailsStr := fmt.Sprintf("参数校验失败: %+v", errDetails)
-			log.Warnf("[control] 参数校验失败: username=%s, detail=%s", username, detailsStr)
-			err := errors.WrapC(nil, code.ErrValidation, "%s", detailsStr)
-			core.WriteResponse(ctx, err, nil)
-			auditBase("fail", err.Error())
-			return err
-		}
-		r.LoginedAt = time.Now()
-
-		c := ctx.Request.Context()
-		// 使用HTTP请求的超时配置，而不是Redis超时
-		if _, hasDeadline := c.Deadline(); !hasDeadline {
-			var cancel context.CancelFunc
-			// 使用ServerRunOptions中的请求超时时间
-			requestTimeout := u.options.ServerRunOptions.CtxTimeout
-			if requestTimeout == 0 {
-				requestTimeout = 30 * time.Second // 默认30秒
-			}
-			c, cancel = context.WithTimeout(c, requestTimeout)
-			defer cancel()
-		}
-
-		if err := u.srv.Users().Create(c, &r,
-			metav1.CreateOptions{}, u.options); err != nil {
-			log.Errorf("[control] 用户创建 service 层失败: username=%s, error=%v", r.Name, err)
-			controllerStatus = "error"
-			controllerCode = strconv.Itoa(errors.GetCode(err))
-			if controllerCode == "-1" {
-				controllerCode = strconv.Itoa(code.ErrUnknown)
-			}
-			outcomeStatus = "error"
-			outcomeCode = controllerCode
-			outcomeMessage = errors.GetMessage(err)
-			outcomeHTTP = errors.GetHTTPStatus(err)
-			core.WriteResponse(ctx, err, nil)
-			auditBase("fail", err.Error())
-			return err
-		}
-		publicUser := v1.ConvertToPublicUser(&r)
-
-		// 构建成功数据
-		successData := gin.H{
-			"create_user":    publicUser.Username,
-			"operator":       operator,
-			"operation_time": time.Now().Format(time.RFC3339),
-			"operation_type": "create",
-			"code":           code.ErrSuccess,
-		}
-		controllerDetails["created_user"] = publicUser.Username
 		outcomeMessage = "success"
-		awaitTimeout := 30 * time.Second
-		if u.options != nil && u.options.ServerRunOptions != nil && u.options.ServerRunOptions.CtxTimeout > 0 {
-			awaitTimeout = u.options.ServerRunOptions.CtxTimeout
-		}
-		trace.ExpectAsync(controllerCtx, time.Now().Add(awaitTimeout))
-
-		core.WriteResponse(ctx, nil, successData)
+		outcomeCode = strconv.Itoa(code.ErrSuccess)
+		outcomeHTTP = http.StatusOK
 		auditBase("success", "")
+
+		if result.Entity != nil {
+			controllerDetails["created_user"] = result.Entity.Name
+			trace.AddRequestTag(controllerCtx, "created_user", result.Entity.Name)
+		}
+
+		awaitTimeout := u.createAwaitTimeout()
+		if awaitTimeout > 0 {
+			trace.ExpectAsync(controllerCtx, time.Now().Add(awaitTimeout))
+		}
 		return nil
 	})
 
-	if err != nil && outcomeStatus == "success" {
-		// 未在上游显式设置，兜底使用错误信息
-		outcomeStatus = "error"
-		outcomeCode = strconv.Itoa(errors.GetCode(err))
-		if outcomeCode == "-1" {
-			outcomeCode = strconv.Itoa(code.ErrUnknown)
+	if execErr != nil && outcomeStatus == "success" {
+		codeVal := errors.GetCode(execErr)
+		if codeVal == 0 {
+			codeVal = code.ErrUnknown
 		}
-		outcomeMessage = errors.GetMessage(err)
-		outcomeHTTP = errors.GetHTTPStatus(err)
+		outcomeStatus = "error"
+		outcomeCode = strconv.Itoa(codeVal)
+		outcomeMessage = errors.GetMessage(execErr)
+		outcomeHTTP = errors.GetHTTPStatus(execErr)
+		if outcomeHTTP == 0 {
+			outcomeHTTP = http.StatusInternalServerError
+		}
 		controllerStatus = "error"
 		controllerCode = outcomeCode
 	}
 
 	trace.RecordOutcome(controllerCtx, outcomeCode, outcomeMessage, outcomeStatus, outcomeHTTP)
+}
+
+func (u *UserController) ensureCreateHandler() *createcontrol.Handler[*v1.User] {
+	if u == nil {
+		return nil
+	}
+	if u.createHandler != nil {
+		return u.createHandler
+	}
+	cfg := createcontrol.HandlerConfig[*v1.User]{
+		Name:           "users",
+		ReadBody:       u.readCreateRequestBody,
+		Decode:         u.decodeCreateUser,
+		Enhance:        u.enhanceCreateUser,
+		Validate:       u.validateCreateUserEntity,
+		Prepare:        u.prepareCreateUserEntity,
+		WithTimeout:    u.createUserWithTimeout,
+		InvokeService:  u.invokeCreateUserService,
+		SuccessPayload: u.buildCreateUserResponse,
+		ResponseWriter: u.writeCreateUserResponse,
+	}
+	u.createHandler = createcontrol.NewHandler[*v1.User](cfg)
+	return u.createHandler
+}
+
+func (u *UserController) readCreateRequestBody(ctx *gin.Context) ([]byte, error) {
+	if ctx == nil || ctx.Request == nil || ctx.Request.Body == nil {
+		return nil, errors.WithCode(code.ErrBind, "请求体为空")
+	}
+	data, err := io.ReadAll(ctx.Request.Body)
+	if err != nil {
+		log.Errorw("读取请求体失败", "requestID", ctx.Request.Header.Get("X-Request-ID"), "error", err)
+		return nil, errors.WithCode(code.ErrBind, "读取请求体失败:%v", err.Error())
+	}
+	ctx.Request.Body = io.NopCloser(bytes.NewBuffer(data))
+	return data, nil
+}
+
+func (u *UserController) decodeCreateUser(ctx *gin.Context, body []byte) (*v1.User, error) {
+	var user v1.User
+	if len(body) == 0 {
+		body = []byte("{}")
+	}
+	if err := json.Unmarshal(body, &user); err != nil {
+		log.Errorw("请求体绑定结构体失败", "requestID", ctx.Request.Header.Get("X-Request-ID"), "error", err)
+		return nil, errors.WithCode(code.ErrBind, "参数绑定失败:%v", err.Error())
+	}
+	return &user, nil
+}
+
+func (u *UserController) enhanceCreateUser(ctx *gin.Context, user *v1.User, body []byte) error {
+	trace.AddRequestTag(ctx.Request.Context(), "requested_username", user.Name)
+	trace.AddRequestTag(ctx.Request.Context(), "requested_email", user.Email)
+	trace.AddRequestTag(ctx.Request.Context(), "requested_phone", user.Phone)
+
+	var statusPayload struct {
+		Status *int `json:"status"`
+	}
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &statusPayload); err != nil {
+			log.Warnf("解析status字段失败: username=%s, err=%v", user.Name, err)
+		}
+	}
+	if statusPayload.Status != nil {
+		user.Status = *statusPayload.Status
+	} else if user.Status == 0 {
+		user.Status = 1
+	}
+	return nil
+}
+
+func (u *UserController) validateCreateUserEntity(ctx *gin.Context, user *v1.User) error {
+	if user == nil {
+		return errors.WithCode(code.ErrValidation, "用户实体为空")
+	}
+	username := strings.TrimSpace(user.Name)
+	if username == "" {
+		return errors.WithCode(code.ErrValidation, "用户名不能为空")
+	}
+
+	validationErrs := user.Validate()
+	if len(validationErrs) == 0 {
+		return nil
+	}
+
+	errDetails := make(map[string]string, len(validationErrs))
+	for _, fieldErr := range validationErrs {
+		errDetails[fieldErr.Field] = fieldErr.ErrorBody()
+	}
+	detailStr := fmt.Sprintf("参数校验失败: %+v", errDetails)
+	log.Warnf("[control] 参数校验失败: username=%s, detail=%s", username, detailStr)
+	return errors.WrapC(nil, code.ErrValidation, "%s", detailStr)
+}
+
+func (u *UserController) prepareCreateUserEntity(ctx *gin.Context, user *v1.User) error {
+	if user == nil {
+		return errors.WithCode(code.ErrValidation, "用户实体为空")
+	}
+	user.LoginedAt = time.Now()
+	return nil
+}
+
+func (u *UserController) createUserWithTimeout(ctx *gin.Context, _ *v1.User) (context.Context, context.CancelFunc, error) {
+	if ctx == nil || ctx.Request == nil {
+		return nil, nil, nil
+	}
+	requestCtx := ctx.Request.Context()
+	if requestCtx == nil {
+		requestCtx = context.Background()
+	}
+	if _, hasDeadline := requestCtx.Deadline(); hasDeadline {
+		return requestCtx, nil, nil
+	}
+
+	timeout := u.createAwaitTimeout()
+	newCtx, cancel := context.WithTimeout(requestCtx, timeout)
+	return newCtx, cancel, nil
+}
+
+func (u *UserController) invokeCreateUserService(ctx context.Context, user *v1.User) error {
+	if u == nil || u.srv == nil {
+		return errors.WithCode(code.ErrServerBusy, "用户服务未初始化")
+	}
+	return u.srv.Users().Create(ctx, user, metav1.CreateOptions{}, u.options)
+}
+
+func (u *UserController) buildCreateUserResponse(ctx *gin.Context, user *v1.User) (interface{}, error) {
+	publicUser := v1.ConvertToPublicUser(user)
+	response := gin.H{
+		"create_user":    publicUser.Username,
+		"operator":       common.GetUsername(ctx.Request.Context()),
+		"operation_time": time.Now().Format(time.RFC3339),
+		"operation_type": "create",
+		"code":           code.ErrSuccess,
+	}
+	return response, nil
+}
+
+func (u *UserController) writeCreateUserResponse(ctx *gin.Context, err error, payload interface{}) {
+	core.WriteResponse(ctx, err, payload)
+}
+
+func (u *UserController) createAwaitTimeout() time.Duration {
+	if u != nil && u.options != nil && u.options.ServerRunOptions != nil && u.options.ServerRunOptions.CtxTimeout > 0 {
+		return u.options.ServerRunOptions.CtxTimeout
+	}
+	return 30 * time.Second
 }
