@@ -1504,7 +1504,9 @@ func shouldDegradeForError(err error) bool {
 }
 
 func (u *UserService) markCreateDegraded(ctx context.Context, reason string, kv ...interface{}) {
+	//MarkCreateDegraded 切换降级标记；当从“非降级”转为“降级”时返回 true
 	if userctx.MarkCreateDegraded(ctx) {
+		//首次进入降级模式：记录追踪标记和警告日志
 		trace.AddRequestTag(ctx, "create_degraded", true)
 		if reason != "" {
 			trace.AddRequestTag(ctx, "create_degraded_reason", reason)
@@ -1516,6 +1518,7 @@ func (u *UserService) markCreateDegraded(ctx context.Context, reason string, kv 
 		log.Warnw("用户创建进入降级模式", fields...)
 		return
 	}
+	// 非首次进入降级模式：只更新降级原因（如果有新的原因）
 	if reason != "" {
 		trace.AddRequestTag(ctx, "create_degraded_reason", reason)
 	}
