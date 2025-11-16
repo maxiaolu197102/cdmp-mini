@@ -109,10 +109,10 @@ func NewServerRunOptions() *ServerRunOptions {
 		MaxGoroutines:                  100,                     // 默认最大并发处理协程数：控制同时处理请求的协程上限
 		MaxQueueSize:                   100,                     // 默认任务队列大小：请求排队等待的最大数量
 		EnableUserTraceLogging:         true,                    // 是否启用用户操作跟踪日志：默认开启
-		UserTraceLogSampleRate:         0.1,                     // 用户跟踪日志采样率：10%的请求会记录详细日志
+		UserTraceLogSampleRate:         1,                       // 用户跟踪日志采样率：10%的请求会记录详细日志
 		UserTraceForceLogErrors:        true,                    // 错误时是否强制记录跟踪日志：默认开启（即使未命中采样）
 		UserTraceDisableLogging:        false,                   // 是否禁用用户跟踪日志：默认关闭（与EnableUserTraceLogging配合）
-		EnableContactWarmup:            false,                   // 是否启用联系人预热：提前加载联系人数据（默认关闭）
+		EnableContactWarmup:            true,                    // 是否启用联系人预热：提前加载联系人数据（默认关闭）
 		ContactLookupTimeout:           2 * time.Second,         // 联系人查询超时时间：使用默认值
 		ContactRefreshTimeout:          3 * time.Second,         // 联系人刷新超时时间：使用默认值
 		ContactPreflightMaxConcurrency: 64,                      // 联系人预检查最大并发数：使用默认值

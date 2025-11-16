@@ -176,7 +176,7 @@ func NewKafkaOptions() *KafkaOptions {
 		MaxRate:                   20000,
 		AdjustPeriod:              2 * time.Second,
 		// 默认关闭基于时间的 flush，仅依靠批量阈值触发，避免 200ms 定时器带来的额外 ACK 延迟
-		FlushFrequency:           0,
+		FlushFrequency:           8 * time.Millisecond,
 		FlushMaxMessages:         256,
 		ProducerCompression:      "snappy",
 		ProducerReturnSuccesses:  true,

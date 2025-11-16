@@ -146,17 +146,19 @@ func (c *Checker[S, E]) EnsureFieldUnique(ctx context.Context, fieldCfg FieldCon
 		return nil
 	}
 
-	cache := c.cfg.Cache
-	isAllowed := fieldCfg.IsAllowedOwner
+	cache := c.cfg.Cache                 //缓存客户端
+	isAllowed := fieldCfg.IsAllowedOwner //判断缓存命中是否可放行，未提供时默认大小写不敏感比对。
 	if isAllowed == nil {
 		isAllowed = func(existingOwner, allowedOwner string) bool {
 			return strings.EqualFold(existingOwner, allowedOwner)
 		}
 	}
+	//当占位成功且缓存已预热时，决定是否跳过数据库查重。
 	skipPlaceholderLookup := fieldCfg.SkipPlaceholderLookup
 	if skipPlaceholderLookup == nil {
 		skipPlaceholderLookup = func(string) bool { return false }
 	}
+
 	placeholderValue := fieldCfg.PlaceholderValue
 	if strings.TrimSpace(placeholderValue) == "" {
 		placeholderValue = fieldCfg.AllowedOwner
@@ -182,6 +184,13 @@ func (c *Checker[S, E]) EnsureFieldUnique(ctx context.Context, fieldCfg FieldCon
 		}
 	}()
 
+	/*
+		create 链路中降级开关的 “被动触发” 特性
+			现有逻辑中，降级开关（DegradeActive）确实不会主动开启，而是依赖下游异常 “被动激活”：
+			初始状态：createState 挂载到 ctx 时，degraded 标记默认为 false，所有校验走正常流程（查缓存→占位→查库）。
+			触发条件：仅当关键步骤（如预检、查库、Redis 操作）出现可降级错误（超时、上下文取消、依赖不可用等），才会调用 markCreateDegraded 将 degraded 置为 true。
+			后续影响：一旦标记生效，unique.Checker 会跳过数据库兜底校验，仅靠缓存占位快速放行，减少对故障依赖的访问，属于 “故障后的自我保护”
+	*/
 	if c.cfg.DegradeActive != nil && c.cfg.DegradeActive(ctx) {
 		if cache != nil && c.cfg.EnsurePlaceholder != nil {
 			c.cfg.EnsurePlaceholder(ctx, fieldCfg.CacheKey, placeholderValue)

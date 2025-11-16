@@ -44,19 +44,84 @@ import (
 )
 
 const (
-	RATE_LIMIT_PREVENTION               = usercache.NegativeCacheSentinel
-	BLACKLIST_SENTINEL                  = usercache.BlacklistSentinel
-	createStepSlowThreshold             = 200 * time.Millisecond
-	contactPlaceholderTTL               = 30 * time.Second
-	contactWarmupTimeout                = 2 * time.Minute
-	contactWarmupBatchSize              = 1000
-	contactCacheTTL                     = 24 * time.Hour
-	strongConsistencyMaxRetries         = 3
-	strongConsistencyBackoffBase        = 80 * time.Millisecond
-	strongConsistencyBackoffCeiling     = 500 * time.Millisecond
-	strongConsistencyInitialDelayBase   = 35 * time.Millisecond
+	// RATE_LIMIT_PREVENTION 负缓存哨兵标记
+	// 完整键格式: user:{username} (值为哨兵)
+	// 存储结构: String，特殊用户名占位符
+	// 用途: 标记用户近期未找到结果，触发负缓存与限流保护
+	// 存储位置: Redis
+	RATE_LIMIT_PREVENTION = usercache.NegativeCacheSentinel
+	// BLACKLIST_SENTINEL 黑名单哨兵标记
+	// 完整键格式: user:{username} 或 user:blacklist:{username} (值为哨兵)
+	// 存储结构: String，特殊用户名占位符
+	// 用途: 表示用户被列入黑名单，阻断读写请求
+	// 存储位置: Redis
+	BLACKLIST_SENTINEL = usercache.BlacklistSentinel
+	// createStepSlowThreshold 用户创建步骤慢日志阈值
+	// 数值定义: 200ms
+	// 数据类型: time.Duration 常量
+	// 用途: 超过阈值时输出慢日志，监控创建链路性能
+	// 生效范围: 应用内逻辑
+	createStepSlowThreshold = 200 * time.Millisecond
+	// contactPlaceholderTTL 联系方式预热占位过期时间
+	// 数值定义: 30s
+	// 数据类型: time.Duration 常量
+	// 用途: 占位缓存防穿透，过期后需刷新真实数据
+	// 生效范围: 联系方式缓存模块
+	contactPlaceholderTTL = 30 * time.Second
+	// contactWarmupTimeout 联系方式预热流程超时时间
+	// 数值定义: 2m
+	// 数据类型: time.Duration 常量
+	// 用途: 限制预热任务单次执行时长，避免长时间占用资源
+	// 生效范围: 联系方式预热任务
+	contactWarmupTimeout = 2 * time.Minute
+	// contactWarmupBatchSize 联系方式预热批量大小
+	// 数值定义: 1000
+	// 数据类型: 整型常量
+	// 用途: 控制单批预热的拉取量，权衡速度与负载
+	// 生效范围: 联系方式预热任务
+	contactWarmupBatchSize = 1000
+	// contactCacheTTL 联系方式缓存有效期
+	// 数值定义: 24h
+	// 数据类型: time.Duration 常量
+	// 用途: 决定邮箱/手机号缓存的刷新频率，保持数据新鲜
+	// 生效范围: 联系方式缓存模块
+	contactCacheTTL = 24 * time.Hour
+	// strongConsistencyMaxRetries 强一致性重试上限
+	// 数值定义: 3 次
+	// 数据类型: 整型常量
+	// 用途: 指定数据库读强一致性的最大重试次数
+	// 生效范围: 强一致性读取流程
+	strongConsistencyMaxRetries = 3
+	// strongConsistencyBackoffBase 强一致性重试基础退避
+	// 数值定义: 80ms
+	// 数据类型: time.Duration 常量
+	// 用途: 计算指数退避的基值，缓解数据库压力
+	// 生效范围: 强一致性读取流程
+	strongConsistencyBackoffBase = 80 * time.Millisecond
+	// strongConsistencyBackoffCeiling 强一致性退避上限
+	// 数值定义: 500ms
+	// 数据类型: time.Duration 常量
+	// 用途: 限制指数退避的最大等待时间，避免退避过长
+	// 生效范围: 强一致性读取流程
+	strongConsistencyBackoffCeiling = 500 * time.Millisecond
+	// strongConsistencyInitialDelayBase 强一致性初始探测基准
+	// 数值定义: 35ms
+	// 数据类型: time.Duration 常量
+	// 用途: 设置首次探测前的基础等待，用于等待副本同步
+	// 生效范围: 强一致性读取流程
+	strongConsistencyInitialDelayBase = 35 * time.Millisecond
+	// strongConsistencyInitialDelayJitter 强一致性初始探测抖动
+	// 数值定义: 45ms
+	// 数据类型: time.Duration 常量
+	// 用途: 为初始等待添加随机抖动，避免请求风暴
+	// 生效范围: 强一致性读取流程
 	strongConsistencyInitialDelayJitter = 45 * time.Millisecond
-	batchLookupCacheTTL                 = 750 * time.Millisecond
+	// batchLookupCacheTTL 批量查找短期缓存TTL
+	// 数值定义: 750ms
+	// 数据类型: time.Duration 常量
+	// 用途: 缓存批量查找结果，减少重复查询但保持短时一致性
+	// 生效范围: 批量查找辅助缓存
+	batchLookupCacheTTL = 750 * time.Millisecond
 )
 
 var json = jsoniter.ConfigCompatibleWithStandardLibrary
@@ -1819,75 +1884,75 @@ func (u *UserService) ensureContactUnique(
 	}
 
 	checker := unique.NewChecker[interfaces.UserStore, *v1.User](unique.CheckerConfig[interfaces.UserStore, *v1.User]{
-		Store:               store,
-		Cache:               u.Redis,
-		PlaceholderTTL:      contactPlaceholderTTL,
-		CacheTTL:            contactCacheTTL,
-		PlaceholderFallback: RATE_LIMIT_PREVENTION,
+		Store:               store,                 //执行查重的存储实现，通常为具体的 DAO 或仓储实例，必填。
+		Cache:               u.Redis,               //用于占位与命中加速；若为空则退化为纯数据库校验。
+		PlaceholderTTL:      contactPlaceholderTTL, //	占位符在缓存中的存活时间。
+		CacheTTL:            contactCacheTTL,       //	缓存命中时的存活时间。
+		PlaceholderFallback: RATE_LIMIT_PREVENTION, //	当 AllowedOwner 与 PlaceholderValue 为空时使用的默认占位符。
 		CacheReady: func() bool {
 			return u.contactCacheReady.Load()
-		},
-		DegradeActive: userctx.IsCreateDegraded,
+		}, //返回缓存是否已预热完成，控制是否跳过数据库兜底。
+		DegradeActive: userctx.IsCreateDegraded, //检查当前请求是否处于降级模式。
 		EnsurePlaceholder: func(innerCtx context.Context, key string, owner string) {
 			u.ensureContactPlaceholder(innerCtx, key, owner)
-		},
+		}, //当需要写入占位符时的回调，通常用于降级兜底。
 		MarkDegraded: func(innerCtx context.Context, reason string, kv ...interface{}) {
 			u.markCreateDegraded(innerCtx, reason, kv...)
-		},
-		Retry:          util.RetryWithBackoff,
-		RetryPredicate: isRetryableError,
-		MaxRetries:     maxRetries,
-		ShouldDegrade:  shouldDegradeForError,
+		}, //标记当前请求进入降级模式，需幂等处理。
+		Retry:          util.RetryWithBackoff, //通用重试函数。
+		RetryPredicate: isRetryableError,      //判断是否需要重试的函数。
+		MaxRetries:     maxRetries,            //最大重试次数。
+		ShouldDegrade:  shouldDegradeForError, //判断是否需要降级的函数。
 		ShouldReleasePlaceholder: func(checkErr error) bool {
 			return !errors.IsCode(checkErr, code.ErrValidation)
-		},
-		NewLookupContext: u.newDBContext,
-		LookupTimeout:    u.contactLookupTimeout(),
+		}, //	判断在出现错误时是否应释放占位符。
+		NewLookupContext: u.newDBContext,           //创建用于查重的数据库上下文的函数。
+		LookupTimeout:    u.contactLookupTimeout(), // 单次查库的超时时间，小于等于0表示不限。
 		IsNotFound: func(err error) bool {
 			return errors.IsCode(err, code.ErrUserNotFound)
-		},
+		}, // 判断错误是否为“未找到”，用于终止重试。
 		IsCacheMiss: func(err error) bool {
 			return errors.Is(err, redis.Nil)
-		},
+		}, // 判断缓存访问是否未命中，未提供时默认所有错误均视为异常。(键不存在的时候为命中)
 		RecordStep: u.recordUserCreateStep,
 		Logger: unique.LoggerHooks{
 			Warn: func(msg string, kv ...interface{}) {
 				log.Warnw(msg, kv...)
-			},
+			}, //记录性能指标的回调，用于链路观测。
 			Error: func(msg string, kv ...interface{}) {
 				log.Errorw(msg, kv...)
-			},
+			}, // 日志钩子，用于输出缓存或占位异常。
 		},
 	})
 
 	fieldCfg := unique.FieldConfig[interfaces.UserStore, *v1.User]{
-		FieldLabel:       fieldLabel,
-		FieldKey:         fieldKey,
-		FieldValue:       fieldValue,
-		AllowedOwner:     allowedOwner,
-		CacheKey:         cacheKey,
-		PlaceholderValue: allowedOwner,
+		FieldLabel:       fieldLabel,   //错误提示中显示的字段中文名（如 “手机号已被占用”）
+		FieldKey:         fieldKey,     //指标记录中使用的字段标识（如 "phone"）
+		FieldValue:       fieldValue,   //待校验的字段值，需提前归一化。
+		AllowedOwner:     allowedOwner, //当前允许占用该字段的用户名，可为空字符串。
+		CacheKey:         cacheKey,     //对应的缓存键。
+		PlaceholderValue: allowedOwner, //占位符值，通常为当前用户名或特殊标记。
 		Lookup: func(lookupCtx context.Context, fieldStore interfaces.UserStore, value string) (*v1.User, error) {
 			return lookup(lookupCtx, fieldStore, value)
-		},
+		}, //查库函数，需返回持有该字段的实体，支持对 Store 的多态实现。
 		ExtractOwner: func(entity *v1.User) string {
 			if entity == nil {
 				return ""
 			}
 			return entity.Name
-		},
+		}, //从实体中提取唯一标识的回调，返回空字符串视为无冲突。
 		ConflictError: func(label, value string) error {
 			return errors.WithCode(code.ErrValidation, "%s已被占用: %s", label, value)
 		},
 		IsAllowedOwner: func(existingOwner, owner string) bool {
 			return strings.EqualFold(existingOwner, owner)
-		},
+		}, //构造冲突错误的回调，由业务方决定错误码与提示。
 		SkipPlaceholderLookup: func(owner string) bool {
 			return owner != "" && !strings.EqualFold(owner, RATE_LIMIT_PREVENTION)
-		},
-		DegradeReason: "contact_lookup_timeout",
-		DegradeKV:     []interface{}{"field", fieldKey, "owner", allowedOwner},
-		StepName:      "ensure_contact_unique",
+		}, //当占位成功且缓存已预热时，决定是否跳过数据库查重。
+		DegradeReason: "contact_lookup_timeout",                                //触发降级时上报的原因标签，可为空。
+		DegradeKV:     []interface{}{"field", fieldKey, "owner", allowedOwner}, //触发降级时额外记录的键值对，需偶数字段。
+		StepName:      "ensure_contact_unique",                                 //性能采集使用的步骤名，默认 ensure_field_unique。
 	}
 
 	return checker.EnsureFieldUnique(ctx, fieldCfg)

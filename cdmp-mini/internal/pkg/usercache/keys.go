@@ -2,16 +2,62 @@ package usercache
 
 import "strings"
 
+// Redis 缓存相关的键前缀与哨兵标记常量。
 const (
-	userPrefix            = "user:"
-	emailPrefix           = "user:email:"
-	phonePrefix           = "user:phone:"
+	// userPrefix 用户主缓存前缀
+	// 完整键格式: user:{username}
+	// 存储结构: String，值为序列化的用户资料JSON
+	// 用途: 提供按用户名的正向缓存，加速读取与一致性校验
+	// 存储位置: Redis
+	userPrefix = "user:"
+	// emailPrefix 用户邮箱索引前缀
+	// 完整键格式: user:email:{email}
+	// 存储结构: String，值为对应的用户名
+	// 用途: 通过邮箱快速查找用户名，用于登录与邮箱校验
+	// 存储位置: Redis
+	emailPrefix = "user:email:"
+	// phonePrefix 用户手机号索引前缀
+	// 完整键格式: user:phone:{phone}
+	// 存储结构: String，值为对应的用户名
+	// 用途: 通过手机号快速查找用户名，支撑手机号唯一校验
+	// 存储位置: Redis
+	phonePrefix = "user:phone:"
+	// negativeCounterPrefix 负缓存计数器前缀
+	// 完整键格式: user:negative-counter:{username}
+	// 存储结构: String(Int)，值为递增的负缓存命中次数
+	// 用途: 统计用户未命中频率，用于触发负缓存或黑名单保护
+	// 存储位置: Redis
 	negativeCounterPrefix = "user:negative-counter:"
-	blockCounterPrefix    = "user:block-counter:"
-	blacklistPrefix       = "user:blacklist:"
-	pendingCreatePrefix   = "user:pending:"
+	// blockCounterPrefix 黑名单预警计数器前缀
+	// 完整键格式: user:block-counter:{username}
+	// 存储结构: String(Int)，值为递增的风险计数
+	// 用途: 统计写操作风险次数，判定是否需要加入黑名单
+	// 存储位置: Redis
+	blockCounterPrefix = "user:block-counter:"
+	// blacklistPrefix 黑名单标记前缀
+	// 完整键格式: user:blacklist:{username}
+	// 存储结构: String，值为黑名单哨兵
+	// 用途: 标记用户已进入黑名单，拦截后续登录或写操作
+	// 存储位置: Redis
+	blacklistPrefix = "user:blacklist:"
+	// pendingCreatePrefix 创建幂等租约前缀
+	// 完整键格式: user:pending:{username}
+	// 存储结构: String(JSON)，值为 pendingLeaseSnapshot
+	// 用途: 记录用户创建流程的租约信息，保障幂等与背压控制
+	// 存储位置: Redis
+	pendingCreatePrefix = "user:pending:"
+	// NegativeCacheSentinel 负缓存哨兵值
+	// 完整键格式: 作为 user:{username} 键的值存储
+	// 存储结构: String，特殊用户名占位符
+	// 用途: 标记用户近期不存在并触发限流保护
+	// 存储位置: Redis
 	NegativeCacheSentinel = "rate_limit_prevention"
-	BlacklistSentinel     = "rate_limit_blacklisted"
+	// BlacklistSentinel 黑名单哨兵值
+	// 完整键格式: 作为 user:{username} 或 user:blacklist:{username} 键的值存储
+	// 存储结构: String，特殊用户名占位符
+	// 用途: 表示用户已被强制拉黑，应拒绝读写请求
+	// 存储位置: Redis
+	BlacklistSentinel = "rate_limit_blacklisted"
 )
 
 // UserKey returns the cache key used for storing user payloads by username.

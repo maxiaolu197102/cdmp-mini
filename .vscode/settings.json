@@ -129,7 +129,21 @@
     "icon": "checklist",
     "iconColour": "#ff0000"
   },
-  // 在 settings.json 中添加
-  "github.copilot.chat.terminal.executeCommand": "always",
-  "github.copilot.chat.terminal.selectionExecuteCommand": "always"
+  "logViewer.watch": [
+    // 监控 workspace 下的所有 JSON 日志（相对路径）
+    {
+      "title": "项目 JSON 日志", // 自定义名称（显示在插件面板中）
+      "pattern": "${workspaceFolder}/logs/**/*.json" // 路径：项目/logs下所有.json文件
+    },
+    // 监控系统日志（绝对路径）
+    {
+      "title": "系统日志",
+      "pattern": "/home/mxl/cdmp-mini/log/iam-apiserver.log" // 匹配 /var/log 下所有.log文件
+    },
+    // 监控 Windows 路径（支持 UNC 路径）
+    {
+      "title": "Windows 日志",
+      "pattern": "C:\\logs\\*.log" // Windows 路径示例
+    }
+  ]
 }

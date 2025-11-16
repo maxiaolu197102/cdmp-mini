@@ -29,7 +29,6 @@ import (
 var json = jsoniter.ConfigCompatibleWithStandardLibrary
 
 // Create 处理用户创建的 HTTP 请求入口
-//
 // 利用通用控制层管道完成参数解析、校验、调用 service 层以及响应输出；
 // 同时保留审计、链路追踪与指标上报，确保行为与历史实现一致。
 func (u *UserController) Create(ctx *gin.Context) {
@@ -176,6 +175,7 @@ func (u *UserController) readCreateRequestBody(ctx *gin.Context) ([]byte, error)
 		log.Errorw("读取请求体失败", "requestID", ctx.Request.Header.Get("X-Request-ID"), "error", err)
 		return nil, errors.WithCode(code.ErrBind, "读取请求体失败:%v", err.Error())
 	}
+	//创建可重复读取的缓冲区
 	ctx.Request.Body = io.NopCloser(bytes.NewBuffer(data))
 	return data, nil
 }

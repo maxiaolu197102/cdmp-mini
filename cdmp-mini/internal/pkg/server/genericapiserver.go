@@ -1353,6 +1353,8 @@ func (g *GenericAPIServer) printKafkaConfigInfo() {
 	log.Debugf("    - 消费者实例数量: %d", instanceCount)
 	log.Debugf("    - 批量大小: %d", kafkaOpts.BatchSize)
 	log.Debugf("    - 批量超时: %v", kafkaOpts.BatchTimeout)
+	log.Debugf("    - Flush Frequency: %v", kafkaOpts.FlushFrequency)
+	log.Debugf("    - Flush Max Messages: %d", kafkaOpts.FlushMaxMessages)
 }
 
 // 新增：存储所有消费者实例
