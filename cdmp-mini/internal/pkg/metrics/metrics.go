@@ -152,17 +152,24 @@ var (
 )
 
 var (
-	// HTTP指标 - 手动初始化（原配置不变）
-	HTTPResponseTime       *prometheus.HistogramVec
-	HTTPRequestsInFlight   prometheus.Gauge // 修正：去掉指针
-	HTTPRequestSize        *prometheus.HistogramVec
-	HTTPResponseSize       *prometheus.HistogramVec
-	HTTPRequestsTotal      *prometheus.CounterVec
-	HTTPRequestDuration    *prometheus.HistogramVec
+	//可能专门记录业务逻辑处理时间（区别于网络传输）
+	HTTPResponseTime *prometheus.HistogramVec
+	//并发请求数
+	HTTPRequestsInFlight prometheus.Gauge // 修正：去掉指针
+	//监控请求体数据量
+	HTTPRequestSize *prometheus.HistogramVec
+	// 响应体大小分布
+	HTTPResponseSize *prometheus.HistogramVec
+	//统计接收到的总请求数量
+	HTTPRequestsTotal *prometheus.CounterVec
+	//记录请求从接收到响应的完整时间
+	HTTPRequestDuration *prometheus.HistogramVec
+	//按不同维度监控进行中的请求
 	HTTPRequestsInProgress *prometheus.GaugeVec
 	CacheRequests          *prometheus.CounterVec
-	SlowHTTPRequests       *prometheus.CounterVec
-	HTTPErrors             *prometheus.CounterVec
+	// 统计超过阈值的慢请求
+	SlowHTTPRequests *prometheus.CounterVec
+	HTTPErrors       *prometheus.CounterVec
 )
 
 var (
@@ -1182,27 +1189,27 @@ func init() {
 // 		}
 // 	}
 
-// 	// 5. 基于错误消息的模式匹配
-// 	errMsg := strings.ToLower(err.Error())
-// 	switch {
-// 	case strings.Contains(errMsg, "timeout"):
-// 		return "timeout"
-// 	case strings.Contains(errMsg, "connection"):
-// 		return "connection_error"
-// 	case strings.Contains(errMsg, "deadlock"):
-// 		return "deadlock"
-// 	case strings.Contains(errMsg, "duplicate"):
-// 		return "duplicate"
-// 	case strings.Contains(errMsg, "constraint"):
-// 		return "constraint_violation"
-// 	case strings.Contains(errMsg, "full"):
-// 		return "disk_full"
-// 	default:
-// 		return "unknown"
-// 	}
-// }
-
-// 标记请求开始
+//		// 5. 基于错误消息的模式匹配
+//		errMsg := strings.ToLower(err.Error())
+//		switch {
+//		case strings.Contains(errMsg, "timeout"):
+//			return "timeout"
+//		case strings.Contains(errMsg, "connection"):
+//			return "connection_error"
+//		case strings.Contains(errMsg, "deadlock"):
+//			return "deadlock"
+//		case strings.Contains(errMsg, "duplicate"):
+//			return "duplicate"
+//		case strings.Contains(errMsg, "constraint"):
+//			return "constraint_violation"
+//		case strings.Contains(errMsg, "full"):
+//			return "disk_full"
+//		default:
+//			return "unknown"
+//		}
+//	}
+//
+// 并发请求数
 func HTTPMiddlewareStart() {
 	HTTPRequestsInFlight.Inc() // 现在可以正确调用方法
 }

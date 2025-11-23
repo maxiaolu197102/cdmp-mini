@@ -88,6 +88,7 @@ type LogSink struct{}
 
 func (LogSink) Name() string { return "log" }
 
+// log底层已经实现了并发机制,因此不需要加入同步锁
 func (LogSink) Write(_ context.Context, event Event) error {
 	keysAndValues := []any{
 		"actor", event.Actor,
@@ -203,7 +204,7 @@ func NewManager(cfg Config) (*Manager, error) {
 	if cfg.RecentBuffer <= 0 {
 		cfg.RecentBuffer = 256
 	}
-
+	//对sinks去重
 	sinks := dedupeSinks(cfg.Sinks)
 	if len(sinks) == 0 {
 		sinks = append(sinks, LogSink{})

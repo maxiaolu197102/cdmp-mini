@@ -16,10 +16,10 @@ import (
 )
 
 type UserController struct {
-	srv           service.ServiceManager
-	options       *options.Options
-	Producer      producer.MessageProducer
-	createHandler *createcontrol.Handler[*v1.User]
+	srv           service.ServiceManager           // 服务层实例
+	options       *options.Options                 // 配置选项
+	Producer      producer.MessageProducer         // 消息生产者
+	createHandler *createcontrol.Handler[*v1.User] // 创建处理器
 }
 
 // NewUserController creates a user handler.

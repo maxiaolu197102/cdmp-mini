@@ -94,7 +94,7 @@ func NewAuditOptions() *AuditOptions {
 		Enabled:         true,
 		BufferSize:      512,
 		ShutdownTimeout: 5 * time.Second,
-		LogFile:         "/var/log/iam/audit.log",
+		LogFile:         "/home/mxl/cdmp-mini/log/audit.log",
 		EnableMetrics:   true,
 		RecentBuffer:    256,
 		Protection:      defaultProtectionConfig(),

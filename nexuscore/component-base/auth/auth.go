@@ -28,7 +28,7 @@ const (
 
 // HashConfig describes how passwords should be hashed.
 type HashConfig struct {
-	Algorithm         string
+	Algorithm         string //
 	BcryptCost        int
 	Argon2Time        uint32
 	Argon2MemoryKB    uint32

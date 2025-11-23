@@ -127,20 +127,76 @@ const (
 var json = jsoniter.ConfigCompatibleWithStandardLibrary
 
 type UserService struct {
-	Store              interfaces.Factory
-	Redis              *storage.RedisCluster
-	Options            *options.Options
-	Producer           producer.MessageProducer
-	Audit              *audit.Manager
+	// Store 底层存储工厂
+	// 数据类型: interfaces.Factory 接口
+	// 用途: 提供数据库与缓存的访问入口
+	// 生效范围: UserService 内部所有读写流程
+	Store interfaces.Factory
+	// Redis Redis 集群客户端
+	// 数据类型: *storage.RedisCluster 指针
+	// 用途: 负责用户缓存、限流哨兵等数据操作
+	// 生效范围: 缓存、预热及限流逻辑
+	Redis *storage.RedisCluster
+	// Options 服务配置项
+	// 数据类型: *options.Options 指针
+	// 用途: 承载 server run、限流等可调参数
+	// 生效范围: 依赖配置的所有功能
+	Options *options.Options
+	// Producer 消息生产者
+	// 数据类型: producer.MessageProducer 接口
+	// 用途: 对外投递用户事件或异步任务
+	// 生效范围: 用户创建、更新等事件通知
+	Producer producer.MessageProducer
+	// Audit 审计管理器
+	// 数据类型: *audit.Manager 指针
+	// 用途: 记录用户操作日志与审计事件
+	// 生效范围: 审计链路与安全日志
+	Audit *audit.Manager
+	// pendingCoordinator 待审批协调器
+	// 数据类型: *usercache.PendingCoordinator 指针
+	// 用途: 管理用户待处理状态与缓存协调
+	// 生效范围: 待审批用户流程
 	pendingCoordinator *usercache.PendingCoordinator
-	group              singleflight.Group
-	createPipeline     *createpipeline.Pipeline[*v1.User]
+	// group singleflight 组
+	// 数据类型: singleflight.Group 结构体
+	// 用途: 合并并发请求避免重复执行
+	// 生效范围: 强一致性读写与缓存加载
+	group singleflight.Group
+	// createPipeline 创建流程管道
+	// 数据类型: *createpipeline.Pipeline[*v1.User] 指针
+	// 用途: 串联用户创建所需的校验与调用步骤
+	// 生效范围: 用户创建服务调用链
+	createPipeline *createpipeline.Pipeline[*v1.User]
 
-	contactWarmupMu        sync.Mutex
-	contactWarming         bool
-	contactCacheReady      atomic.Bool
-	preflightLimiter       *semaphore.Weighted
-	poolReporter           *poolStatsReporter
+	// contactWarmupMu 联系方式预热互斥锁
+	// 数据类型: sync.Mutex 结构体
+	// 用途: 串行化预热流程的并发进入
+	// 生效范围: 联系方式预热生命周期
+	contactWarmupMu sync.Mutex
+	// contactWarming 联系方式预热标记
+	// 数据类型: bool 布尔值
+	// 用途: 表示预热任务是否正在运行
+	// 生效范围: 预热任务调度
+	contactWarming bool
+	// contactCacheReady 联系方式缓存就绪标志
+	// 数据类型: atomic.Bool 原子布尔
+	// 用途: 指示缓存是否可供读取
+	// 生效范围: 读流程与预热流程间的状态同步
+	contactCacheReady atomic.Bool
+	// preflightLimiter 预检限流器
+	// 数据类型: *semaphore.Weighted 指针
+	// 用途: 限制并发预检请求数量
+	// 生效范围: 联系方式预检与唯一性校验
+	preflightLimiter *semaphore.Weighted
+	// poolReporter 连接池统计上报器
+	// 数据类型: *poolStatsReporter 指针
+	// 用途: 采集并上报数据库/缓存池使用指标
+	// 生效范围: 运维监控模块
+	poolReporter *poolStatsReporter
+	// contactWarmupNextRetry 联系方式预热下次重试时间
+	// 数据类型: atomic.Int64 原子整型
+	// 用途: 记录下一次预热的重试时间戳
+	// 生效范围: 预热调度与退避机制
 	contactWarmupNextRetry atomic.Int64
 }
 

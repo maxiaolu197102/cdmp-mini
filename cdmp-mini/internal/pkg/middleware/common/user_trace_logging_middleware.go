@@ -19,14 +19,14 @@ import (
 
 // UserTraceConfig controls user trace logging behaviour.
 type UserTraceConfig struct {
-	Enabled         bool
-	ServiceName     string
-	Env             string
-	PathPrefixes    []string
-	AwaitTimeout    time.Duration
-	LogSampleRate   float64
-	ForceLogOnError bool
-	DisableLogging  bool
+	Enabled         bool          //：是否启用用户追踪日志功能。
+	ServiceName     string        //当前服务的名称
+	Env             string        //当前服务运行的环境。
+	PathPrefixes    []string      //需要追踪的请求路径前缀列表
+	AwaitTimeout    time.Duration //等待追踪日志完成写入的超时时间。
+	LogSampleRate   float64       //日志采样率（取值范围 0.0~1.0）
+	ForceLogOnError bool          //发生错误时是否强制记录日志，忽略采样率。
+	DisableLogging  bool          //是否禁用具体的日志输出（仅关闭日志打印，不影响追踪链路的其他功能）       //
 }
 
 // UserTraceLoggingMiddleware instruments user-related APIs with tracing and metrics.
@@ -55,8 +55,9 @@ func UserTraceLoggingMiddleware(cfg UserTraceConfig) gin.HandlerFunc {
 			c.Next()
 			return
 		}
-
+		// 请求开始 - 增加并发计数
 		metrics.HTTPMiddlewareStart()
+		// 请求结束 - 减少并发计数
 		defer metrics.HTTPMiddlewareEnd()
 
 		requestID := ensureRequestID(c)

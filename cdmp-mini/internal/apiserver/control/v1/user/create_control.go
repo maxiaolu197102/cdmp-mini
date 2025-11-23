@@ -57,6 +57,7 @@ func (u *UserController) Create(ctx *gin.Context) {
 	outcomeMessage := ""
 	outcomeHTTP := http.StatusOK
 
+	//建立审计闭包
 	auditBase := func(outcome, message string) {
 		event := audit.BuildEventFromRequest(ctx.Request)
 		event.Action = "user.create"
@@ -68,8 +69,14 @@ func (u *UserController) Create(ctx *gin.Context) {
 		}
 		submitAudit(ctx, event)
 	}
-
+	//建立联系人唯一性校验计划(用户名 手机 email)
 	handler := u.ensureCreateHandler()
+	/*
+		这段 handler == nil 的判断是在兜底防御：
+		ensureCreateHandler 若无法返回有效的处理器（目前只有在 u 为 nil 或未来有人修改工厂逻辑才会发生），这里就立即中止流程。
+		这样不会触发空指针或 panic，而是返回结构化的 ErrServerBusy 错误，写回 HTTP 响应，同时记录审计和链路信息，方便排查。
+		因此它让控制器在初始化缺失或配置错误时也能优雅降级，对客户端友好，并保留必要的观测数据。
+	*/
 	if handler == nil {
 		err := errors.WithCode(code.ErrServerBusy, "创建控制流程未初始化")
 		controllerStatus = "error"
@@ -143,6 +150,7 @@ func (u *UserController) Create(ctx *gin.Context) {
 	trace.RecordOutcome(controllerCtx, outcomeCode, outcomeMessage, outcomeStatus, outcomeHTTP)
 }
 
+// 建立计划配置流程
 func (u *UserController) ensureCreateHandler() *createcontrol.Handler[*v1.User] {
 	if u == nil {
 		return nil

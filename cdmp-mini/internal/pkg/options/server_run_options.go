@@ -80,51 +80,97 @@ type ServerRunOptions struct {
 // NewServerRunOptions 初始化并返回服务器运行的默认配置选项
 func NewServerRunOptions() *ServerRunOptions {
 	return &ServerRunOptions{
-		Mode:                           gin.ReleaseMode,         // Gin框架运行模式：默认生产模式（ReleaseMode），关闭调试日志
-		Healthz:                        true,                    // 是否启用健康检查接口（如/healthz），默认开启
-		Middlewares:                    []string{},              // 全局启用的中间件列表，默认为空（可动态添加）
-		EnableProfiling:                true,                    // 是否启用性能分析（如pprof），默认开启
-		EnableMetrics:                  true,                    // 是否启用监控指标采集（如Prometheus），默认开启
-		FastDebugStartup:               false,                   // 是否启用快速调试启动模式（跳过部分初始化步骤），默认关闭
-		CookieDomain:                   "",                      // Cookie绑定的域名，默认为空（适用于当前域名）
-		CookieSecure:                   false,                   // Cookie是否仅通过HTTPS传输，默认关闭（开发环境常用）
-		CtxTimeout:                     60 * time.Second,        // 上下文超时时间：请求处理的最大超时，默认60秒
-		TimeoutThreshold:               100 * time.Second,       // 单个请求超时阈值：超过该时间强制终止处理
-		Env:                            "development",           // 运行环境标识：默认开发环境（development）
-		LoginRateLimit:                 500000,                  // 登录接口限流阈值：50万次/分钟（结合LoginWindow生效）
-		LoginWindow:                    2 * time.Minute,         // 登录限流时间窗口：2分钟（与LoginRateLimit配合限制单位时间请求数）
-		WriteRateLimit:                 500000,                  // 写操作默认限流阈值：每时间窗口内的最大请求数
-		MaxLoginFailures:               5,                       // 最大登录失败次数：超过该次数可能触发临时锁定
-		LoginFailReset:                 15 * time.Minute,        // 登录失败计数重置时间：15分钟后失败次数清零
-		LoginFastFailThreshold:         0,                       // 登录快速失败阈值：超过该值直接返回失败（0表示不启用）
-		LoginFastFailMessage:           "系统繁忙，请稍后再试",            // 登录快速失败时返回的提示信息
-		LoginUpdateBuffer:              1024,                    // 登录状态更新缓冲区大小：批量处理登录记录的缓冲区容量
-		LoginUpdateBatchSize:           64,                      // 登录状态批量更新大小：每次批量写入的最大记录数
-		LoginUpdateFlushInterval:       200 * time.Millisecond,  // 登录状态刷新间隔：缓冲区数据定时写入的间隔（200毫秒）
-		LoginUpdateTimeout:             2 * time.Second,         // 登录状态更新超时时间：批量写入操作的最大超时
-		LoginCredentialCacheTTL:        30 * time.Second,        // 登录凭证缓存有效期：30秒（减少重复校验开销）
-		LoginCredentialCacheSize:       1024,                    // 登录凭证缓存最大条目数：最多缓存1024条凭证
-		AdminToken:                     "",                      // 管理员令牌：用于绕过部分权限校验的特殊令牌（默认空）
-		EnableRateLimiter:              false,                   // 是否启用生产端限流器：默认关闭（按需开启）
-		MaxGoroutines:                  100,                     // 默认最大并发处理协程数：控制同时处理请求的协程上限
-		MaxQueueSize:                   100,                     // 默认任务队列大小：请求排队等待的最大数量
-		EnableUserTraceLogging:         true,                    // 是否启用用户操作跟踪日志：默认开启
-		UserTraceLogSampleRate:         1,                       // 用户跟踪日志采样率：10%的请求会记录详细日志
-		UserTraceForceLogErrors:        true,                    // 错误时是否强制记录跟踪日志：默认开启（即使未命中采样）
-		UserTraceDisableLogging:        false,                   // 是否禁用用户跟踪日志：默认关闭（与EnableUserTraceLogging配合）
-		EnableContactWarmup:            true,                    // 是否启用联系人预热：提前加载联系人数据（默认关闭）
-		ContactLookupTimeout:           2 * time.Second,         // 联系人查询超时时间：使用默认值
-		ContactRefreshTimeout:          3 * time.Second,         // 联系人刷新超时时间：使用默认值
-		ContactPreflightMaxConcurrency: 64,                      // 联系人预检查最大并发数：使用默认值
-		ProducerFallbackDir:            "/var/log/iam/producer", // 生产者降级日志目录：无法正常发送时的日志存储路径
-		PasswordHashCost:               6,                       // 密码哈希计算成本：数值越高越安全但耗时越长（适用于Argon2等算法）
-		PasswordHashAlgorithm:          auth.AlgorithmArgon2id,  // 密码哈希算法：默认使用Argon2id（高安全性算法）
-		Argon2Time:                     1,                       // Argon2算法的时间成本参数：迭代次数
-		Argon2MemoryKB:                 8 * 1024,                // Argon2算法的内存成本参数：8MB（8*1024 KB）
-		Argon2Parallelism:              1,                       // Argon2算法的并行度参数：单线程降低 GC/CPU 压力
-		Argon2KeyLength:                32,                      // Argon2算法生成的哈希值长度：32字节
-		Argon2SaltLength:               16,                      // Argon2算法使用的盐值长度：16字节
-		UserPendingCreateTTL:           MinUserPendingCreateTTL, // 待创建用户的有效期：使用最小默认值
+		// Mode 控制 Gin 运行模式，可选值 gin.DebugMode/gin.ReleaseMode/gin.TestMode。
+		// 被 internal/pkg/server/genericapiserver.go 中的 configureGin() 读取，影响路由日志输出与 pprof 注册策略。
+		Mode: gin.ReleaseMode,
+		// Healthz 决定是否暴露 /healthz 健康检查入口，installSystemRoutes() 会按该开关注册路由。
+		Healthz: true,
+		// Middlewares 为可选中间件键名列表，middleware.InstallMiddlewares() -> common.GetMiddlewareStack() 会据此构建顺序。
+		Middlewares: []string{},
+		// EnableProfiling 控制是否在 debug 模式下注册 pprof，installSystemRoutes() 联动 Mode 开关。
+		EnableProfiling: true,
+		// EnableMetrics 控制是否安装 Prometheus handler，installSystemRoutes() 新建 ginprometheus 实例时使用。
+		EnableMetrics: true,
+		// FastDebugStartup 仅在 debug 模式生效，genericapiserver.go 的 fastDebugStartupEnabled() 会依据它跳过 Kafka/MySQL 等耗时检查。
+		FastDebugStartup: false,
+		// EnableContactWarmup 决定是否执行联系人唯一性缓存预热，user_service.ensureContactCacheReady() 按此开关拉起后台任务。
+		EnableContactWarmup: true,
+		// EnableUserTraceLogging 控制是否安装用户链路日志中间件，router.installSystemRoutes() 创建 UserTraceLoggingMiddleware 时读取。
+		EnableUserTraceLogging: true,
+		// UserTraceLogSampleRate 为用户链路日志采样率，合法范围 [0,1]，传入 UserTraceLoggingMiddleware 配置。
+		UserTraceLogSampleRate: 1,
+		// UserTraceForceLogErrors 指定链路日志在错误场景下是否强制落盘，common.UserTraceLoggingMiddleware 使用。
+		UserTraceForceLogErrors: true,
+		// UserTraceDisableLogging 完全关闭链路日志输出（仍可配合 ForceLog），同样由 UserTraceLoggingMiddleware 读取。
+		UserTraceDisableLogging: false,
+		// ContactLookupTimeout 为联系人唯一性校验的外部存储查询超时，user_service.contactLookupTimeout() 消费。
+		ContactLookupTimeout: 2 * time.Second,
+		// ContactRefreshTimeout 控制联系人负缓存刷新时的存储请求超时时间，user_service.contactRefreshTimeout() 调用。
+		ContactRefreshTimeout: 3 * time.Second,
+		// ContactPreflightMaxConcurrency 限制预检并发度，user_service.newContactPreflightLimiter() 使用，需为正整数。
+		ContactPreflightMaxConcurrency: 64,
+		// CookieDomain 设置登录 Cookie 绑定域，server/auth.go 在写入 token 时读取，可为空或形如 .example.com。
+		CookieDomain: "",
+		// CookieSecure 决定 Cookie 是否仅在 HTTPS 传输，server/auth.go 设置 Set-Cookie 时使用。
+		CookieSecure: false,
+		// CtxTimeout 为用户控制器内派生上下文的超时时间（见 create_control.go 等），建议 >=30s 防止长链路崩溃。
+		CtxTimeout: 60 * time.Second,
+		// Env 标识当前环境，用于选择中间件组合（middleware/common/common.go）及日志输出标签。
+		Env: "development",
+		// LoginRateLimit 为登录接口速率阈值，LoginRateLimiterWithProvider() 读取，单位请求/窗口。
+		LoginRateLimit: 500000,
+		// LoginWindow 对应登录限流时间窗口，常与 LoginRateLimit 搭配，需 >0。
+		LoginWindow: 2 * time.Minute,
+		// MaxLoginFailures 定义失败次数阈值，server/auth.go 的防爆破逻辑会基于该值锁定账号。
+		MaxLoginFailures: 5,
+		// LoginFailReset 控制失败计数重置时间，auth 登录保护读取，需 >0。
+		LoginFailReset: 15 * time.Minute,
+		// LoginFastFailThreshold 达到后快速降级登录请求，auth.loginQuickFail() 调用，0 表示关闭。
+		LoginFastFailThreshold: 0,
+		// LoginFastFailMessage 为触发快速降级时返回的提示语，auth.loginQuickFail() 使用。
+		LoginFastFailMessage: "系统繁忙，请稍后再试",
+		// LoginUpdateBuffer 控制后台写入登录时间的缓冲区大小，genericapiserver.go 的 loginUpdater 构建时使用。
+		LoginUpdateBuffer: 1024,
+		// LoginUpdateBatchSize 为登录时间批量刷新的单次批量上限，同 loginUpdater。
+		LoginUpdateBatchSize: 64,
+		// LoginUpdateFlushInterval 表示登录时间刷新间隔，loginUpdater 用于定时落库。
+		LoginUpdateFlushInterval: 200 * time.Millisecond,
+		// LoginUpdateTimeout 为批量更新数据库的最大等待时长，loginUpdater -> server/auth.go 使用。
+		LoginUpdateTimeout: 2 * time.Second,
+		// LoginCredentialCacheTTL 设定登录凭证本地缓存过期时间，genericapiserver.go 安装 credentialCache 时读取，需 >0。
+		LoginCredentialCacheTTL: 30 * time.Second,
+		// LoginCredentialCacheSize 为凭证缓存最大条目数，同上构造器使用。
+		LoginCredentialCacheSize: 1024,
+		// WriteRateLimit 是写接口限流阈值，router.installApiRoutes() 创建 WriteRateLimiter 时使用。
+		WriteRateLimit: 500000,
+		// AdminToken 为管理端 API 的共享令牌，server/audit_admin.go 及 server/ratelimit_admin.go 在校验 Header 时读取。
+		AdminToken: "",
+		// EnableRateLimiter 控制 Kafka 生产端限流器是否启用，genericapiserver.go 中的 producer 初始化会按该值配置。
+		EnableRateLimiter: false,
+		// MaxGoroutines 用于限制后台任务协程数，目前尚未在运行期引用，预留给负载调度扩展。
+		MaxGoroutines: 100,
+		// MaxQueueSize 控制任务排队长度，当前未消费，保留给后续通用工作池实现。
+		MaxQueueSize: 100,
+		// TimeoutThreshold 计划作为整体请求超时熔断阈值，尚未接入具体逻辑，建议保持大于 CtxTimeout。
+		TimeoutThreshold: 100 * time.Second,
+		// ProducerFallbackDir 为 Kafka 生产失败时的降级落盘目录，genericapiserver.go 初始化 NewUserProducer() 时使用。
+		ProducerFallbackDir: "/var/log/iam/producer",
+		// PasswordHashCost 为 bcrypt 成本因子，仅在选择 bcrypt 算法时生效，合法范围 [bcrypt.MinCost, bcrypt.MaxCost]，HashConfig() 转发。
+		PasswordHashCost: 6,
+		// PasswordHashAlgorithm 选择密码哈希算法（bcrypt 或 argon2id），HashConfig() 以及用户接口的密码校验逻辑使用。
+		PasswordHashAlgorithm: auth.AlgorithmArgon2id,
+		// Argon2Time 为 Argon2 迭代次数，对应 HashConfig()，常取 >=1。
+		Argon2Time: 1,
+		// Argon2MemoryKB 指定 Argon2 内存参数，HashConfig() 使用，单位 KB，需 >=1024。
+		Argon2MemoryKB: 8 * 1024,
+		// Argon2Parallelism 控制 Argon2 并行度，HashConfig() 中压缩为 uint8，建议 >=1。
+		Argon2Parallelism: 1,
+		// Argon2KeyLength 为 Argon2 输出长度（字节），HashConfig() 消费，通常 32。
+		Argon2KeyLength: 32,
+		// Argon2SaltLength 为 Argon2 盐长度（字节），HashConfig() 使用，须 >=16 以保证随机度。
+		Argon2SaltLength: 16,
+		// UserPendingCreateTTL 控制 Redis 用户创建幂等标记的TTL，user_service.markPendingCreate() 读取，必须 >=MinUserPendingCreateTTL。
+		UserPendingCreateTTL: MinUserPendingCreateTTL,
 	}
 }
 
@@ -482,12 +528,12 @@ func (s *ServerRunOptions) HashConfig() auth.HashConfig {
 		return auth.HashConfig{}
 	}
 	cfg := auth.HashConfig{
-		Algorithm:        s.PasswordHashAlgorithm,
-		BcryptCost:       s.PasswordHashCost,
-		Argon2Time:       s.Argon2Time,
-		Argon2MemoryKB:   s.Argon2MemoryKB,
-		Argon2KeyLength:  s.Argon2KeyLength,
-		Argon2SaltLength: s.Argon2SaltLength,
+		Algorithm:        s.PasswordHashAlgorithm, // 算法类型：bcrypt、argon2等
+		BcryptCost:       s.PasswordHashCost,      // bcrypt成本因子
+		Argon2Time:       s.Argon2Time,            //	 Argon2迭代次数
+		Argon2MemoryKB:   s.Argon2MemoryKB,        //	 Argon2内存使用（KB）
+		Argon2KeyLength:  s.Argon2KeyLength,       //	 Argon2输出长度（字节）
+		Argon2SaltLength: s.Argon2SaltLength,      //	Argon2盐长度（字节）
 	}
 	if s.Argon2Parallelism > 0 {
 		if s.Argon2Parallelism > uint32(^uint8(0)) {
