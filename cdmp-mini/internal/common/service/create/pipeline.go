@@ -115,12 +115,14 @@ func (p *Pipeline[T]) Execute(ctx context.Context, entity T) (err error) {
 		p.cfg.Normalize(entity)
 	}
 
+	//密码判断和联系人预热
 	if p.cfg.BeforeUnique != nil {
 		if err = p.cfg.BeforeUnique(ctx, entity); err != nil {
 			return err
 		}
 	}
 
+	//联系方式唯一性检查并包装返回值
 	preflight, err := p.cfg.EnsureUnique(ctx, entity)
 	if err != nil {
 		return err

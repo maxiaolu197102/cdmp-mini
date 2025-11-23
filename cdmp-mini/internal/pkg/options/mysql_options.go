@@ -106,8 +106,8 @@ func NewMySQLOptions() *MySQLOptions {
 		PrimaryPort: 3306,
 
 		// 副本节点（所有节点都可用于读）
-		ReplicaHosts: []string{"192.168.10.8", "192.168.10.8", "192.168.10.8"},
-		ReplicaPorts: []int{3306, 3307, 3308},
+		ReplicaHosts: []string{"192.168.10.8", "192.168.10.8"},
+		ReplicaPorts: []int{3307, 3308},
 
 		// 集群配置
 		LoadBalance:         true,             // 启用负载均衡

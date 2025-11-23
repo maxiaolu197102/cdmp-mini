@@ -76,16 +76,31 @@ func NewDBManager(opts *Options) (*DBManager, error) {
 
 	// 连接副本数据库（读操作）
 	if opts.LoadBalance && len(opts.ReplicaHosts) > 0 {
+		primaryKey := fmt.Sprintf("%s:%d", opts.PrimaryHost, opts.PrimaryPort)
+		seenReplicas := make(map[string]struct{})
 		for i, host := range opts.ReplicaHosts {
-			if i < len(opts.ReplicaPorts) {
-				replicaDSN := buildDSN(host, opts.ReplicaPorts[i], opts)
-				replicaDB, err := connectWithRetry(replicaDSN, opts)
-				if err != nil {
-					log.Warnf("Failed to connect to replica %s:%d: %v", host, opts.ReplicaPorts[i], err)
-					continue
-				}
-				mgr.replicaDBs = append(mgr.replicaDBs, replicaDB)
+			if i >= len(opts.ReplicaPorts) {
+				log.Warnf("Replica host %s is missing a matching port configuration", host)
+				continue
 			}
+			replicaPort := opts.ReplicaPorts[i]
+			replicaKey := fmt.Sprintf("%s:%d", host, replicaPort)
+			if replicaKey == primaryKey {
+				log.Debugf("Skipping replica entry %s because it matches the primary", replicaKey)
+				continue
+			}
+			if _, exists := seenReplicas[replicaKey]; exists {
+				log.Debugf("Skipping duplicate replica entry %s", replicaKey)
+				continue
+			}
+			replicaDSN := buildDSN(host, replicaPort, opts)
+			replicaDB, err := connectWithRetry(replicaDSN, opts)
+			if err != nil {
+				log.Warnf("Failed to connect to replica %s:%d: %v", host, replicaPort, err)
+				continue
+			}
+			mgr.replicaDBs = append(mgr.replicaDBs, replicaDB)
+			seenReplicas[replicaKey] = struct{}{}
 		}
 	}
 
