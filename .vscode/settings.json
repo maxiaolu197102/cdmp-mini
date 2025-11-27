@@ -1,149 +1,170 @@
 {
-  // =============================================
-  // SQLTools 数据库连接配置
-  // =============================================
-  "sqltools.connections": [
-    {
-      "mysqlOptions": {
-        "authProtocol": "default",
-        "enableSsl": "Disabled"
-      },
-      "ssh": "Disabled",
-      "previewLimit": 50,
-      "server": "localhost",
-      "port": 3306,
-      "driver": "MariaDB",
-      "name": "IAM Database",
-      "database": "iam",
-      "username": "iam",
-      "askForPassword": true
-    }
-  ],
-  // =============================================
-  // 环境变量配置 - 用于测试和调试
-  // =============================================
-  "terminal.integrated.env.linux": {
-    "IAM_APISERVER_E2E": "1",
-    "SERVER_BIND_ADDRESS": "0.0.0.0",
-    "DEBUG_MODE": "true"
-  },
-  "terminal.integrated.env.windows": {
-    "IAM_APISERVER_E2E": "1",
-    "SERVER_BIND_ADDRESS": "0.0.0.0",
-    "DEBUG_MODE": "true"
-  },
-  "terminal.integrated.env.osx": {
-    "IAM_APISERVER_E2E": "1",
-    "SERVER_BIND_ADDRESS": "0.0.0.0",
-    "DEBUG_MODE": "true"
-  },
-  // =============================================
-  // 代码折叠配置
-  // =============================================
-  "editor.folding": true,
-  "editor.foldingHighlight": true,
-  "editor.foldingImportsByDefault": true,
-  "editor.foldingStrategy": "auto",
-  "editor.showFoldingControls": "always",
-  // 语言特定的折叠配置
-  "[go]": {
-    "editor.foldingStrategy": "indentation",
-    "editor.defaultFoldingRangeProvider": "ms-vscode.Go",
-    "editor.foldingImportsByDefault": true
-  },
-  "[javascript]": {
-    "editor.foldingImportsByDefault": true
-  },
-  "[typescript]": {
-    "editor.foldingImportsByDefault": true
-  },
-  "[python]": {
-    "editor.foldingImportsByDefault": true
-  },
-  "[java]": {
-    "editor.foldingImportsByDefault": true
-  },
-  // =============================================
-  // 通用开发配置
-  // =============================================
-  "files.exclude": {
-    "**/node_modules": true,
-    "**/tmp": true,
-    "**/vendor": true,
-    "**/.git": true,
-    "**/.DS_Store": true
-  },
-  "search.exclude": {
-    "**/node_modules": true,
-    "**/tmp": true,
-    "**/vendor": true
-  },
-  "files.autoSave": "onFocusChange",
-  "editor.formatOnSave": true,
-  "editor.formatOnPaste": true,
-  "editor.matchBrackets": "always",
-  "editor.bracketPairColorization.enabled": true,
-  "editor.codeLens": true,
-  // =============================================
-  // Go 语言特定配置
-  // =============================================
-  "go.useLanguageServer": true,
-  "go.lintOnSave": "file",
-  "go.formatTool": "gofmt",
-  "go.testFlags": [
-    "-v"
-  ],
-  "go.coverOnSave": false,
-  "go.autocompleteUnimportedPackages": true,
-  // =============================================
-  // 终端配置
-  // =============================================
-  "terminal.integrated.shell.linux": "/bin/bash",
-  "terminal.integrated.fontSize": 14,
-  "terminal.integrated.confirmOnExit": "never",
-  "terminal.integrated.confirmOnKill": "never",
-  "terminal.integrated.allowChords": false,
-  "terminal.integrated.sendKeybindingsToShell": false,
-  // =============================================
-  // 任务配置
-  // =============================================
-  "task.autoDetect": "on",
-  "task.quickOpen.history": 10,
-  "task.quickOpen.skip": false,
-  "task.saveBeforeRun": "always",
-  "task.allowAutomaticTasks": "on",
-  // =============================================
-  // 扩展特定配置
-  // =============================================
-  "errorLens.fontSize": "12px",
-  "todo-tree.general.tags": [
-    "TODO",
-    "FIXME",
-    "HACK",
-    "BUG",
-    "NOTE"
-  ],
-  "todo-tree.highlights.defaultHighlight": {
-    "foreground": "#ff0000",
-    "background": "#ffffff",
-    "icon": "checklist",
-    "iconColour": "#ff0000"
-  },
-  "logViewer.watch": [
-    // 监控 workspace 下的所有 JSON 日志（相对路径）
-    {
-      "title": "项目 JSON 日志", // 自定义名称（显示在插件面板中）
-      "pattern": "${workspaceFolder}/logs/**/*.json" // 路径：项目/logs下所有.json文件
+    // =============================================
+    // SQLTools 数据库连接配置
+    // =============================================
+    "sqltools.connections": [
+        {
+            "mysqlOptions": {
+                "authProtocol": "default",
+                "enableSsl": "Disabled"
+            },
+            "ssh": "Disabled",
+            "previewLimit": 50,
+            "server": "localhost",
+            "port": 3306,
+            "driver": "MariaDB",
+            "name": "IAM Database",
+            "database": "iam",
+            "username": "iam",
+            "askForPassword": true
+        }
+    ],
+    // =============================================
+    // 环境变量配置 - 用于测试和调试
+    // =============================================
+    "terminal.integrated.env.linux": {
+        "IAM_APISERVER_E2E": "1",
+        "SERVER_BIND_ADDRESS": "0.0.0.0",
+        "DEBUG_MODE": "true"
     },
-    // 监控系统日志（绝对路径）
-    {
-      "title": "系统日志",
-      "pattern": "/home/mxl/cdmp-mini/log/iam-apiserver.log" // 匹配 /var/log 下所有.log文件
+    "terminal.integrated.env.windows": {
+        "IAM_APISERVER_E2E": "1",
+        "SERVER_BIND_ADDRESS": "0.0.0.0",
+        "DEBUG_MODE": "true"
     },
-    // 监控 Windows 路径（支持 UNC 路径）
-    {
-      "title": "Windows 日志",
-      "pattern": "C:\\logs\\*.log" // Windows 路径示例
-    }
-  ]
+    "terminal.integrated.env.osx": {
+        "IAM_APISERVER_E2E": "1",
+        "SERVER_BIND_ADDRESS": "0.0.0.0",
+        "DEBUG_MODE": "true"
+    },
+    // =============================================
+    // 代码折叠配置
+    // =============================================
+    "editor.folding": true,
+    "editor.foldingHighlight": true,
+    "editor.foldingImportsByDefault": true,
+    "editor.foldingStrategy": "auto",
+    "editor.showFoldingControls": "always",
+    // =============================================
+    // 自动换行配置 - 新增
+    // =============================================
+    "editor.wordWrap": "on",
+    // =============================================
+    // 语言特定的折叠配置
+    // =============================================
+    "[go]": {
+        "editor.foldingStrategy": "indentation",
+        "editor.defaultFoldingRangeProvider": "ms-vscode.Go",
+        "editor.foldingImportsByDefault": true,
+        "editor.wordWrap": "on"
+    },
+    "[javascript]": {
+        "editor.foldingImportsByDefault": true,
+        "editor.wordWrap": "on"
+    },
+    "[typescript]": {
+        "editor.foldingImportsByDefault": true,
+        "editor.wordWrap": "on"
+    },
+    "[python]": {
+        "editor.foldingImportsByDefault": true,
+        "editor.wordWrap": "on"
+    },
+    "[java]": {
+        "editor.foldingImportsByDefault": true,
+        "editor.wordWrap": "on"
+    },
+    "[markdown]": {
+        "editor.wordWrap": "on",
+        "editor.wordWrapColumn": 80
+    },
+    "[yaml]": {
+        "editor.wordWrap": "on"
+    },
+    "[json]": {
+        "editor.wordWrap": "off"
+    },
+    // =============================================
+    // 通用开发配置
+    // =============================================
+    "files.exclude": {
+        "**/node_modules": true,
+        "**/tmp": true,
+        "**/vendor": true,
+        "**/.git": true,
+        "**/.DS_Store": true
+    },
+    "search.exclude": {
+        "**/node_modules": true,
+        "**/tmp": true,
+        "**/vendor": true
+    },
+    "files.autoSave": "onFocusChange",
+    "editor.formatOnSave": true,
+    "editor.formatOnPaste": true,
+    "editor.matchBrackets": "always",
+    "editor.bracketPairColorization.enabled": true,
+    "editor.codeLens": true,
+    // =============================================
+    // Go 语言特定配置
+    // =============================================
+    "go.useLanguageServer": true,
+    "go.lintOnSave": "file",
+    "go.formatTool": "gofmt",
+    "go.testFlags": [
+        "-v"
+    ],
+    "go.coverOnSave": false,
+    "go.autocompleteUnimportedPackages": true,
+    // =============================================
+    // 终端配置
+    // =============================================
+    "terminal.integrated.shell.linux": "/bin/bash",
+    "terminal.integrated.fontSize": 14,
+    "terminal.integrated.confirmOnExit": "never",
+    "terminal.integrated.confirmOnKill": "never",
+    "terminal.integrated.allowChords": false,
+    "terminal.integrated.sendKeybindingsToShell": false,
+    // =============================================
+    // 任务配置
+    // =============================================
+    "task.autoDetect": "on",
+    "task.quickOpen.history": 10,
+    "task.quickOpen.skip": false,
+    "task.saveBeforeRun": "always",
+    "task.allowAutomaticTasks": "on",
+    // =============================================
+    // 扩展特定配置
+    // =============================================
+    "errorLens.fontSize": "12px",
+    "todo-tree.general.tags": [
+        "TODO",
+        "FIXME",
+        "HACK",
+        "BUG",
+        "NOTE"
+    ],
+    "todo-tree.highlights.defaultHighlight": {
+        "foreground": "#ff0000",
+        "background": "#ffffff",
+        "icon": "checklist",
+        "iconColour": "#ff0000"
+    },
+    "logViewer.watch": [
+        // 监控 workspace 下的所有 JSON 日志（相对路径）
+        {
+            "title": "项目 JSON 日志", // 自定义名称（显示在插件面板中）
+            "pattern": "${workspaceFolder}/logs/**/*.json" // 路径：项目/logs下所有.json文件
+        },
+        // 监控系统日志（绝对路径）
+        {
+            "title": "系统日志",
+            "pattern": "/home/mxl/cdmp-mini/log/iam-apiserver.log" // 匹配 /var/log 下所有.log文件
+        },
+        // 监控 Windows 路径（支持 UNC 路径）
+        {
+            "title": "Windows 日志",
+            "pattern": "C:\\logs\\*.log" // Windows 路径示例
+        }
+    ]
 }

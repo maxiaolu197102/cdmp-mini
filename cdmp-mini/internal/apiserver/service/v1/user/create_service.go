@@ -151,8 +151,7 @@ func (u *UserService) prepareUserForCreate(ctx context.Context, user *v1.User) e
 	return nil
 }
 
-// ensureUserUnique 执行联系方式唯一性检查并包装返回值。
-//
+// ensureUserUnique 用户唯一性检查
 // param ctx: 链路上下文。
 // param user: 当前待创建的用户。
 //
@@ -274,6 +273,7 @@ func (u *UserService) markUserPendingForCreate(ctx context.Context, user *v1.Use
 	trace.AddRequestTag(pendingCtx, "username", user.Name)
 
 	start := time.Now()
+	//建立create状态
 	created, refreshed, ttl, setNXDuration, refreshDuration, err := u.markUserPendingCreate(pendingCtx, user.Name)
 	duration := time.Since(start)
 

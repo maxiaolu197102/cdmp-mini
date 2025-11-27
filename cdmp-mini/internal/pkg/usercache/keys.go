@@ -46,6 +46,12 @@ const (
 	// 用途: 记录用户创建流程的租约信息，保障幂等与背压控制
 	// 存储位置: Redis
 	pendingCreatePrefix = "user:pending:"
+	// pendingUserDepthPrefix 用户局部队列深度计数前缀
+	// 完整键格式: user:pending:depth:{username}
+	// 存储结构: String(Int)，记录用户级活跃租约数量
+	// 用途: 捕获局部热点，控制单用户背压
+	// 存储位置: Redis
+	pendingUserDepthPrefix = "user:pending:depth:"
 	// NegativeCacheSentinel 负缓存哨兵值
 	// 完整键格式: 作为 user:{username} 键的值存储
 	// 存储结构: String，特殊用户名占位符
@@ -132,4 +138,18 @@ func PendingCreateKey(username string) string {
 // PendingCreatePrefix 返回 pending 租约Key的前缀，便于扫描。
 func PendingCreatePrefix() string {
 	return pendingCreatePrefix
+}
+
+// PendingUserDepthKey 返回用户级队列深度的计数Key。
+func PendingUserDepthKey(username string) string {
+	trimmed := strings.TrimSpace(username)
+	if trimmed == "" {
+		return ""
+	}
+	return pendingUserDepthPrefix + trimmed
+}
+
+// PendingUserDepthPrefix 返回用户级队列深度计数的前缀。
+func PendingUserDepthPrefix() string {
+	return pendingUserDepthPrefix
 }

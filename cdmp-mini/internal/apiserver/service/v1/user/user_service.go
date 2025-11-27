@@ -2,7 +2,6 @@ package user
 
 import (
 	"context"
-	stdjson "encoding/json"
 	stdErrors "errors"
 	"fmt"
 	"math/rand"
@@ -15,8 +14,6 @@ import (
 	"github.com/bytedance/gopkg/util/logger"
 	jsoniter "github.com/json-iterator/go"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/options"
-
-	"github.com/google/uuid"
 
 	storectx "github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/store"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/store/interfaces"
@@ -122,6 +119,12 @@ const (
 	// 用途: 缓存批量查找结果，减少重复查询但保持短时一致性
 	// 生效范围: 批量查找辅助缓存
 	batchLookupCacheTTL = 750 * time.Millisecond
+	// redisDegradeReasonCache Redis 降级常量标记
+	redisDegradeReasonCache = "redis_cache_error"
+	// redisDegradeReasonPlaceholder Redis 占位降级常量标记
+	redisDegradeReasonPlaceholder = "redis_placeholder_error"
+	// contactDegradeCacheDefaultMaxEntries 降级本地缓存默认最大容量
+	contactDegradeCacheDefaultMaxEntries = 5000
 )
 
 var json = jsoniter.ConfigCompatibleWithStandardLibrary
@@ -198,6 +201,28 @@ type UserService struct {
 	// 用途: 记录下一次预热的重试时间戳
 	// 生效范围: 预热调度与退避机制
 	contactWarmupNextRetry atomic.Int64
+	// contactRedisDegradeActive Redis 降级全局标记
+	// 数据类型: atomic.Bool 原子布尔
+	contactRedisDegradeActive atomic.Bool
+	// contactRedisDegradeSince Redis 降级起始时间戳（Unix 秒）
+	contactRedisDegradeSince atomic.Int64
+	// contactRedisDegradeCache 降级模式下的本地唯一性缓存
+	contactRedisDegradeCache sync.Map
+	// contactRedisDegradeTTL 本地缓存有效期
+	contactRedisDegradeTTL time.Duration
+	// contactRedisHealthCheckInterval Redis 健康巡检间隔
+	contactRedisHealthCheckInterval time.Duration
+	// contactRedisMonitorOnce 确保健康巡检只启动一次
+	contactRedisMonitorOnce sync.Once
+	// contactRedisDegradeCacheSize 当前降级缓存条目数
+	contactRedisDegradeCacheSize atomic.Int64
+	// contactRedisDegradeCacheLimit 降级缓存容量上限
+	contactRedisDegradeCacheLimit int64
+}
+
+type contactDegradeCacheEntry struct {
+	owner   string
+	expires int64
 }
 
 type contextKey string
@@ -217,18 +242,6 @@ func newPreflightLimiter(opts *options.Options) *semaphore.Weighted {
 		concurrency = serveropts.DefaultContactPreflightMaxConcurrency
 	}
 	return semaphore.NewWeighted(int64(concurrency))
-}
-
-// pendingMarkerPayload uses a concrete struct so JSON encoding avoids map-based reflection overhead.
-type pendingMarkerPayload struct {
-	Status          string `json:"status"`
-	Degraded        bool   `json:"degraded,omitempty"`
-	Username        string `json:"username"`
-	Timestamp       string `json:"timestamp"`
-	RequestID       string `json:"request_id,omitempty"`
-	Operator        string `json:"operator,omitempty"`
-	ClientIP        string `json:"client_ip,omitempty"`
-	LegacyRequestID string `json:"legacy_request_id,omitempty"`
 }
 
 type pendingMarkerState struct {
@@ -371,6 +384,24 @@ func NewUserService(store interfaces.Factory, redis *storage.RedisCluster, opts 
 		preflightLimiter: newPreflightLimiter(opts),
 		poolReporter:     newPoolStatsReporterForFactory(store),
 	}
+
+	if opts != nil && opts.ServerRunOptions != nil {
+		svc.contactRedisDegradeTTL = opts.ServerRunOptions.ContactDegradeCacheTTL
+		svc.contactRedisHealthCheckInterval = opts.ServerRunOptions.ContactDegradeHealthCheckInterval
+		if limit := opts.ServerRunOptions.ContactDegradeCacheMaxEntries; limit > 0 {
+			svc.contactRedisDegradeCacheLimit = int64(limit)
+		}
+	}
+	if svc.contactRedisDegradeTTL <= 0 {
+		svc.contactRedisDegradeTTL = 20 * time.Second
+	}
+	if svc.contactRedisHealthCheckInterval <= 0 {
+		svc.contactRedisHealthCheckInterval = 10 * time.Second
+	}
+	if svc.contactRedisDegradeCacheLimit <= 0 {
+		svc.contactRedisDegradeCacheLimit = contactDegradeCacheDefaultMaxEntries
+	}
+	svc.startContactDegradeMonitor()
 	if redis != nil {
 		cfg := usercache.PendingCoordinatorConfig{
 			LeaseTTL:       svc.pendingCreateTTL(),
@@ -687,7 +718,9 @@ func (u *UserService) lookupPendingCreateMarker(ctx context.Context, username st
 		return state, nil
 	}
 	if u.pendingCoordinator == nil {
-		return u.legacyLookupPendingCreateMarker(ctx, trimmed)
+		err := errors.WithCode(code.ErrServerBusy, "pending coordinator 未初始化")
+		trace.AddRequestTag(ctx, "pending_coordinator_missing", true)
+		return state, err
 	}
 	snapshot, err := u.pendingCoordinator.Observe(ctx, trimmed)
 	if err != nil {
@@ -711,61 +744,6 @@ func (u *UserService) lookupPendingCreateMarker(ctx context.Context, username st
 			state.degraded = true
 		}
 	}
-	return state, nil
-}
-
-func (u *UserService) legacyLookupPendingCreateMarker(ctx context.Context, username string) (pendingMarkerState, error) {
-	state := pendingMarkerState{}
-	if u == nil || u.Redis == nil {
-		return state, nil
-	}
-	trimmed := strings.TrimSpace(username)
-	if trimmed == "" {
-		return state, nil
-	}
-	key := usercache.PendingCreateKey(trimmed)
-	if key == "" {
-		return state, nil
-	}
-
-	redisCtx, cancel := u.redisOpContext(ctx)
-	start := time.Now()
-	value, err := u.Redis.GetKey(redisCtx, key)
-	cancel()
-	duration := time.Since(start)
-	metricErr := err
-	if errors.Is(err, redis.Nil) || errors.Is(err, storage.ErrKeyNotFound) {
-		metricErr = nil
-	}
-	metrics.RecordRedisOperation("pending_marker_get", duration.Seconds(), metricErr)
-	if err != nil {
-		if errors.Is(err, redis.Nil) || errors.Is(err, storage.ErrKeyNotFound) {
-			return state, nil
-		}
-		return state, err
-	}
-
-	state.exists = true
-	if degraded, decodeErr := usercache.PendingMarkerIsDegraded(value); decodeErr != nil {
-		trace.AddRequestTag(ctx, "pending_marker_decode_error", decodeErr.Error())
-	} else if degraded {
-		state.degraded = true
-	}
-
-	ttlCtx, ttlCancel := u.redisOpContext(ctx)
-	ttlStart := time.Now()
-	ttlSeconds, ttlErr := u.Redis.GetExp(ttlCtx, key)
-	ttlCancel()
-	ttlDuration := time.Since(ttlStart)
-	ttlMetricErr := ttlErr
-	if errors.Is(ttlErr, storage.ErrKeyNotFound) {
-		ttlMetricErr = nil
-	}
-	metrics.RecordRedisOperation("pending_marker_ttl", ttlDuration.Seconds(), ttlMetricErr)
-	if ttlErr == nil && ttlSeconds > 0 {
-		state.ttl = time.Duration(ttlSeconds) * time.Second
-	}
-
 	return state, nil
 }
 
@@ -970,42 +948,6 @@ func (u *UserService) pendingLeaseMetadata(ctx context.Context, username string)
 	return meta
 }
 
-func (u *UserService) pendingCreatePayload(ctx context.Context, username string) string {
-	timestamp := time.Now().UTC().Format(time.RFC3339Nano)
-	degraded := userctx.IsCreateDegraded(ctx)
-	status := "pending"
-	if degraded {
-		status = "degraded"
-		trace.AddRequestTag(ctx, "create_pending_degraded", true)
-	}
-	payload := pendingMarkerPayload{
-		Status:    status,
-		Degraded:  degraded,
-		Username:  username,
-		Timestamp: timestamp,
-	}
-	if traceCtx := trace.FromContext(ctx); traceCtx != nil {
-		if requestID := traceCtx.RequestContext.RequestID; requestID != "" {
-			payload.RequestID = requestID
-		}
-		if operator := traceCtx.RequestContext.Operator; operator != "" {
-			payload.Operator = operator
-		}
-		if clientIP := traceCtx.RequestContext.ClientIP; clientIP != "" {
-			payload.ClientIP = clientIP
-		}
-	}
-	if legacyID := ctx.Value("requestID"); legacyID != nil {
-		payload.LegacyRequestID = fmt.Sprint(legacyID)
-	}
-	data, err := json.Marshal(&payload)
-	if err != nil {
-		log.Warnw("构造用户创建幂等标记payload失败，降级为时间戳", "username", username, "error", err)
-		return timestamp
-	}
-	return string(data)
-}
-
 // markUserPendingCreate 为用户创建流程写入 Redis 占位标记
 //
 // 通过 SetNX 和 TTL 刷新机制标识某个用户名处于“创建中”状态，供消费侧和并发请求识别；同时记录相关耗时指标。
@@ -1047,7 +989,9 @@ func (u *UserService) markUserPendingCreate(ctx context.Context, username string
 		return false, false, 0, 0, 0, nil
 	}
 	if u.pendingCoordinator == nil {
-		return u.legacyMarkUserPendingCreate(ctx, trimmed)
+		trace.AddRequestTag(ctx, "pending_coordinator_missing", true)
+		log.Errorw("pending coordinator not initialized", "component", "user_service", "username", trimmed)
+		return false, false, 0, 0, 0, errors.WithCode(code.ErrServerBusy, "pending coordinator 未初始化")
 	}
 	if depth, level, sampleErr := u.pendingCoordinator.SampleQueueDepth(ctx); sampleErr != nil {
 		trace.AddRequestTag(ctx, "pending_queue_sample_error", sampleErr.Error())
@@ -1117,7 +1061,7 @@ func (u *UserService) markUserPendingCreate(ctx context.Context, username string
 		trace.AddRequestTag(ctx, "pending_marker_setnx_ms", result.SetNXDuration.Milliseconds())
 		return false, false, 0, result.SetNXDuration, 0, nil
 	}
-	pendingTTL := lease.LeaseExpiresAt.Sub(time.Now())
+	pendingTTL := time.Until(lease.LeaseExpiresAt)
 	if pendingTTL < 0 {
 		pendingTTL = 0
 	}
@@ -1155,102 +1099,6 @@ func (u *UserService) handleExpiredPendingConflict(ctx context.Context, username
 		metrics.PendingLeaseEvents.WithLabelValues("user_service", "expired_conflict").Inc()
 	}
 	trace.AddRequestTag(ctx, "pending_expired_conflict", true)
-}
-
-func (u *UserService) legacyMarkUserPendingCreate(ctx context.Context, username string) (bool, bool, time.Duration, time.Duration, time.Duration, error) {
-	trimmed := strings.TrimSpace(username)
-	if trimmed == "" || u == nil || u.Redis == nil {
-		return false, false, 0, 0, 0, nil
-	}
-	key := usercache.PendingCreateKey(trimmed)
-	if key == "" {
-		return false, false, 0, 0, 0, nil
-	}
-	ttl := u.pendingCreateTTL()
-	if ttl <= 0 {
-		ttl = 2 * time.Minute
-	}
-	if jitter := time.Duration(rand.Intn(5)) * time.Second; jitter > 0 {
-		ttl += jitter
-	}
-	meta := u.pendingLeaseMetadata(ctx, trimmed)
-	now := time.Now().UTC()
-	expiresAt := now.Add(ttl)
-	ownerID := uuid.New().String()
-	degraded := userctx.IsCreateDegraded(ctx)
-	status := "pending"
-	if degraded {
-		status = "degraded"
-	}
-	snapshot := struct {
-		Status          string `json:"status"`
-		Degraded        bool   `json:"degraded,omitempty"`
-		State           string `json:"state"`
-		OwnerID         string `json:"owner_id"`
-		Version         int64  `json:"version"`
-		LeaseExpiresAt  string `json:"lease_expires_at"`
-		AcquireAt       string `json:"acquire_at"`
-		UpdatedAt       string `json:"updated_at"`
-		Username        string `json:"username,omitempty"`
-		RequestID       string `json:"request_id,omitempty"`
-		Operator        string `json:"operator,omitempty"`
-		ClientIP        string `json:"client_ip,omitempty"`
-		LegacyRequestID string `json:"legacy_request_id,omitempty"`
-	}{
-		Status:          status,
-		Degraded:        degraded,
-		State:           string(usercache.PendingStateLease),
-		OwnerID:         ownerID,
-		Version:         now.UnixNano(),
-		LeaseExpiresAt:  expiresAt.Format(time.RFC3339Nano),
-		AcquireAt:       now.Format(time.RFC3339Nano),
-		UpdatedAt:       now.Format(time.RFC3339Nano),
-		Username:        trimmed,
-		RequestID:       strings.TrimSpace(meta.RequestID),
-		Operator:        strings.TrimSpace(meta.Operator),
-		ClientIP:        strings.TrimSpace(meta.ClientIP),
-		LegacyRequestID: strings.TrimSpace(meta.LegacyRequestID),
-	}
-	payloadBytes, marshalErr := stdjson.Marshal(&snapshot)
-	leaseOwnerForTrace := ""
-	if marshalErr != nil {
-		log.Warnw("构造 pending 租约快照失败，回退旧格式", "username", trimmed, "error", marshalErr)
-		payloadBytes = []byte(u.pendingCreatePayload(ctx, trimmed))
-	} else {
-		leaseOwnerForTrace = ownerID
-	}
-	payload := string(payloadBytes)
-	redisCtx, cancel := u.redisOpContext(ctx)
-	defer cancel()
-	setNXStart := time.Now()
-	created, err := u.Redis.SetNX(redisCtx, key, payload, ttl)
-	setNXDuration := time.Since(setNXStart)
-	metrics.RecordRedisOperation("pending_marker_setnx", setNXDuration.Seconds(), err)
-	trace.AddRequestTag(ctx, "pending_marker_setnx_ms", setNXDuration.Milliseconds())
-	if leaseOwnerForTrace != "" {
-		trace.AddRequestTag(ctx, "pending_lease_owner", leaseOwnerForTrace)
-	}
-	if err != nil {
-		log.Errorw("设置用户创建幂等标记失败", "username", trimmed, "error", err)
-		trace.AddRequestTag(ctx, "pending_marker_setnx_error", err.Error())
-		return false, false, ttl, setNXDuration, 0, errors.WithCode(code.ErrRedisFailed, "设置用户创建幂等标记失败")
-	}
-	if created {
-		return true, false, ttl, setNXDuration, 0, nil
-	}
-	refreshCtx, refreshCancel := u.redisOpContext(ctx)
-	refreshStart := time.Now()
-	refreshErr := u.Redis.SetKey(refreshCtx, key, payload, ttl)
-	refreshCancel()
-	refreshDuration := time.Since(refreshStart)
-	metrics.RecordRedisOperation("pending_marker_refresh", refreshDuration.Seconds(), refreshErr)
-	trace.AddRequestTag(ctx, "pending_marker_refresh_ms", refreshDuration.Milliseconds())
-	if refreshErr != nil {
-		log.Errorw("刷新用户创建幂等标记失败", "username", trimmed, "error", refreshErr)
-		trace.AddRequestTag(ctx, "pending_marker_refresh_error", refreshErr.Error())
-		return false, false, ttl, setNXDuration, refreshDuration, errors.WithCode(code.ErrRedisFailed, "刷新用户创建幂等标记失败")
-	}
-	return false, true, ttl, setNXDuration, refreshDuration, nil
 }
 
 func (u *UserService) redisOpTimeout() time.Duration {
@@ -1569,12 +1417,19 @@ func (u *UserService) shouldRunPreflight(ctx context.Context, user *v1.User) boo
 	if user == nil {
 		return false
 	}
+	// Redis 降级模式时跳过预检
+	if u.isRedisDegradeActive() {
+		return false
+	}
+	// 强制刷新或强一致性请求时执行预检
 	if forceCacheRefreshFromContext(ctx) || isStrongConsistencyRequest(ctx) {
 		return true
 	}
+	// 用户信息完全为空时跳过预检
 	if strings.TrimSpace(user.Name) == "" && user.Email == "" && user.Phone == "" {
 		return false
 	}
+	// 缓存未预热时强制执行预检
 	if u.Redis == nil || !u.contactCacheReady.Load() {
 		return true
 	}
@@ -1628,6 +1483,225 @@ func shouldDegradeForError(err error) bool {
 	return strings.Contains(msg, "deadline exceeded") || strings.Contains(msg, "timeout")
 }
 
+func (u *UserService) isRedisDegradeActive() bool {
+	return u != nil && u.contactRedisDegradeActive.Load()
+}
+
+func (u *UserService) enableRedisDegrade(reason string, kv ...interface{}) {
+	if u == nil {
+		return
+	}
+	if u.contactRedisDegradeActive.CompareAndSwap(false, true) {
+		u.contactRedisDegradeSince.Store(time.Now().Unix())
+		fields := []interface{}{"reason", reason}
+		if len(kv) > 0 {
+			fields = append(fields, kv...)
+		}
+		log.Warnw("联系人唯一性进入Redis降级模式", fields...)
+	}
+}
+
+func (u *UserService) disableRedisDegrade(reason string) {
+	if u == nil {
+		return
+	}
+	if !u.contactRedisDegradeActive.CompareAndSwap(true, false) {
+		return
+	}
+	u.contactRedisDegradeSince.Store(0)
+	u.clearContactDegradeCache()
+	log.Infow("联系人唯一性Redis降级结束", "reason", reason)
+}
+
+func (u *UserService) contactDegradeCacheGet(key string) (string, bool) {
+	if u == nil || strings.TrimSpace(key) == "" {
+		return "", false
+	}
+	value, ok := u.contactRedisDegradeCache.Load(key)
+	if !ok {
+		return "", false
+	}
+	entry, castOK := value.(contactDegradeCacheEntry)
+	if !castOK {
+		u.contactDegradeCacheDelete(key)
+		return "", false
+	}
+	if entry.expires > 0 && time.Now().UnixNano() > entry.expires {
+		u.contactDegradeCacheDelete(key)
+		return "", false
+	}
+	return entry.owner, true
+}
+
+func (u *UserService) contactDegradeCacheSet(key, owner string) {
+	if u == nil || strings.TrimSpace(key) == "" {
+		return
+	}
+	ttl := u.contactRedisDegradeTTL
+	if ttl <= 0 {
+		return
+	}
+	now := time.Now()
+	nowUnix := now.UnixNano()
+	value, existed := u.contactRedisDegradeCache.Load(key)
+	if existed {
+		if entry, ok := value.(contactDegradeCacheEntry); ok {
+			if entry.expires > 0 && nowUnix > entry.expires {
+				u.contactDegradeCacheDelete(key)
+				existed = false
+			}
+		} else {
+			u.contactDegradeCacheDelete(key)
+			existed = false
+		}
+	}
+	if !existed {
+		if !u.ensureContactDegradeCacheCapacity() {
+			return
+		}
+	}
+	u.contactRedisDegradeCache.Store(key, contactDegradeCacheEntry{
+		owner:   owner,
+		expires: now.Add(ttl).UnixNano(),
+	})
+	if !existed {
+		u.contactRedisDegradeCacheSize.Add(1)
+	}
+}
+
+func (u *UserService) cleanupContactDegradeCache() {
+	if u == nil {
+		return
+	}
+	now := time.Now().UnixNano()
+	u.contactRedisDegradeCache.Range(func(key, value interface{}) bool {
+		entry, ok := value.(contactDegradeCacheEntry)
+		if !ok || (entry.expires > 0 && now > entry.expires) {
+			u.contactDegradeCacheDelete(key)
+		}
+		return true
+	})
+}
+
+func (u *UserService) clearContactDegradeCache() {
+	if u == nil {
+		return
+	}
+	u.contactRedisDegradeCache.Range(func(key, _ interface{}) bool {
+		u.contactDegradeCacheDelete(key)
+		return true
+	})
+	u.contactRedisDegradeCacheSize.Store(0)
+}
+
+func (u *UserService) contactDegradeCacheDelete(key interface{}) bool {
+	if u == nil || key == nil {
+		return false
+	}
+	if _, ok := u.contactRedisDegradeCache.LoadAndDelete(key); ok {
+		u.decrementContactDegradeCacheSize()
+		return true
+	}
+	return false
+}
+
+func (u *UserService) decrementContactDegradeCacheSize() {
+	if u == nil {
+		return
+	}
+	for {
+		current := u.contactRedisDegradeCacheSize.Load()
+		if current <= 0 {
+			return
+		}
+		if u.contactRedisDegradeCacheSize.CompareAndSwap(current, current-1) {
+			return
+		}
+	}
+}
+
+func (u *UserService) ensureContactDegradeCacheCapacity() bool {
+	if u == nil {
+		return false
+	}
+	limit := u.contactRedisDegradeCacheLimit
+	if limit <= 0 {
+		return true
+	}
+	if u.contactRedisDegradeCacheSize.Load() < limit {
+		return true
+	}
+	u.cleanupContactDegradeCache()
+	if u.contactRedisDegradeCacheSize.Load() < limit {
+		return true
+	}
+	evicted := false
+	u.contactRedisDegradeCache.Range(func(key, _ interface{}) bool {
+		if u.contactDegradeCacheDelete(key) {
+			evicted = true
+			return false
+		}
+		return true
+	})
+	if u.contactRedisDegradeCacheSize.Load() < limit {
+		return true
+	}
+	size := u.contactRedisDegradeCacheSize.Load()
+	if !evicted {
+		log.Warnw("联系人唯一性降级缓存达到容量上限，忽略新条目", "limit", limit, "size", size)
+		return false
+	}
+	log.Warnw("联系人唯一性降级缓存逐出后仍超出容量，忽略新条目", "limit", limit, "size", size)
+	return false
+}
+
+func (u *UserService) checkRedisHealthy() bool {
+	if u == nil || u.Redis == nil {
+		return false
+	}
+	timeout := 3 * time.Second
+	if u.Options != nil && u.Options.RedisOptions != nil && u.Options.RedisOptions.Timeout > 0 {
+		timeout = u.Options.RedisOptions.Timeout
+	}
+	if timeout <= 0 {
+		timeout = 3 * time.Second
+	}
+	if timeout < time.Second {
+		timeout = time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	_, err := u.Redis.GetKey(ctx, "__contact_health_ping__")
+	return err == nil || stdErrors.Is(err, redis.Nil)
+}
+
+func (u *UserService) startContactDegradeMonitor() {
+	if u == nil {
+		return
+	}
+	u.contactRedisMonitorOnce.Do(func() {
+		interval := u.contactRedisHealthCheckInterval
+		if interval <= 0 {
+			interval = 10 * time.Second
+		}
+		go func() {
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+			for range ticker.C {
+				if u.contactRedisDegradeActive.Load() {
+					if u.checkRedisHealthy() {
+						u.disableRedisDegrade("redis_recovered")
+					} else {
+						u.cleanupContactDegradeCache()
+					}
+				} else {
+					u.cleanupContactDegradeCache()
+				}
+			}
+		}()
+	})
+}
+
 func (u *UserService) markCreateDegraded(ctx context.Context, reason string, kv ...interface{}) {
 	//MarkCreateDegraded 切换降级标记；当从“非降级”转为“降级”时返回 true
 	if userctx.MarkCreateDegraded(ctx) {
@@ -1641,11 +1715,14 @@ func (u *UserService) markCreateDegraded(ctx context.Context, reason string, kv 
 			fields = append(fields, kv...)
 		}
 		log.Warnw("用户创建进入降级模式", fields...)
-		return
 	}
 	// 非首次进入降级模式：只更新降级原因（如果有新的原因）
 	if reason != "" {
 		trace.AddRequestTag(ctx, "create_degraded_reason", reason)
+	}
+	//把全局降级标志拉起，让后续请求改走本地缓存兜底，直到监控线程发现 Redis 恢复
+	if reason == redisDegradeReasonCache || reason == redisDegradeReasonPlaceholder {
+		u.enableRedisDegrade(reason, kv...)
 	}
 }
 
@@ -1659,11 +1736,36 @@ func contactFieldFromCacheKey(cacheKey string) string {
 	return "username"
 }
 
+// ensureContactPlaceholder 确保联系方式唯一性占位符存在于 Redis
+// 通过 SetNX 操作尝试写入占位符，若已存在则读取现有值并根据需要刷新过期时间。
+// 适用于用户创建等入口在降级模式下写入联系方式占位符，防止重复创建。//
+// 参数：
+//
+//	ctx: 调用上下文，携带 trace、deadline 等信息
+//	cacheKey: 联系方式对应的 Redis 键
+//	owner: 占位符所有者标识，通常为用户名
+//
+// 返回值：
+//
+//	无: 此函数无返回值
 func (u *UserService) ensureContactPlaceholder(ctx context.Context, cacheKey, owner string) {
 	if u.Redis == nil || cacheKey == "" {
 		return
 	}
 	fieldKey := contactFieldFromCacheKey(cacheKey)
+	//placeholder 是我们即将写入 Redis 的 占位值，
+	//用来表示“当前这个字段暂时由谁占着坑”。正常情况下传入的
+	// owner 就是发起请求的用户（也就是    allowedOwner），
+	// 于是占位写的是用户名。
+	//如果 owner 为空串（例如调用方没带用户名、降级兜底时想写哨兵值），
+	// 我们 fallback 到 RATE_LIMIT_PREVENTION，避免把空字符串写进 Redis。
+	//allowedOwner 是业务侧允许占用该字段的用户，用来判断缓存命中时能不能直接放行； 
+	// cachedOwner（或 cacheOwner）则是从 Redis 读到的实际值。
+	//换句话说：   placeholder/   owner 表示“实际写入占位的值”，
+	//    allowedOwner 表示“允许占这个坑的用户”， 
+	// cachedOwner 是“缓存里目前记录的占用者”。多数场景下三者一样，
+	// 但在降级或哨兵占位时，
+	//   placeholder 会是 sentinel，而    allowedOwner 仍然保留真实用户名。
 	placeholder := owner
 	if strings.TrimSpace(placeholder) == "" {
 		placeholder = RATE_LIMIT_PREVENTION
@@ -1697,7 +1799,10 @@ func (u *UserService) ensureContactPlaceholder(ctx context.Context, cacheKey, ow
 		}
 		return
 	}
-	/// 判断是否需要刷新占位符：若现有值与当前占位符匹配（或为特殊标记/空），则延长过期时间
+	//ok == false：表示键早就存在（可能是同一用户的幂等请求，
+	// 或者已经有其它占位/哨兵值）。这时才会执行后面的 GetKey，
+	// 看旧值是谁；如果旧值和我们当前的 placeholder（或特殊哨兵）一致，
+	// 就调用 SetKey 延长 TTL。若旧值不同，则保持原状，不去覆盖。
 	if strings.EqualFold(existing, placeholder) || existing == "" || existing == RATE_LIMIT_PREVENTION {
 		refreshCtx, refreshCancel := u.redisOpContext(ctx)
 		refreshStart := time.Now()
@@ -1705,7 +1810,7 @@ func (u *UserService) ensureContactPlaceholder(ctx context.Context, cacheKey, ow
 		refreshDuration := time.Since(refreshStart)
 		u.recordUserCreateStep(ctx, "redis_placeholder_refresh", fieldKey, owner, refreshDuration, setErr)
 		if setErr != nil {
-			log.Warnw("唯一性灰度占位刷新失败", "key", cacheKey, "error", setErr)
+			log.Warnw("唯一性灰度占位ttl刷新失败", "key", cacheKey, "error", setErr)
 		}
 		refreshCancel()
 	}
@@ -1793,7 +1898,10 @@ func (u *UserService) ensureContactUniqueness(ctx context.Context, user *v1.User
 	if retryAttempts <= 0 {
 		retryAttempts = 1
 	}
-
+	//判断当前请求是否需要执行数据库预检查
+	//需要预检的条件：强一致性请求、user,redis为nil、缓存未预热等
+	//不需要预检的条件：降级模式、用户字段全为空、缓存已预热等
+	//bool: true 代表执行预检，false 代表不执行
 	runPreflight := u.shouldRunPreflight(ctx, user)
 	if runPreflight && (strings.TrimSpace(user.Name) != "" || email != "" || phone != "") {
 		result, err := util.RetryWithBackoff(retryAttempts, isRetryableError, func() (interface{}, error) {
@@ -1825,7 +1933,7 @@ func (u *UserService) ensureContactUniqueness(ctx context.Context, user *v1.User
 	}
 	// 处理预检错误：根据配置决定是否降级
 	if runPreflight && preflightErr != nil {
-		//通过 Redis 写入临时占位符避免并发冲突
+		//预检出错且需要降级时，写入占位符并清除错误
 		if shouldDegradeForError(preflightErr) {
 			u.markCreateDegraded(ctx, "preflight_timeout", "username", user.Name)
 			u.ensureDegradedContactPlaceholders(ctx, user.Name, email, phone)
@@ -1933,6 +2041,10 @@ func (u *UserService) ensureContactUnique(
 	if store == nil {
 		return errors.WithCode(code.ErrDatabase, "用户存储未就绪")
 	}
+	//redis不可用(降级模式下)使用本地缓存避免频繁访问 Redis
+	if u.isRedisDegradeActive() {
+		return u.ensureContactUniqueDegraded(ctx, store, cacheKey, allowedOwner, fieldLabel, fieldValue, fieldKey, lookup)
+	}
 
 	maxRetries := 1
 	if u.Options != nil && u.Options.RedisOptions != nil && u.Options.RedisOptions.MaxRetries > 0 {
@@ -1949,6 +2061,7 @@ func (u *UserService) ensureContactUnique(
 			return u.contactCacheReady.Load()
 		}, //返回缓存是否已预热完成，控制是否跳过数据库兜底。
 		DegradeActive: userctx.IsCreateDegraded, //检查当前请求是否处于降级模式。
+		//写入占位符
 		EnsurePlaceholder: func(innerCtx context.Context, key string, owner string) {
 			u.ensureContactPlaceholder(innerCtx, key, owner)
 		}, //当需要写入占位符时的回调，通常用于降级兜底。
@@ -2012,6 +2125,66 @@ func (u *UserService) ensureContactUnique(
 	}
 
 	return checker.EnsureFieldUnique(ctx, fieldCfg)
+}
+
+func (u *UserService) ensureContactUniqueDegraded(
+	ctx context.Context,
+	store interfaces.UserStore,
+	cacheKey string,
+	allowedOwner string,
+	fieldLabel string,
+	fieldValue string,
+	fieldKey string,
+	lookup func(context.Context, interfaces.UserStore, string) (*v1.User, error),
+) error {
+	owner, ok := u.contactDegradeCacheGet(cacheKey)
+	if ok {
+		var cacheErr error
+		if owner != "" && !strings.EqualFold(owner, allowedOwner) {
+			cacheErr = errors.WithCode(code.ErrValidation, "%s已被占用: %s", fieldLabel, fieldValue)
+		}
+		u.recordUserCreateStep(ctx, "ensure_contact_unique_degraded_cache", fieldKey, allowedOwner, 0, cacheErr)
+		if cacheErr != nil {
+			return cacheErr
+		}
+		return nil
+	}
+
+	dbCtx, cancel := u.newDBContext(ctx, u.contactLookupTimeout())
+	defer cancel()
+	start := time.Now()
+	entity, err := lookup(dbCtx, store, fieldValue)
+	duration := time.Since(start)
+	recordErr := err
+	if errors.IsCode(err, code.ErrUserNotFound) {
+		recordErr = nil
+	}
+	u.recordUserCreateStep(ctx, "ensure_contact_unique_degraded_lookup", fieldKey, allowedOwner, duration, recordErr)
+
+	if err != nil {
+		if errors.IsCode(err, code.ErrUserNotFound) {
+			u.contactDegradeCacheSet(cacheKey, allowedOwner)
+			return nil
+		}
+		return err
+	}
+
+	if entity == nil {
+		u.contactDegradeCacheSet(cacheKey, allowedOwner)
+		return nil
+	}
+
+	existingOwner := strings.TrimSpace(entity.Name)
+	if existingOwner == "" {
+		u.contactDegradeCacheSet(cacheKey, allowedOwner)
+		return nil
+	}
+
+	u.contactDegradeCacheSet(cacheKey, existingOwner)
+	if strings.EqualFold(existingOwner, allowedOwner) {
+		return nil
+	}
+	return errors.WithCode(code.ErrValidation, "%s已被占用: %s", fieldLabel, fieldValue)
 }
 
 func (u *UserService) warmContactCache() error {

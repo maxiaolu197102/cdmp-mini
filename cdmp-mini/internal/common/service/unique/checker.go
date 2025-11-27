@@ -7,6 +7,11 @@ import (
 	"time"
 )
 
+const (
+	degradeReasonCache       = "redis_cache_error"
+	degradeReasonPlaceholder = "redis_placeholder_error"
+)
+
 // CacheClient 定义唯一性检查所需的缓存客户端能力。
 //
 // param ctx: 请求上下文，用于控制超时与取消，允许为nil但实现需自处理。
@@ -32,7 +37,15 @@ type LoggerHooks struct {
 // param Cache: 可选的缓存客户端，用于占位与命中加速；若为空则退化为纯数据库校验。
 // param PlaceholderTTL: 占位键的存活时间，需结合业务热点评估。
 // param CacheTTL: 冲突命中后写入缓存的过期时间，建议设置为分钟级以上。
-// param PlaceholderFallback: 当 AllowedOwner 与 PlaceholderValue 为空时使用的默认占位符。
+// param PlaceholderFallback:
+/*
+当 AllowedOwner 与 PlaceholderValue 为空时使用的默认占位符。
+只会在「拥有者」(AllowedOwner) 和实际占位值 (PlaceholderValue) 都是空字符串时才派上用场。
+在正常的联系人校验里我们会把 AllowedOwner 设成当前用户的用户名，PlaceholderValue 也默认沿用它，所以大多数场景不会触发。出现两者都空的情况主要有两类：
+上层调用本身不知道“谁”应该持有这个字段，比如只想检查一个邮箱是否被任何人占用，而没有传入候选用户名；
+业务方想手动覆盖占位符且设置成空（PlaceholderValue 仍留空），同时没有提供 AllowedOwner。
+为了避免把“空字符串”写进 Redis，占位逻辑会退回到 PlaceholderFallback（默认是像 RATE_LIMIT_PREVENTION 这样的哨兵值），保证缓存里始终有一个明确的占位标记。
+*/
 // param CacheReady: 返回缓存是否已预热完成，控制是否跳过数据库兜底。
 // param DegradeActive: 判断当前请求是否已经处于降级模式。
 // param EnsurePlaceholder: 当需要写入占位符时的回调，通常用于降级兜底。
@@ -111,11 +124,20 @@ type Checker[S any, E any] struct {
 	cfg CheckerConfig[S, E]
 }
 
-// NewChecker 构建一个带泛型支持的唯一性检查器实例。
+// NewChecker 构建一个通用唯一性检查器实例，聚合缓存、占位、查库与降级策略。
 //
-// param cfg: 依赖配置，需至少提供 Store 字段，其余依赖按需赋值。
+// param cfg: 外部依赖配置，需至少提供 Store，其余回调按需注入：
+//   - Cache: 可选缓存客户端，未提供时退化为纯数据库校验。
+//   - PlaceholderTTL/CacheTTL: 缓存占位与命中写入的有效期。
+//   - CacheReady/DegradeActive: 控制降级模式与预热状态。
+//   - EnsurePlaceholder/MarkDegraded: 发生降级时写占位并记录原因。
+//   - Retry/RetryPredicate/MaxRetries: 查库重试策略。
+//   - ShouldDegrade/ShouldReleasePlaceholder: 失败后的治理逻辑。
+//   - NewLookupContext/LookupTimeout: 自定义查库上下文与超时。
+//   - IsNotFound/IsCacheMiss: 定义缓存/查库的未命中判断。
+//   - RecordStep/Logger: 性能指标与日志钩子。
 //
-// returns: 返回初始化好的 Checker 指针；若 cfg.MaxRetries<=0 会自动回落为1次重试。
+// returns: 初始化后的 Checker 指针；若 cfg.MaxRetries<=0 会自动回退为 1 次重试。
 func NewChecker[S any, E any](cfg CheckerConfig[S, E]) *Checker[S, E] {
 	if cfg.MaxRetries <= 0 {
 		cfg.MaxRetries = 1
@@ -146,14 +168,22 @@ func (c *Checker[S, E]) EnsureFieldUnique(ctx context.Context, fieldCfg FieldCon
 		return nil
 	}
 
-	cache := c.cfg.Cache                 //缓存客户端
+	cache := c.cfg.Cache
+	/*
+		可能放行的情况 缓存占位符中记录的 “字段所有者”
+		= 允许占用该字段的实体标识（例如用户名）
+		1.update 操作（同一用户修改自身字段）
+		2.create 操作（同一用户重复提交 / 幂等请求）
+		3.delete 后重新 create（同一用户回收字段后复用）
+
+	*/
 	isAllowed := fieldCfg.IsAllowedOwner //判断缓存命中是否可放行，未提供时默认大小写不敏感比对。
 	if isAllowed == nil {
 		isAllowed = func(existingOwner, allowedOwner string) bool {
 			return strings.EqualFold(existingOwner, allowedOwner)
 		}
 	}
-	//当占位成功且缓存已预热时，决定是否跳过数据库查重。
+	//「真实用户占位成功 + 缓存已预热 → 跳过查(true)；降级兜底占位 / 占位异常 → 强制查库」(返回false)
 	skipPlaceholderLookup := fieldCfg.SkipPlaceholderLookup
 	if skipPlaceholderLookup == nil {
 		skipPlaceholderLookup = func(string) bool { return false }
@@ -191,7 +221,9 @@ func (c *Checker[S, E]) EnsureFieldUnique(ctx context.Context, fieldCfg FieldCon
 			触发条件：仅当关键步骤（如预检、查库、Redis 操作）出现可降级错误（超时、上下文取消、依赖不可用等），才会调用 markCreateDegraded 将 degraded 置为 true。
 			后续影响：一旦标记生效，unique.Checker 会跳过数据库兜底校验，仅靠缓存占位快速放行，减少对故障依赖的访问，属于 “故障后的自我保护”
 	*/
+	// 判断是否已处于降级模式
 	if c.cfg.DegradeActive != nil && c.cfg.DegradeActive(ctx) {
+		//若缓存客户端和占位符写入回调存在 → 执行占位符写入/兜底
 		if cache != nil && c.cfg.EnsurePlaceholder != nil {
 			c.cfg.EnsurePlaceholder(ctx, fieldCfg.CacheKey, placeholderValue)
 		}
@@ -219,6 +251,9 @@ func (c *Checker[S, E]) EnsureFieldUnique(ctx context.Context, fieldCfg FieldCon
 	cachedOwner, cacheErr := cache.GetKey(ctx, fieldCfg.CacheKey)
 	if cacheErr != nil {
 		if c.cfg.IsCacheMiss == nil || !c.cfg.IsCacheMiss(cacheErr) {
+			if c.cfg.MarkDegraded != nil {
+				c.cfg.MarkDegraded(ctx, degradeReasonCache, "field", fieldCfg.FieldKey, "error", cacheErr.Error())
+			}
 			if c.cfg.Logger.Warn != nil {
 				c.cfg.Logger.Warn("唯一性缓存读取失败", "cacheKey", fieldCfg.CacheKey, "field", fieldCfg.FieldKey, "error", cacheErr)
 			}
@@ -244,6 +279,9 @@ func (c *Checker[S, E]) EnsureFieldUnique(ctx context.Context, fieldCfg FieldCon
 	if strings.TrimSpace(cachedOwner) == "" {
 		ok, setErr := cache.SetNX(ctx, fieldCfg.CacheKey, placeholderValue, c.cfg.PlaceholderTTL)
 		if setErr != nil {
+			if c.cfg.MarkDegraded != nil {
+				c.cfg.MarkDegraded(ctx, degradeReasonPlaceholder, "field", fieldCfg.FieldKey, "error", setErr.Error())
+			}
 			if c.cfg.Logger.Warn != nil {
 				c.cfg.Logger.Warn("唯一性占位失败", "cacheKey", fieldCfg.CacheKey, "field", fieldCfg.FieldKey, "error", setErr)
 			}
@@ -298,6 +336,9 @@ func (c *Checker[S, E]) EnsureFieldUnique(ctx context.Context, fieldCfg FieldCon
 		return nil
 	}
 	if err := cache.SetKey(ctx, fieldCfg.CacheKey, owner, c.cfg.CacheTTL); err != nil {
+		if c.cfg.MarkDegraded != nil {
+			c.cfg.MarkDegraded(ctx, degradeReasonCache, "field", fieldCfg.FieldKey, "error", err.Error())
+		}
 		if c.cfg.Logger.Warn != nil {
 			c.cfg.Logger.Warn("唯一性缓存写入失败", "cacheKey", fieldCfg.CacheKey, "field", fieldCfg.FieldKey, "error", err)
 		}

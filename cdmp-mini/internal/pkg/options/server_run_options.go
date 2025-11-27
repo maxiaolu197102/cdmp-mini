@@ -24,20 +24,23 @@ const (
 )
 
 type ServerRunOptions struct {
-	Mode                           string        `json:"mode"        mapstructure:"mode"`
-	Healthz                        bool          `json:"healthz"     mapstructure:"healthz"`
-	Middlewares                    []string      `json:"middlewares" mapstructure:"middlewares"`
-	EnableProfiling                bool          `json:"enableProfiling" mapstructure:"enableProfiling"`
-	EnableMetrics                  bool          `json:"enableMetrics" mapstructure:"enableMetrics"`
-	FastDebugStartup               bool          `json:"fastDebugStartup" mapstructure:"fastDebugStartup"`
-	EnableContactWarmup            bool          `json:"enableContactWarmup" mapstructure:"enableContactWarmup"`
-	EnableUserTraceLogging         bool          `json:"enableUserTraceLogging" mapstructure:"enableUserTraceLogging"`
-	UserTraceLogSampleRate         float64       `json:"userTraceLogSampleRate" mapstructure:"userTraceLogSampleRate"`
-	UserTraceForceLogErrors        bool          `json:"userTraceForceLogErrors" mapstructure:"userTraceForceLogErrors"`
-	UserTraceDisableLogging        bool          `json:"userTraceDisableLogging" mapstructure:"userTraceDisableLogging"`
-	ContactLookupTimeout           time.Duration `json:"contactLookupTimeout" mapstructure:"contactLookupTimeout"`
-	ContactRefreshTimeout          time.Duration `json:"contactRefreshTimeout" mapstructure:"contactRefreshTimeout"`
-	ContactPreflightMaxConcurrency int           `json:"contactPreflightMaxConcurrency" mapstructure:"contactPreflightMaxConcurrency"`
+	Mode                              string        `json:"mode"        mapstructure:"mode"`
+	Healthz                           bool          `json:"healthz"     mapstructure:"healthz"`
+	Middlewares                       []string      `json:"middlewares" mapstructure:"middlewares"`
+	EnableProfiling                   bool          `json:"enableProfiling" mapstructure:"enableProfiling"`
+	EnableMetrics                     bool          `json:"enableMetrics" mapstructure:"enableMetrics"`
+	FastDebugStartup                  bool          `json:"fastDebugStartup" mapstructure:"fastDebugStartup"`
+	EnableContactWarmup               bool          `json:"enableContactWarmup" mapstructure:"enableContactWarmup"`
+	EnableUserTraceLogging            bool          `json:"enableUserTraceLogging" mapstructure:"enableUserTraceLogging"`
+	UserTraceLogSampleRate            float64       `json:"userTraceLogSampleRate" mapstructure:"userTraceLogSampleRate"`
+	UserTraceForceLogErrors           bool          `json:"userTraceForceLogErrors" mapstructure:"userTraceForceLogErrors"`
+	UserTraceDisableLogging           bool          `json:"userTraceDisableLogging" mapstructure:"userTraceDisableLogging"`
+	ContactLookupTimeout              time.Duration `json:"contactLookupTimeout" mapstructure:"contactLookupTimeout"`
+	ContactRefreshTimeout             time.Duration `json:"contactRefreshTimeout" mapstructure:"contactRefreshTimeout"`
+	ContactPreflightMaxConcurrency    int           `json:"contactPreflightMaxConcurrency" mapstructure:"contactPreflightMaxConcurrency"`
+	ContactDegradeCacheTTL            time.Duration `json:"contactDegradeCacheTTL" mapstructure:"contactDegradeCacheTTL"`
+	ContactDegradeHealthCheckInterval time.Duration `json:"contactDegradeHealthCheckInterval" mapstructure:"contactDegradeHealthCheckInterval"`
+	ContactDegradeCacheMaxEntries     int           `json:"contactDegradeCacheMaxEntries" mapstructure:"contactDegradeCacheMaxEntries"`
 	// 新增：Cookie相关配置
 	CookieDomain             string        `json:"cookieDomain"    mapstructure:"cookieDomain"`
 	CookieSecure             bool          `json:"cookieSecure"    mapstructure:"cookieSecure"`
@@ -109,6 +112,12 @@ func NewServerRunOptions() *ServerRunOptions {
 		ContactRefreshTimeout: 3 * time.Second,
 		// ContactPreflightMaxConcurrency 限制预检并发度，user_service.newContactPreflightLimiter() 使用，需为正整数。
 		ContactPreflightMaxConcurrency: 64,
+		// ContactDegradeCacheTTL 控制联系人唯一性降级时的本地缓存存活时间。
+		ContactDegradeCacheTTL: 20 * time.Second,
+		// ContactDegradeHealthCheckInterval 定义降级期间 Redis 健康巡检间隔。
+		ContactDegradeHealthCheckInterval: 10 * time.Second,
+		// ContactDegradeCacheMaxEntries 为降级模式下本地缓存的最大条目数，用于避免占用过多内存。
+		ContactDegradeCacheMaxEntries: 5000,
 		// CookieDomain 设置登录 Cookie 绑定域，server/auth.go 在写入 token 时读取，可为空或形如 .example.com。
 		CookieDomain: "",
 		// CookieSecure 决定 Cookie 是否仅在 HTTPS 传输，server/auth.go 设置 Set-Cookie 时使用。
@@ -292,6 +301,15 @@ func (s *ServerRunOptions) Complete() {
 
 	if s.ContactPreflightMaxConcurrency <= 0 {
 		s.ContactPreflightMaxConcurrency = DefaultContactPreflightMaxConcurrency
+	}
+	if s.ContactDegradeCacheTTL <= 0 {
+		s.ContactDegradeCacheTTL = 20 * time.Second
+	}
+	if s.ContactDegradeHealthCheckInterval <= 0 {
+		s.ContactDegradeHealthCheckInterval = 10 * time.Second
+	}
+	if s.ContactDegradeCacheMaxEntries <= 0 {
+		s.ContactDegradeCacheMaxEntries = 5000
 	}
 
 	if strings.TrimSpace(s.PasswordHashAlgorithm) == "" {
@@ -597,6 +615,9 @@ func (s *ServerRunOptions) AddFlags(fs *pflag.FlagSet) {
 	fs.DurationVar(&s.ContactLookupTimeout, "server.contact-lookup-timeout", s.ContactLookupTimeout, "联系人唯一性查库超时阈值")
 	fs.DurationVar(&s.ContactRefreshTimeout, "server.contact-refresh-timeout", s.ContactRefreshTimeout, "联系人唯一性负缓存刷新查库超时阈值")
 	fs.IntVar(&s.ContactPreflightMaxConcurrency, "server.contact-preflight-max-concurrency", s.ContactPreflightMaxConcurrency, "预检查询允许的最大并发数，用于保护数据库连接数")
+	fs.DurationVar(&s.ContactDegradeCacheTTL, "server.contact-degrade-cache-ttl", s.ContactDegradeCacheTTL, "联系人唯一性降级模式下本地缓存的有效期")
+	fs.DurationVar(&s.ContactDegradeHealthCheckInterval, "server.contact-degrade-health-check-interval", s.ContactDegradeHealthCheckInterval, "联系人唯一性降级期间 Redis 健康检查的轮询间隔")
+	fs.IntVar(&s.ContactDegradeCacheMaxEntries, "server.contact-degrade-cache-max-entries", s.ContactDegradeCacheMaxEntries, "联系人唯一性降级模式下本地缓存的最大条目数")
 	fs.StringVar(&s.AdminToken, "server.admin-token", s.AdminToken,
 		"管理API的简单访问令牌（默认为空，仅允许本地访问）")
 	fs.BoolVar(&s.FastDebugStartup, "server.fast-debug-startup", s.FastDebugStartup, "调试模式下是否跳过耗时的依赖等待，加速本地调试启动")

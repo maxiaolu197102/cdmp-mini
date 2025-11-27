@@ -60,6 +60,7 @@ func (u *Users) GetByPhone(ctx context.Context, phone string, _ *options.Options
 }
 
 // PreflightConflicts detects existing records matching username/email/phone in a single round-trip.
+// 数据库预检查用户名/邮箱/手机号冲突
 func (u *Users) PreflightConflicts(ctx context.Context, username, email, phone string, _ *options.Options) (map[string]*v1.User, error) {
 	if u == nil || u.db == nil {
 		return nil, errors.WithCode(code.ErrDatabase, "用户存储未初始化")

@@ -98,6 +98,7 @@ var (
 	// Pending lease / coordinator 指标
 	PendingLeaseActiveGauge       *prometheus.GaugeVec
 	PendingLeaseQueueDepth        *prometheus.GaugeVec
+	PendingLeaseQueueDepthSample  *prometheus.HistogramVec
 	PendingLeaseBackpressureLevel *prometheus.GaugeVec
 	PendingLeaseEvents            *prometheus.CounterVec
 	PendingLeaseHoldDuration      *prometheus.HistogramVec
@@ -536,6 +537,15 @@ func init() {
 		prometheus.GaugeOpts{
 			Name: "pending_lease_queue_depth",
 			Help: "Current queue depth observed by the pending lease coordinator",
+		},
+		[]string{"component"},
+	)
+
+	PendingLeaseQueueDepthSample = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "pending_lease_queue_depth_sample",
+			Help:    "Sampled queue depth distribution captured by the pending lease coordinator",
+			Buckets: []float64{1, 5, 10, 25, 50, 100, 250, 500, 1000, 2000},
 		},
 		[]string{"component"},
 	)
@@ -1049,6 +1059,7 @@ func init() {
 
 		PendingLeaseActiveGauge,
 		PendingLeaseQueueDepth,
+		PendingLeaseQueueDepthSample,
 		PendingLeaseBackpressureLevel,
 		PendingLeaseEvents,
 		PendingLeaseHoldDuration,
