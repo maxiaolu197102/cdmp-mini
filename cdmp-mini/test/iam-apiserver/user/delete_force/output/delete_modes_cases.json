@@ -1,0 +1,28 @@
+[
+  {
+    "name": "delete_mode_sync",
+    "description": "force delete in sync mode",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "用户强制删除成功",
+    "duration_ms": 575,
+    "checks": {
+      "response": true,
+      "user_removed": true
+    }
+  },
+  {
+    "name": "delete_mode_queue",
+    "description": "force delete in queue mode",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "用户强制删除成功",
+    "duration_ms": 846,
+    "checks": {
+      "response": true,
+      "user_removed": true
+    }
+  }
+]

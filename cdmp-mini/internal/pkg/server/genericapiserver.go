@@ -182,21 +182,7 @@ func (g *GenericAPIServer) shutdownKafka(ctx context.Context) error {
 	}
 	instances := g.getConsumerInstances()
 	if instances != nil {
-		for _, consumer := range instances.createConsumers {
-			if consumer != nil {
-				if err := consumer.Close(); err != nil {
-					combined = stdErrors.Join(combined, err)
-				}
-			}
-		}
-		for _, consumer := range instances.updateConsumers {
-			if consumer != nil {
-				if err := consumer.Close(); err != nil {
-					combined = stdErrors.Join(combined, err)
-				}
-			}
-		}
-		for _, consumer := range instances.deleteConsumers {
+		for _, consumer := range instances.operationConsumers {
 			if consumer != nil {
 				if err := consumer.Close(); err != nil {
 					combined = stdErrors.Join(combined, err)
@@ -359,7 +345,7 @@ func NewGenericAPIServer(opts *options.Options) (*GenericAPIServer, error) {
 		log.Warnf("调试快速启动: Kafka 初始化失败，将使用空生产者继续运行（err=%v）", err)
 		g.auditServiceEvent("kafka", "startup", "degraded", err)
 		g.producer = newNoopProducer()
-		g.setConsumerInstances(nil, nil, nil, nil)
+		g.setConsumerInstances(nil, nil)
 	} else {
 		log.Info("kafka服务器启动成功")
 		g.auditServiceEvent("kafka", "startup", "success", nil)
@@ -383,19 +369,11 @@ func NewGenericAPIServer(opts *options.Options) (*GenericAPIServer, error) {
 			workerCount = 1
 		}
 
-		// 启动所有消费者实例（每个实例1个worker或者配置中的数量）
-		for i := 0; i < len(instances.createConsumers); i++ {
-			if instances.createConsumers[i] != nil {
+		// 启动所有操作消费者实例（每个实例1个worker或者配置中的数量）
+		for i := 0; i < len(instances.operationConsumers); i++ {
+			if instances.operationConsumers[i] != nil {
 				consumerReady.Add(1)
-				go instances.createConsumers[i].StartConsuming(ctx, workerCount, &consumerReady)
-			}
-			if instances.updateConsumers[i] != nil {
-				consumerReady.Add(1)
-				go instances.updateConsumers[i].StartConsuming(ctx, workerCount, &consumerReady)
-			}
-			if instances.deleteConsumers[i] != nil {
-				consumerReady.Add(1)
-				go instances.deleteConsumers[i].StartConsuming(ctx, workerCount, &consumerReady)
+				go instances.operationConsumers[i].StartConsuming(ctx, workerCount, &consumerReady)
 			}
 		}
 
@@ -406,28 +384,28 @@ func NewGenericAPIServer(opts *options.Options) (*GenericAPIServer, error) {
 			brokers := g.options.KafkaOptions.Brokers
 			if len(brokers) > 0 {
 				retryCtx, retryCancel := context.WithTimeout(ctx, 5*time.Second)
-				p, err := getTopicPartitionCount(retryCtx, brokers, UserRetryTopic)
+				p, err := getTopicPartitionCount(retryCtx, brokers, UserOperationRetryTopic)
 				retryCancel()
 				if err == nil {
 					partitionCount = p
 				} else {
 					if stdErrors.Is(err, context.DeadlineExceeded) {
-						log.Warnf("获取 topic %s 分区信息超时，将稍后重试: %v", UserRetryTopic, err)
+						log.Warnf("获取 topic %s 分区信息超时，将稍后重试: %v", UserOperationRetryTopic, err)
 					} else {
-						log.Warnf("获取 topic %s 分区信息失败: %v", UserRetryTopic, err)
+						log.Warnf("获取 topic %s 分区信息失败: %v", UserOperationRetryTopic, err)
 					}
 				}
 			}
 
 			// 更新 prometheus 指标
 			retryGroupId := g.consumerGroupID("retry")
-			metrics.ConsumerTopicPartitions.WithLabelValues(UserRetryTopic).Set(float64(partitionCount))
+			metrics.ConsumerTopicPartitions.WithLabelValues(UserOperationRetryTopic).Set(float64(partitionCount))
 			metrics.ConsumerGroupInstances.WithLabelValues(retryGroupId).Set(float64(len(instances.retryConsumers)))
 			if len(instances.retryConsumers) == 0 {
-				metrics.ConsumerPartitionsNoOwner.WithLabelValues(UserRetryTopic, retryGroupId).Set(float64(partitionCount))
+				metrics.ConsumerPartitionsNoOwner.WithLabelValues(UserOperationRetryTopic, retryGroupId).Set(float64(partitionCount))
 			} else {
 				// 简单启发式：当有实例存在时，认为无主分区为0（更精确的检测需要 Kafka admin/group 查询）
-				metrics.ConsumerPartitionsNoOwner.WithLabelValues(UserRetryTopic, retryGroupId).Set(0)
+				metrics.ConsumerPartitionsNoOwner.WithLabelValues(UserOperationRetryTopic, retryGroupId).Set(0)
 			}
 
 			// 根据分区数与实例数计算每个实例需要的 worker 数（上限为 RetryConsumerWorkers）
@@ -466,22 +444,22 @@ func NewGenericAPIServer(opts *options.Options) (*GenericAPIServer, error) {
 							// 更丰富的日志在 Debug 模式下打印
 							isDebug := g.options.ServerRunOptions.Mode == "debug"
 
-							if p, err := getTopicPartitionCount(ctx, brokers, UserRetryTopic); err == nil {
-								metrics.ConsumerTopicPartitions.WithLabelValues(UserRetryTopic).Set(float64(p))
+							if p, err := getTopicPartitionCount(ctx, brokers, UserOperationRetryTopic); err == nil {
+								metrics.ConsumerTopicPartitions.WithLabelValues(UserOperationRetryTopic).Set(float64(p))
 								metrics.ConsumerGroupInstances.WithLabelValues(retryGroupId).Set(float64(len(instances.retryConsumers)))
 								if len(instances.retryConsumers) == 0 {
-									metrics.ConsumerPartitionsNoOwner.WithLabelValues(UserRetryTopic, retryGroupId).Set(float64(p))
+									metrics.ConsumerPartitionsNoOwner.WithLabelValues(UserOperationRetryTopic, retryGroupId).Set(float64(p))
 									if isDebug {
 									}
 								} else {
-									if noOwner, err := getPartitionsWithoutOwner(ctx, brokers, retryGroupId, UserRetryTopic); err == nil {
-										metrics.ConsumerPartitionsNoOwner.WithLabelValues(UserRetryTopic, retryGroupId).Set(float64(noOwner))
+									if noOwner, err := getPartitionsWithoutOwner(ctx, brokers, retryGroupId, UserOperationRetryTopic); err == nil {
+										metrics.ConsumerPartitionsNoOwner.WithLabelValues(UserOperationRetryTopic, retryGroupId).Set(float64(noOwner))
 										if isDebug {
 
 										}
 									} else {
 										// 回退到启发式
-										metrics.ConsumerPartitionsNoOwner.WithLabelValues(UserRetryTopic, retryGroupId).Set(0)
+										metrics.ConsumerPartitionsNoOwner.WithLabelValues(UserOperationRetryTopic, retryGroupId).Set(0)
 										log.Warnf("周期更新: 无法计算无主分区，使用回退值 0: %v", err)
 									}
 								}
@@ -495,7 +473,7 @@ func NewGenericAPIServer(opts *options.Options) (*GenericAPIServer, error) {
 				}()
 			}
 		}
-		log.Infof("已启动 %d 个消费者实例", len(instances.createConsumers))
+		log.Infof("已启动 %d 个操作通道消费者实例", len(instances.operationConsumers))
 	}
 
 	consumerReady.Wait()
@@ -784,62 +762,34 @@ func (g *GenericAPIServer) initKafkaComponents(db *gorm.DB) error {
 		return fmt.Errorf("failed to create user producer: %w", err)
 	}
 
-	// 为每个主题创建多个消费者实例
+	// 为用户操作主通道与重试通道创建消费者实例
 	consumerCount := kafkaOpts.WorkerCount
 	retryconsumerCount := kafkaOpts.RetryWorkerCount
 
-	log.Infof("为每个主题创建 %d 个消费者实例，消费组前缀: %s", consumerCount, g.consumerGroupBase())
+	log.Infof("为用户操作通道创建 %d 个消费者实例，消费组前缀: %s", consumerCount, g.consumerGroupBase())
 
-	// 创建消费者实例切片
-	createConsumers := make([]*UserConsumer, consumerCount)
-	updateConsumers := make([]*UserConsumer, consumerCount)
-	deleteConsumers := make([]*UserConsumer, consumerCount)
+	operationConsumers := make([]*UserConsumer, consumerCount)
 	retryConsumers := make([]*RetryConsumer, retryconsumerCount)
 
-	createGroupID := g.consumerGroupID("create")
-	updateGroupID := g.consumerGroupID("update")
-	deleteGroupID := g.consumerGroupID("delete")
+	operationsGroupID := g.consumerGroupID("operations")
 
 	for i := 0; i < consumerCount; i++ {
-		// 创建消费者实例 - 使用相同的消费组ID
-		createConsumers[i] = NewUserConsumer(kafkaOpts, UserCreateTopic,
-			createGroupID, i, db, g.redis)
-		createConsumers[i].SetProducer(userProducer)
-		createConsumers[i].SetInstanceID(i)
+		operationConsumers[i] = NewUserConsumer(kafkaOpts, UserOperationTopic,
+			operationsGroupID, i, db, g.redis)
+		operationConsumers[i].SetProducer(userProducer)
+		operationConsumers[i].SetInstanceID(i)
 		if g.datastore != nil {
-			createConsumers[i].SetPoolStatsProvider(g.datastore.PoolStats)
+			operationConsumers[i].SetPoolStatsProvider(g.datastore.PoolStats)
 		}
 		if g.options.ServerRunOptions.EnableRateLimiter {
-			//	go createConsumers[i].startLagMonitor(context.Background())
-		}
-
-		updateConsumers[i] = NewUserConsumer(kafkaOpts, UserUpdateTopic,
-			updateGroupID, i, db, g.redis)
-		updateConsumers[i].SetProducer(userProducer)
-		updateConsumers[i].SetInstanceID(i)
-		if g.datastore != nil {
-			updateConsumers[i].SetPoolStatsProvider(g.datastore.PoolStats)
-		}
-		if g.options.ServerRunOptions.EnableRateLimiter {
-			//	go updateConsumers[i].startLagMonitor(context.Background())
-		}
-
-		deleteConsumers[i] = NewUserConsumer(kafkaOpts, UserDeleteTopic,
-			deleteGroupID, i, db, g.redis)
-		deleteConsumers[i].SetProducer(userProducer)
-		deleteConsumers[i].SetInstanceID(i)
-		if g.datastore != nil {
-			deleteConsumers[i].SetPoolStatsProvider(g.datastore.PoolStats)
-		}
-		if g.options.ServerRunOptions.EnableRateLimiter {
-			//	go deleteConsumers[i].startLagMonitor(context.Background())
+			//	go operationConsumers[i].startLagMonitor(context.Background())
 		}
 	}
 
 	log.Info("初始化重试消费者...")
 	retryGroupId := g.consumerGroupID("retry")
 	for i := 0; i < kafkaOpts.RetryWorkerCount; i++ {
-		retryConsumers[i] = NewRetryConsumer(db, g.redis, userProducer, kafkaOpts, UserRetryTopic, retryGroupId, i)
+		retryConsumers[i] = NewRetryConsumer(db, g.redis, userProducer, kafkaOpts, UserOperationRetryTopic, retryGroupId, i)
 		if g.datastore != nil {
 			retryConsumers[i].SetPoolStatsProvider(g.datastore.PoolStats)
 		}
@@ -848,7 +798,7 @@ func (g *GenericAPIServer) initKafkaComponents(db *gorm.DB) error {
 	g.producer = userProducer
 
 	// 5. 存储所有消费者实例（新增字段）
-	g.setConsumerInstances(createConsumers, updateConsumers, deleteConsumers, retryConsumers)
+	g.setConsumerInstances(operationConsumers, retryConsumers)
 
 	return nil
 }
@@ -1335,22 +1285,23 @@ func (g *GenericAPIServer) pingRedis(ctx context.Context, client redis.Universal
 func (g *GenericAPIServer) printKafkaConfigInfo() {
 	kafkaOpts := g.options.KafkaOptions
 	instances := g.getConsumerInstances()
-	instanceCount := 1
+	operationCount := 1
+	retryCount := 0
 	if instances != nil {
-		instanceCount = len(instances.createConsumers)
+		operationCount = len(instances.operationConsumers)
+		retryCount = len(instances.retryConsumers)
 	}
 
 	log.Debugf("📊 Kafka配置信息:")
 	log.Debugf("  运行模式: %s", g.options.ServerRunOptions.Mode)
 	log.Debugf("  Brokers: %v", kafkaOpts.Brokers)
 	log.Debugf("  主题配置:")
-	log.Debugf("    - 创建: %s (%d个消费者实例)", UserCreateTopic, instanceCount)
-	log.Debugf("    - 更新: %s (%d个消费者实例)", UserUpdateTopic, instanceCount)
-	log.Debugf("    - 删除: %s (%d个消费者实例)", UserDeleteTopic, instanceCount)
-	log.Debugf("    - 重试: %s", UserRetryTopic)
+	log.Debugf("    - 操作主通道: %s (%d个消费者实例)", UserOperationTopic, operationCount)
+	log.Debugf("    - 重试通道: %s (%d个消费者实例)", UserOperationRetryTopic, retryCount)
+	log.Debugf("    - 补偿通道: %s", UserOperationCompTopic)
 	log.Debugf("  配置参数:")
 	log.Debugf("    - 最大重试: %d", kafkaOpts.MaxRetries)
-	log.Debugf("    - 消费者实例数量: %d", instanceCount)
+	log.Debugf("    - 操作消费者实例数量: %d", operationCount)
 	log.Debugf("    - 批量大小: %d", kafkaOpts.BatchSize)
 	log.Debugf("    - 批量超时: %v", kafkaOpts.BatchTimeout)
 	log.Debugf("    - Flush Frequency: %v", kafkaOpts.FlushFrequency)
@@ -1359,20 +1310,15 @@ func (g *GenericAPIServer) printKafkaConfigInfo() {
 
 // 新增：存储所有消费者实例
 type consumerInstances struct {
-	createConsumers []*UserConsumer
-	updateConsumers []*UserConsumer
-	deleteConsumers []*UserConsumer
-	retryConsumers  []*RetryConsumer
+	operationConsumers []*UserConsumer
+	retryConsumers     []*RetryConsumer
 }
 
 var consumerInstancesStore = &consumerInstances{}
 
-func (g *GenericAPIServer) setConsumerInstances(create, update, delete []*UserConsumer, retry []*RetryConsumer) {
-	consumerInstancesStore.createConsumers = create
-	consumerInstancesStore.updateConsumers = update
-	consumerInstancesStore.deleteConsumers = delete
+func (g *GenericAPIServer) setConsumerInstances(operations []*UserConsumer, retry []*RetryConsumer) {
+	consumerInstancesStore.operationConsumers = operations
 	consumerInstancesStore.retryConsumers = retry
-
 }
 
 func (g *GenericAPIServer) getConsumerInstances() *consumerInstances {

@@ -7,7 +7,9 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	createpipeline "github.com/maxiaolu1981/cretem/cdmp-mini/internal/common/service/create"
+	operation "github.com/maxiaolu1981/cretem/cdmp-mini/internal/common/service/operation"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/code"
+	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/metrics"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/trace"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/usercache"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/userctx"
@@ -19,6 +21,8 @@ import (
 	metav1 "github.com/maxiaolu1981/cretem/nexuscore/component-base/meta/v1"
 	"github.com/maxiaolu1981/cretem/nexuscore/errors"
 )
+
+const operationInlineProcessBudget = 150 * time.Millisecond
 
 // Create 处理用户创建请求的主流程
 //
@@ -43,14 +47,45 @@ func (u *UserService) Create(ctx context.Context, user *v1.User, opts metav1.Cre
 	_ = opts
 	_ = opt
 
-	if u.createPipeline == nil {
-		u.initCreatePipeline()
-	}
-	if u.createPipeline == nil {
-		return errors.WithCode(code.ErrServerBusy, "创建管道未初始化")
+	mode := u.decideOperationMode(ctx, operation.OperationCreate, user.Name)
+	trace.AddRequestTag(ctx, "operation_mode", mode.String())
+
+	if mode == OperationModeSync {
+		if u.createPipeline == nil {
+			u.initCreatePipeline()
+		}
+		if u.createPipeline == nil {
+			log.Errorw("create pipeline missing in sync mode", "component", "user_service")
+			return errors.WithCode(code.ErrServerBusy, "同步创建流程不可用")
+		}
+		if err := u.createPipeline.Execute(ctx, user); err != nil {
+			return err
+		}
+		return nil
 	}
 
-	return u.createPipeline.Execute(ctx, user)
+	if err := u.ensureOperationPipeline(); err != nil {
+		log.Errorw("初始化创建操作管道失败", "error", err)
+		return errors.WithCode(code.ErrServerBusy, "异步管道不可用")
+	}
+
+	env, err := u.buildUserOperationEnvelope(ctx, operation.OperationCreate, user.Name, user)
+	if err != nil {
+		log.Errorw("构建操作包失败", "error", err)
+		return errors.WithCode(code.ErrInvalidParameter, "构建请求失败: %v", err)
+	}
+
+	if _, err := u.operationPipeline.Submit(ctx, env); err != nil {
+		log.Errorw("提交用户创建操作失败", "operation", env.ID, "error", err)
+		return errors.WithCode(code.ErrServerBusy, "提交创建请求失败")
+	}
+
+	if inlineErr := u.processOperationInlineWithBudget(ctx, operationInlineProcessBudget); inlineErr != nil {
+		log.Warnw("inline processing create operation failed", "operation", env.ID, "error", inlineErr)
+		return errors.WithCode(code.ErrServerBusy, "创建请求已入队，请稍后查询状态")
+	}
+
+	return nil
 }
 
 // initCreatePipeline 根据用户表规则初始化通用创建管道。
@@ -85,6 +120,7 @@ func (u *UserService) initCreatePipeline() {
 // returns: 带有创建状态的新上下文及结束函数。
 func (u *UserService) createBeginHook(ctx context.Context, user *v1.User) (context.Context, func(error)) {
 	spanCtx, span := trace.StartSpan(ctx, "user-service", "create")
+	// createState adds a per-request degraded flag; it remains false until MarkCreateDegraded marks the request.
 	spanCtx = userctx.WithCreateState(spanCtx)
 	trace.AddRequestTag(spanCtx, "username", user.Name)
 
@@ -146,7 +182,7 @@ func (u *UserService) prepareUserForCreate(ctx context.Context, user *v1.User) e
 	} else {
 		u.recordUserCreateStep(ctx, "encrypt_password", "password", user.Name, time.Since(passwordStart), nil)
 	}
-
+	// 预热缓存
 	u.ensureContactCacheReady()
 	return nil
 }
@@ -274,7 +310,7 @@ func (u *UserService) markUserPendingForCreate(ctx context.Context, user *v1.Use
 
 	start := time.Now()
 	//建立create状态
-	created, refreshed, ttl, setNXDuration, refreshDuration, err := u.markUserPendingCreate(pendingCtx, user.Name)
+	created, refreshed, ttl, setNXDuration, refreshDuration, ownerID, backend, err := u.markUserPendingCreate(pendingCtx, user.Name)
 	duration := time.Since(start)
 
 	status := "success"
@@ -300,6 +336,14 @@ func (u *UserService) markUserPendingForCreate(ctx context.Context, user *v1.Use
 	u.recordUserCreateStep(ctx, "mark_pending_create", "redis", user.Name, duration, err)
 
 	if err != nil {
+		trace.AddRequestTag(ctx, "pending_marker_error", err.Error())
+		if shouldDegradeForError(err) {
+			u.markCreateDegraded(ctx, redisDegradeReasonPlaceholder, "username", user.Name, "error", err.Error())
+			if metrics.PendingLeaseEvents != nil {
+				metrics.PendingLeaseEvents.WithLabelValues("user_service", "acquire_degraded").Inc()
+			}
+			return createpipeline.PendingResult{}, nil
+		}
 		return createpipeline.PendingResult{}, err
 	}
 
@@ -309,6 +353,8 @@ func (u *UserService) markUserPendingForCreate(ctx context.Context, user *v1.Use
 		TTL:             ttl,
 		SetDuration:     setNXDuration,
 		RefreshDuration: refreshDuration,
+		OwnerID:         ownerID,
+		Backend:         backend,
 	}, nil
 }
 
@@ -324,6 +370,21 @@ func (u *UserService) afterUserPending(ctx context.Context, user *v1.User, pendi
 	}
 	if pending.TTL > 0 {
 		trace.AddRequestTag(ctx, "pending_marker_ttl_ms", pending.TTL.Milliseconds())
+	}
+	if pending.Backend != "" {
+		trace.AddRequestTag(ctx, "pending_backend", pending.Backend)
+	}
+	if pending.OwnerID != "" {
+		trace.AddRequestTag(ctx, "pending_lease_owner", pending.OwnerID)
+		if env, ok := operationEnvelopeFromContext(ctx); ok && env != nil {
+			if env.Headers == nil {
+				env.Headers = make(map[string]string)
+			}
+			env.Headers[pendingOwnerHeader] = pending.OwnerID
+			if pending.Backend != "" {
+				env.Headers[pendingBackendHeader] = pending.Backend
+			}
+		}
 	}
 }
 

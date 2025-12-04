@@ -6,14 +6,14 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 2,
+    "duration_ms": 90,
     "checks": {
       "payload_present": true,
       "username_match": true
     },
     "notes": [
       "管理员精确查询存在的用户",
-      "响应耗时=2.797626ms"
+      "响应耗时=90.309297ms"
     ]
   },
   {
@@ -23,7 +23,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 2,
+    "duration_ms": 5,
     "checks": {
       "username_match": true
     },
@@ -38,7 +38,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 4,
+    "duration_ms": 7,
     "checks": {
       "email_match": true,
       "single_result": true,
@@ -55,7 +55,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 2,
+    "duration_ms": 5,
     "checks": {
       "ignored_sort_param": true
     },
@@ -85,7 +85,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 3,
+    "duration_ms": 9,
     "checks": {
       "max_limit_success": true
     },
@@ -100,7 +100,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 2,
+    "duration_ms": 4,
     "checks": {
       "empty_result": true
     },
@@ -115,7 +115,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 3,
+    "duration_ms": 7,
     "checks": {
       "nickname_preserved": true
     },
@@ -130,7 +130,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 4,
+    "duration_ms": 165,
     "checks": {
       "length": true,
       "username_match": true
@@ -146,7 +146,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 3,
+    "duration_ms": 2,
     "checks": {
       "immediate_visible": true
     },
@@ -161,7 +161,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 8,
+    "duration_ms": 772,
     "checks": {
       "retrievable_post_update": true,
       "update_request_success": true
@@ -177,8 +177,8 @@
     "success": true,
     "http_status": 404,
     "code": 110001,
-    "message": "[code: 110001] 用户不存在或已删除",
-    "duration_ms": 306,
+    "message": "[code: 110001] 用户不存在",
+    "duration_ms": 157,
     "checks": {
       "not_found_code": true
     },
@@ -193,7 +193,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 2,
+    "duration_ms": 14,
     "checks": {
       "deleted_not_listed": true
     },
@@ -223,7 +223,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "用户更新成功",
-    "duration_ms": 5,
+    "duration_ms": 922,
     "checks": {
       "status_update_success": true
     },
@@ -253,7 +253,7 @@
     "http_status": 400,
     "code": 100004,
     "message": "[code: 100004] 用户名不合法:名称部分必须由字母、数字、'-'、'_'或'.'组成，且首尾必须为字母或数字（例如：'MyName'，或'my.name'，或'123-abc'，用于验证的正则表达式：'([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]'）",
-    "duration_ms": 1,
+    "duration_ms": 3,
     "checks": {
       "no_data_leak": true
     },
@@ -298,7 +298,7 @@
     "http_status": 401,
     "code": 100208,
     "message": "[code: 100208] invalid character '\\u008a' looking for beginning of value",
-    "duration_ms": 0,
+    "duration_ms": 1,
     "checks": {
       "token_invalid": true
     },
@@ -328,7 +328,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 1,
+    "duration_ms": 3,
     "checks": {
       "no_password": true,
       "no_token_field": true
@@ -344,7 +344,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 1,
+    "duration_ms": 87,
     "checks": {
       "business_code": true,
       "duration_recorded": true,
@@ -352,7 +352,7 @@
     },
     "notes": [
       "记录查询延迟与业务码",
-      "duration=1.717044ms"
+      "duration=87.778003ms"
     ]
   },
   {
@@ -367,7 +367,7 @@
     "notes": [
       "批量测试数据分布验证",
       "bulk_count=12",
-      "hot_users=[get_bulk_00_1762933328360124005_18937 get_bulk_01_1762933328795428380_79488 get_bulk_02_1762933329443900309_49275]"
+      "hot_users=[get_bulk_00_1764607839315725237_13835 get_bulk_01_1764607839908451154_05440 get_bulk_02_1764607841801142789_07349]"
     ]
   }
 ]

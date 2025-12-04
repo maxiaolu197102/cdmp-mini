@@ -105,6 +105,32 @@ func attachProducerMetadata(msg *sarama.ProducerMessage, topic, operation, trace
 	return meta
 }
 
+func buildOperationHeaders(operation, channel string, ts time.Time, retryCount int) []sarama.RecordHeader {
+	if ts.IsZero() {
+		ts = time.Now()
+	}
+	retryValue := strconv.Itoa(retryCount)
+	return []sarama.RecordHeader{
+		{Key: []byte(HeaderOperation), Value: []byte(operation)},
+		{Key: []byte(HeaderChannel), Value: []byte(channel)},
+		{Key: []byte(HeaderOriginalTimestamp), Value: []byte(ts.Format(time.RFC3339))},
+		{Key: []byte(HeaderRetryCount), Value: []byte(retryValue)},
+	}
+}
+
+func resolveChannelFromTopic(topic string) string {
+	switch topic {
+	case UserOperationTopic:
+		return ChannelPrimary
+	case UserOperationRetryTopic:
+		return ChannelRetry
+	case UserOperationCompTopic:
+		return ChannelCompensation
+	default:
+		return ""
+	}
+}
+
 func (p *UserProducer) recordDeliveryMetrics(msg *sarama.ProducerMessage, err error) {
 	if msg == nil {
 		return
@@ -529,7 +555,7 @@ func (p *UserProducer) initCreatePipeline() {
 	cfg := createproducer.PipelineConfig[*v1.User]{
 		Name:      "user-create",
 		Operation: OperationCreate,
-		Topic:     UserCreateTopic,
+		Topic:     UserOperationTopic,
 		Begin: func(ctx context.Context, user *v1.User, operation, topic string) (context.Context, func(error)) {
 			spanCtx, span := trace.StartSpan(ctx, "kafka-producer", fmt.Sprintf("send_%s", operation))
 			if spanCtx != nil {
@@ -579,15 +605,15 @@ func (p *UserProducer) initCreatePipeline() {
 		Marshal: func(user *v1.User) ([]byte, error) {
 			data, err := jsonCodec.Marshal(user)
 			if err != nil {
-				log.Errorf("Failed to marshal user %s for topic %s, operation %s: %v", user.Name, UserCreateTopic, OperationCreate, err)
+				log.Errorf("Failed to marshal user %s for topic %s, operation %s: %v", user.Name, UserOperationTopic, OperationCreate, err)
 				return nil, errors.WithCode(code.ErrEncodingJSON, "failed to marshal user message: %v", err)
 			}
 			return data, nil
 		},
 		LogPayload: func(user *v1.User, payload []byte) {
-			log.Debugw("User message payload", "operation", OperationCreate, "topic", UserCreateTopic, "username", user.Name, "payload", string(payload))
+			log.Debugw("User message payload", "operation", OperationCreate, "topic", UserOperationTopic, "username", user.Name, "payload", string(payload))
 			if strings.HasPrefix(user.Name, "lock_case_") {
-				log.Infow("[lock-debug-producer]", "operation", OperationCreate, "topic", UserCreateTopic, "username", user.Name, "payload", string(payload))
+				log.Infow("[lock-debug-producer]", "operation", OperationCreate, "topic", UserOperationTopic, "username", user.Name, "payload", string(payload))
 				appendLockDebug(fmt.Sprintf("producer|op=%s|user=%s|payload=%s", OperationCreate, user.Name, string(payload)))
 			}
 		},
@@ -599,11 +625,7 @@ func (p *UserProducer) initCreatePipeline() {
 			return key
 		},
 		Headers: func(_ *v1.User, ts time.Time) []sarama.RecordHeader {
-			return []sarama.RecordHeader{
-				{Key: []byte(HeaderOperation), Value: []byte(OperationCreate)},
-				{Key: []byte(HeaderOriginalTimestamp), Value: []byte(ts.Format(time.RFC3339))},
-				{Key: []byte(HeaderRetryCount), Value: []byte("0")},
-			}
+			return buildOperationHeaders(OperationCreate, ChannelPrimary, ts, 0)
 		},
 		Attach: func(ctx context.Context, msg *sarama.ProducerMessage) error {
 			injectTraceHeader(ctx, msg)
@@ -617,11 +639,11 @@ func (p *UserProducer) initCreatePipeline() {
 			return nil
 		},
 		Description: func(user *v1.User) string {
-			return fmt.Sprintf("user message operation=%s topic=%s username=%s", OperationCreate, UserCreateTopic, user.Name)
+			return fmt.Sprintf("user message operation=%s topic=%s username=%s", OperationCreate, UserOperationTopic, user.Name)
 		},
 		Enqueue: func(ctx context.Context, msg *sarama.ProducerMessage, detail string) error {
 			if detail == "" {
-				detail = fmt.Sprintf("user message operation=%s topic=%s", OperationCreate, UserCreateTopic)
+				detail = fmt.Sprintf("user message operation=%s topic=%s", OperationCreate, UserOperationTopic)
 			}
 			return p.enqueueOrFallback(ctx, msg, detail)
 		},
@@ -633,7 +655,7 @@ func (p *UserProducer) initCreatePipeline() {
 func (p *UserProducer) SendUserUpdateMessage(ctx context.Context, user *v1.User) error {
 	trace.AddRequestTag(ctx, "username", user.Name)
 	log.Debugf("[Producer] SendUserUpdateMessage: username=%s", user.Name)
-	return p.sendUserMessage(ctx, user, OperationUpdate, UserUpdateTopic)
+	return p.sendUserMessage(ctx, user, OperationUpdate)
 }
 
 func (p *UserProducer) SendUserDeleteMessage(ctx context.Context, username string) error {
@@ -657,15 +679,12 @@ func (p *UserProducer) SendUserDeleteMessage(ctx context.Context, username strin
 		return errors.WithCode(code.ErrEncodingJSON, "failed to marshal delete message: %v", err)
 	}
 
+	now := time.Now()
 	msg := &sarama.ProducerMessage{
-		Topic: UserDeleteTopic,
-		Key:   sarama.StringEncoder(username),
-		Value: sarama.ByteEncoder(data),
-		Headers: []sarama.RecordHeader{
-			{Key: []byte(HeaderOperation), Value: []byte(OperationDelete)},
-			{Key: []byte(HeaderOriginalTimestamp), Value: []byte(time.Now().Format(time.RFC3339))},
-			{Key: []byte(HeaderRetryCount), Value: []byte("0")},
-		},
+		Topic:   UserOperationTopic,
+		Key:     sarama.StringEncoder(username),
+		Value:   sarama.ByteEncoder(data),
+		Headers: buildOperationHeaders(OperationDelete, ChannelPrimary, now, 0),
 	}
 
 	injectTraceHeader(ctx, msg)
@@ -765,12 +784,13 @@ func (p *UserProducer) writeToFallbackFile(msg *sarama.ProducerMessage) {
 	}
 }
 
-func (p *UserProducer) sendUserMessage(ctx context.Context, user *v1.User, operation, topic string) error {
+func (p *UserProducer) sendUserMessage(ctx context.Context, user *v1.User, operation string) error {
 	spanCtx, span := trace.StartSpan(ctx, "kafka-producer", fmt.Sprintf("send_%s", operation))
 	if spanCtx != nil {
 		ctx = spanCtx
 	}
 
+	topic := UserOperationTopic
 	trace.AddRequestTag(ctx, "topic", topic)
 	trace.AddRequestTag(ctx, "operation", operation)
 	trace.AddRequestTag(ctx, "username", user.Name)
@@ -824,14 +844,10 @@ func (p *UserProducer) sendUserMessage(ctx context.Context, user *v1.User, opera
 	}
 
 	msg := &sarama.ProducerMessage{
-		Topic: topic,
-		Key:   sarama.StringEncoder(key),
-		Value: sarama.ByteEncoder(userData),
-		Headers: []sarama.RecordHeader{
-			{Key: []byte(HeaderOperation), Value: []byte(operation)},
-			{Key: []byte(HeaderOriginalTimestamp), Value: []byte(now.Format(time.RFC3339))},
-			{Key: []byte(HeaderRetryCount), Value: []byte("0")},
-		},
+		Topic:   topic,
+		Key:     sarama.StringEncoder(key),
+		Value:   sarama.ByteEncoder(userData),
+		Headers: buildOperationHeaders(operation, ChannelPrimary, now, 0),
 	}
 
 	injectTraceHeader(ctx, msg)
@@ -856,7 +872,7 @@ func (p *UserProducer) sendToRetryTopic(ctx context.Context, msg kafka.Message, 
 
 	// Convert kafka.Message to sarama.ProducerMessage
 	saramaMsg := &sarama.ProducerMessage{
-		Topic: UserRetryTopic,
+		Topic: UserOperationRetryTopic,
 		Key:   sarama.ByteEncoder(msg.Key),
 		Value: sarama.ByteEncoder(msg.Value),
 	}
@@ -876,6 +892,7 @@ func (p *UserProducer) sendToRetryTopic(ctx context.Context, msg kafka.Message, 
 			break
 		}
 	}
+	headers = p.updateOrAddHeader(headers, HeaderChannel, ChannelRetry)
 	headers = p.updateOrAddHeader(headers, HeaderRetryCount, strconv.Itoa(currCount+1))
 	saramaMsg.Headers = headers
 	traceID := trace.TraceIDFromContext(ctx)
@@ -1119,6 +1136,9 @@ func (p *UserProducer) publishFallbackEntry(entry fallbackMessage) error {
 			Key:   []byte(header.Key),
 			Value: []byte(header.Value),
 		})
+	}
+	if channel := resolveChannelFromTopic(entry.Topic); channel != "" {
+		headers = p.updateOrAddHeader(headers, HeaderChannel, channel)
 	}
 	headers = p.updateOrAddHeader(headers, HeaderRetryCount, strconv.Itoa(entry.Attempts))
 	msg.Headers = headers

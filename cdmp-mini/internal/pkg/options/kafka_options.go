@@ -71,6 +71,14 @@ type KafkaOptions struct {
 	BatchChannelCapacity int `json:"batchChannelCapacity" mapstructure:"batchChannelCapacity" validate:"min=1"`
 	// 自适应批量写入的最小条数（压力大时收敛到该值）
 	MinDBBatchSize int `json:"minDBBatchSize" mapstructure:"minDBBatchSize" validate:"min=1"`
+	// 批量创建时的并发度上限
+	BatchCreateParallelism int `json:"batchCreateParallelism" mapstructure:"batchCreateParallelism" validate:"min=1"`
+	// 是否跳过用户缓存写入（诊断用途）
+	SkipCacheWrite bool `json:"skipCacheWrite" mapstructure:"skipCacheWrite"`
+	// Redis 写入缓存的超时时间，0 表示不限制
+	CacheWriteTimeout time.Duration `json:"cacheWriteTimeout" mapstructure:"cacheWriteTimeout"`
+	// 缓存写入失败后，是否尝试降级为单键写入用户主体
+	CacheWriteFallback bool `json:"cacheWriteFallback" mapstructure:"cacheWriteFallback"`
 	// 批量聚合的最小/最大超时时间边界
 	MinBatchTimeout time.Duration `json:"minBatchTimeout" mapstructure:"minBatchTimeout" validate:"min=1ms"`
 	MaxBatchTimeout time.Duration `json:"maxBatchTimeout" mapstructure:"maxBatchTimeout" validate:"min=1ms"`
@@ -158,6 +166,10 @@ func NewKafkaOptions() *KafkaOptions {
 		MinDBBatchSize:            120,
 		MinBatchTimeout:           40 * time.Millisecond,
 		MaxBatchTimeout:           200 * time.Millisecond,
+		BatchCreateParallelism:    16,
+		SkipCacheWrite:            false,
+		CacheWriteTimeout:         1500 * time.Millisecond,
+		CacheWriteFallback:        true,
 		PendingLeaseTTL:           MinUserPendingCreateTTL,
 		PendingMetricsKey:         "user:pending:active",
 		PendingBackpressureWindow: 5 * time.Second,
@@ -276,6 +288,16 @@ func (k *KafkaOptions) Complete() {
 	if k.FetcherCount > k.DesiredPartitions {
 		log.Warnf("Fetcher数量(%d)超过分区数(%d)，将自动收敛到分区数", k.FetcherCount, k.DesiredPartitions)
 		k.FetcherCount = k.DesiredPartitions
+	}
+
+	if k.BatchCreateParallelism <= 0 {
+		k.BatchCreateParallelism = 16
+	}
+	if k.WorkerCount > 0 && k.BatchCreateParallelism > k.WorkerCount {
+		k.BatchCreateParallelism = k.WorkerCount
+	}
+	if k.CacheWriteTimeout < 0 {
+		k.CacheWriteTimeout = 0
 	}
 
 	if k.ChannelBufferSize < 0 {
@@ -462,6 +484,10 @@ func (k *KafkaOptions) Validate() []error {
 		errs = append(errs, field.Invalid(field.NewPath("kafka", "batchChannelCapacity"), k.BatchChannelCapacity, "必须大于0"))
 	}
 
+	if k.BatchCreateParallelism < 1 {
+		errs = append(errs, field.Invalid(field.NewPath("kafka", "batchCreateParallelism"), k.BatchCreateParallelism, "必须大于0"))
+	}
+
 	if k.MinDBBatchSize < 1 {
 		errs = append(errs, field.Invalid(field.NewPath("kafka", "minDBBatchSize"), k.MinDBBatchSize, "必须大于0"))
 	}
@@ -510,6 +536,9 @@ func (k *KafkaOptions) Validate() []error {
 	}
 	if k.PendingDelaySevereMax < k.PendingDelaySevere {
 		errs = append(errs, field.Invalid(field.NewPath("kafka", "pendingDelaySevereMax"), k.PendingDelaySevereMax, "不能小于pendingDelaySevere"))
+	}
+	if k.CacheWriteTimeout < 0 {
+		errs = append(errs, field.Invalid(field.NewPath("kafka", "cacheWriteTimeout"), k.CacheWriteTimeout, "不能小于0"))
 	}
 
 	// 如果启用SSL，验证证书文件
@@ -574,6 +603,16 @@ func (k *KafkaOptions) AddFlags(fs *pflag.FlagSet) {
 
 	fs.IntVar(&k.MinDBBatchSize, "kafka.min-db-batch-size", k.MinDBBatchSize,
 		"Kafka消费者在高压场景下的最小数据库批量写入条数，用于自适应限流")
+
+	fs.IntVar(&k.BatchCreateParallelism, "kafka.batch-create-parallelism", k.BatchCreateParallelism,
+		"批量创建场景中单个批次在数据库写入阶段使用的最大并发度")
+
+	fs.BoolVar(&k.SkipCacheWrite, "kafka.skip-cache-write", k.SkipCacheWrite,
+		"是否跳过用户缓存写入（诊断用途）")
+	fs.DurationVar(&k.CacheWriteTimeout, "kafka.cache-write-timeout", k.CacheWriteTimeout,
+		"用户缓存写入的最大等待时间，0 表示不做超时限制")
+	fs.BoolVar(&k.CacheWriteFallback, "kafka.cache-write-fallback", k.CacheWriteFallback,
+		"Redis 写入失败时是否降级为单键写入用户主体缓存")
 
 	fs.DurationVar(&k.MinBatchTimeout, "kafka.min-batch-timeout", k.MinBatchTimeout,
 		"Kafka消费者批量聚合的最小超时时间，用于快速清空堆积")

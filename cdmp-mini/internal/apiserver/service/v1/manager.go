@@ -38,12 +38,7 @@ func (s *ServiceSrv) Policies() policy.PolicySrv {
 }
 
 func NewUsers(s *ServiceSrv) *user.UserService {
-	return &user.UserService{
-		Store:    s.Store,
-		Redis:    s.Redis,
-		Options:  s.Options,
-		Producer: s.producer,
-	}
+	return user.NewUserService(s.Store, s.Redis, s.Options, s.producer, nil)
 }
 func NewSecrets(s *ServiceSrv) *secret.SecretService {
 	return &secret.SecretService{

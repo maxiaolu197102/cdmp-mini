@@ -220,9 +220,33 @@ again:
 func NewRedisClusterPool(isCache bool, config *options.RedisOptions) redis.UniversalClient {
 	log.Debug("Creating new Redis connection pool")
 
-	poolSize := 500
-	if config.MaxActive > 0 {
-		poolSize = config.MaxActive
+	poolSize := config.PoolSize
+	if poolSize <= 0 {
+		if config.MaxActive > 0 {
+			poolSize = config.MaxActive
+		} else {
+			poolSize = 800
+		}
+	}
+
+	minIdleConns := config.MinIdleConns
+	if minIdleConns <= 0 {
+		// 默认保持约 30% 的连接为热备，至少 32 个
+		minIdleConns = poolSize * 3 / 10
+		if minIdleConns < 32 {
+			minIdleConns = 32
+		}
+	}
+
+	log.Infow("redis pool sizing resolved", "pool_size", poolSize, "min_idle", minIdleConns, "wait", config.Wait, "max_retries", config.MaxRetries)
+
+	maxIdleConns := 0
+	if config.MaxIdle > 0 {
+		if config.MaxIdle < minIdleConns {
+			maxIdleConns = minIdleConns
+		} else {
+			maxIdleConns = config.MaxIdle
+		}
 	}
 
 	timeout := 5 * time.Second
@@ -238,6 +262,11 @@ func NewRedisClusterPool(isCache bool, config *options.RedisOptions) redis.Unive
 	}
 
 	var client redis.UniversalClient
+	connMaxIdle := config.IdleTimeout
+	if connMaxIdle <= 0 || connMaxIdle < time.Second {
+		connMaxIdle = 240 * timeout
+	}
+
 	opts := &RedisOpts{
 		Addrs:           getRedisAddrs(config),
 		MasterName:      config.MasterName,
@@ -246,8 +275,13 @@ func NewRedisClusterPool(isCache bool, config *options.RedisOptions) redis.Unive
 		DialTimeout:     timeout,
 		ReadTimeout:     timeout,
 		WriteTimeout:    timeout,
-		ConnMaxIdleTime: 240 * timeout,
+		ConnMaxLifetime: config.MaxConnLifetime,
+		ConnMaxIdleTime: connMaxIdle,
 		PoolSize:        poolSize,
+		MinIdleConns:    minIdleConns,
+		MaxIdleConns:    maxIdleConns,
+		MaxActiveConns:  config.MaxActive,
+		PoolTimeout:     timeout,
 		TLSConfig:       tlsConfig,
 	}
 
@@ -270,6 +304,7 @@ func NewRedisClusterPool(isCache bool, config *options.RedisOptions) redis.Unive
 		return nil
 	}
 	//log.Info("新创建的Redis客户端验证成功")
+	setupRedisInstrumentation(client, config, isCache)
 	return client
 }
 
@@ -481,6 +516,17 @@ func (r *RedisCluster) GetKey(ctx context.Context, keyName string) (string, erro
 
 }
 
+// GetKeyWithCommandTimeout wraps GetKey with a per-command deadline.
+func (r *RedisCluster) GetKeyWithCommandTimeout(ctx context.Context, keyName string, commandTimeout time.Duration) (string, error) {
+	commandCtx, cancel := withCommandTimeout(ctx, commandTimeout)
+	defer cancel()
+	value, err := r.GetKey(commandCtx, keyName)
+	if err == nil && commandCtx.Err() == context.DeadlineExceeded {
+		return "", context.DeadlineExceeded
+	}
+	return value, err
+}
+
 // GetMultiKey gets multiple keys from the database
 func (r *RedisCluster) GetMultiKey(ctx context.Context, keys []string) ([]string, error) {
 	if err := r.Up(); err != nil {
@@ -611,6 +657,28 @@ func (r *RedisCluster) SetKey(ctx context.Context, keyName, session string, time
 	return nil
 }
 
+// SetKeyWithCommandTimeout wraps SetKey with a per-command context deadline, returning context.DeadlineExceeded when the command exceeds the timeout.
+func (r *RedisCluster) SetKeyWithCommandTimeout(ctx context.Context, keyName, session string, ttl time.Duration, commandTimeout time.Duration) error {
+	commandCtx, cancel := withCommandTimeout(ctx, commandTimeout)
+	defer cancel()
+	err := r.SetKey(commandCtx, keyName, session, ttl)
+	if err == nil && commandCtx.Err() == context.DeadlineExceeded {
+		return context.DeadlineExceeded
+	}
+	return err
+}
+
+func withCommandTimeout(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		return parent, func() {}
+	}
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	return ctx, cancel
+}
+
 func (r *RedisCluster) executePipeline(ctx context.Context, metricLabel string, fn func(redis.Pipeliner) error) error {
 	if err := r.Up(); err != nil {
 		metrics.RecordRedisOperation(metricLabel, 0, err)
@@ -701,7 +769,10 @@ func (r *RedisCluster) IncrememntWithExpire(ctx context.Context, keyName string,
 		return 0
 	}
 	fixedKey := r.fixKey(keyName)
+	start := time.Now()
 	val, err := r.singleton().Incr(ctx, fixedKey).Result()
+	duration := time.Since(start).Seconds()
+	metrics.RecordRedisOperation("storage_incr_with_expire", duration, err)
 
 	if err != nil {
 		log.Errorf("Error trying to increment value: %s", err.Error())
@@ -711,7 +782,12 @@ func (r *RedisCluster) IncrememntWithExpire(ctx context.Context, keyName string,
 
 	if val == 1 && expire > 0 {
 		log.Debug("--> Setting Expire")
-		r.singleton().Expire(ctx, fixedKey, time.Duration(expire)*time.Second)
+		expireStart := time.Now()
+		expireErr := r.singleton().Expire(ctx, fixedKey, time.Duration(expire)*time.Second).Err()
+		metrics.RecordRedisOperation("storage_incr_with_expire_set_ttl", time.Since(expireStart).Seconds(), expireErr)
+		if expireErr != nil {
+			log.Errorf("Error trying to set expiration: %s", expireErr.Error())
+		}
 	}
 
 	return val
@@ -767,7 +843,11 @@ func (r *RedisCluster) GetKeys(ctx context.Context, filter string) []string {
 
 				nodeKeys, err := fnFetchKeys(nodeCli, nodeCtx)
 				if err != nil {
-					log.Warnf("Node %s scan failed: %v", nodeCli.Options().Addr, err)
+					if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+						log.Debugf("Node %s scan cancelled: %v", nodeCli.Options().Addr, err)
+					} else {
+						log.Warnf("Node %s scan failed: %v", nodeCli.Options().Addr, err)
+					}
 					return nil
 				}
 
@@ -795,7 +875,11 @@ func (r *RedisCluster) GetKeys(ctx context.Context, filter string) []string {
 				}
 				return nil
 			case <-ctx.Done():
-				log.Errorf("GetKeys canceled: %v", ctx.Err())
+				if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(ctx.Err(), context.Canceled) {
+					log.Debugf("GetKeys canceled: %v", ctx.Err())
+				} else {
+					log.Errorf("GetKeys canceled: %v", ctx.Err())
+				}
 				return nil
 			}
 		}
@@ -921,16 +1005,39 @@ func (r *RedisCluster) DeleteKey(ctx context.Context, keyName string) (bool, err
 	return n > 0, nil
 }
 
+// DeleteKeyWithCommandTimeout wraps DeleteKey with a per-command deadline.
+func (r *RedisCluster) DeleteKeyWithCommandTimeout(ctx context.Context, keyName string, commandTimeout time.Duration) (bool, error) {
+	commandCtx, cancel := withCommandTimeout(ctx, commandTimeout)
+	defer cancel()
+	deleted, err := r.DeleteKey(commandCtx, keyName)
+	if err == nil && commandCtx.Err() == context.DeadlineExceeded {
+		return false, context.DeadlineExceeded
+	}
+	return deleted, err
+}
+
 // DeleteAllKeys removes all keys from the database
 func (r *RedisCluster) DeleteAllKeys(ctx context.Context) bool {
 	if err := r.Up(); err != nil {
 		return false
 	}
-	n, err := r.singleton().FlushAll(ctx).Result()
-	if err != nil {
-		log.Errorf("Error trying to delete keys: %s", err.Error())
+
+	pattern := "*"
+	if strings.TrimSpace(r.KeyPrefix) != "" {
+		pattern = r.KeyPrefix + "*"
+	} else {
+		log.Warn("DeleteAllKeys invoked without key prefix; falling back to SCAN-based purge")
 	}
-	return n == "OK"
+
+	if ok := r.DeleteScanMatch(ctx, pattern); !ok {
+		if pattern == "*" {
+			log.Error("DeleteAllKeys failed via SCAN for pattern *")
+		} else {
+			log.Errorf("DeleteAllKeys failed via SCAN for prefix %s", r.KeyPrefix)
+		}
+		return false
+	}
+	return true
 }
 
 // DeleteRawKey removes a key without prefix
@@ -1555,9 +1662,35 @@ func (r *RedisCluster) Eval(ctx context.Context, script string, keys []string, a
 	client := r.singleton()
 	switch v := client.(type) {
 	case *redis.ClusterClient:
-		return v.Eval(ctx, script, fixedKeys, args).Result()
+		result, err := v.Eval(ctx, script, fixedKeys, args).Result()
+		if err != nil {
+			if errors.Is(err, redis.Nil) {
+				return result, redis.Nil
+			}
+			loggedErr := fmt.Errorf("redis eval failed for keys %v: %w", fixedKeys, err)
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+				log.Warnw("redis eval timeout", "keys", fixedKeys, "error", err)
+			} else {
+				log.Errorw("redis eval failed", "keys", fixedKeys, "error", err)
+			}
+			return result, loggedErr
+		}
+		return result, nil
 	case *redis.Client:
-		return v.Eval(ctx, script, fixedKeys, args).Result()
+		result, err := v.Eval(ctx, script, fixedKeys, args).Result()
+		if err != nil {
+			if errors.Is(err, redis.Nil) {
+				return result, redis.Nil
+			}
+			loggedErr := fmt.Errorf("redis eval failed for keys %v: %w", fixedKeys, err)
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+				log.Warnw("redis eval timeout", "keys", fixedKeys, "error", err)
+			} else {
+				log.Errorw("redis eval failed", "keys", fixedKeys, "error", err)
+			}
+			return result, loggedErr
+		}
+		return result, nil
 	default:
 		return nil, errors.New("unsupported redis client type")
 	}
@@ -1588,6 +1721,45 @@ func (r *RedisCluster) EvalSha(ctx context.Context, sha1 string, keys []string, 
 	}
 }
 
+// QueueSnapshotCounts returns the cardinality of the ready list, scheduled zset and inflight set using a pipelined lookup.
+func (r *RedisCluster) QueueSnapshotCounts(ctx context.Context, readyKey, scheduledKey, inflightKey string) ([]int64, error) {
+	if err := r.Up(); err != nil {
+		return nil, err
+	}
+
+	client := r.singleton()
+	if client == nil {
+		return nil, ErrRedisIsDown
+	}
+
+	fixedReady := r.fixKey(readyKey)
+	fixedScheduled := r.fixKey(scheduledKey)
+	fixedInflight := r.fixKey(inflightKey)
+
+	var readyCmd, scheduledCmd, inflightCmd *redis.IntCmd
+	_, err := client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+		readyCmd = pipe.LLen(ctx, fixedReady)
+		scheduledCmd = pipe.ZCard(ctx, fixedScheduled)
+		inflightCmd = pipe.SCard(ctx, fixedInflight)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	counts := []int64{0, 0, 0}
+	if readyCmd != nil {
+		counts[0] = readyCmd.Val()
+	}
+	if scheduledCmd != nil {
+		counts[1] = scheduledCmd.Val()
+	}
+	if inflightCmd != nil {
+		counts[2] = inflightCmd.Val()
+	}
+	return counts, nil
+}
+
 // ScriptLoad loads a Lua script to Redis server
 func (r *RedisCluster) ScriptLoad(ctx context.Context, script string) (string, error) {
 	if err := r.Up(); err != nil {
@@ -1608,11 +1780,14 @@ func (r *RedisCluster) ScriptLoad(ctx context.Context, script string) (string, e
 // SetNX sets a key only if it doesn't exist (atomic operation)
 func (r *RedisCluster) SetNX(ctx context.Context, keyName string, value interface{}, expiration time.Duration) (bool, error) {
 	if err := r.Up(); err != nil {
+		metrics.RecordRedisOperation("storage_setnx", 0, err)
+		metrics.ObserveStorageSetNX(0, err)
 		return false, err
 	}
 
 	fixedKey := r.fixKey(keyName)
 	var result bool
+	start := time.Now()
 	err := r.withConn(ctx, func(cmd redis.Cmdable) error {
 		cmdResult, cmdErr := cmd.SetNX(ctx, fixedKey, value, expiration).Result()
 		if cmdErr != nil {
@@ -1621,11 +1796,25 @@ func (r *RedisCluster) SetNX(ctx context.Context, keyName string, value interfac
 		result = cmdResult
 		return nil
 	})
+	duration := time.Since(start)
+	metrics.RecordRedisOperation("storage_setnx", duration.Seconds(), err)
+	metrics.ObserveStorageSetNX(duration, err)
 	if err != nil {
 		log.Errorf("redis服务出现问题,请马上修改: %s", err.Error())
 		return false, err
 	}
 	return result, nil
+}
+
+// SetNXWithCommandTimeout wraps SetNX with a per-command deadline.
+func (r *RedisCluster) SetNXWithCommandTimeout(ctx context.Context, keyName string, value interface{}, expiration time.Duration, commandTimeout time.Duration) (bool, error) {
+	commandCtx, cancel := withCommandTimeout(ctx, commandTimeout)
+	defer cancel()
+	result, err := r.SetNX(commandCtx, keyName, value, expiration)
+	if err == nil && commandCtx.Err() == context.DeadlineExceeded {
+		return false, context.DeadlineExceeded
+	}
+	return result, err
 }
 
 // HashStr 哈希字符串实现

@@ -28,19 +28,33 @@ import (
 // 使用 jsoniter 库来替换 Go 标准库的 encoding/json
 var json = jsoniter.ConfigCompatibleWithStandardLibrary
 
-// Create 处理用户创建的 HTTP 请求入口
-// 利用通用控制层管道完成参数解析、校验、调用 service 层以及响应输出；
-// 同时保留审计、链路追踪与指标上报，确保行为与历史实现一致。
+// Create 负责贯穿用户创建 HTTP 流程。
+// 摘要：构建控制层处理链，完成参数校验、服务调用、审计记录以及指标/追踪的写入，并输出最终 HTTP 响应。
+//
+// ctx: 进入的 Gin 上下文，需携带合法的 *http.Request，用于追踪、审计与请求体解析。
+//
+// return: 无显式返回值；通过写入 HTTP 响应、发送审计事件、上报指标以及更新分布式追踪实现副作用。
+//
+// 行为：建立控制器层 span，构建审计闭包，获取创建处理器，在指标包装器内执行，并将执行结果映射到追踪/审计/HTTP 响应。
+//
+// 注意：当控制器未初始化时，获取处理器会回退到 ErrServerBusy，避免 panic 的同时保留可观测性信号。
+// 依赖：ensureCreateHandler()、metrics.MonitorBusinessOperation()、trace 组件、审计子系统。
+//
+// 示例：
+//
+//	router.POST("/users", userController.Create)
 func (u *UserController) Create(ctx *gin.Context) {
 	operator := common.GetUsername(ctx.Request.Context())
 	traceCtx := ctx.Request.Context()
 	trace.SetOperator(traceCtx, operator)
 
 	controllerCtx, controllerSpan := trace.StartSpan(traceCtx, "user-controller", "create_user")
+	// 将更新后的上下文绑定回请求
 	ctx.Request = ctx.Request.WithContext(controllerCtx)
 	trace.SetOperator(controllerCtx, operator)
-	trace.AddRequestTag(controllerCtx, "controller", "create_user")
 
+	//写入 RequestContext.Extra，用来附带更多维度：可以被下游中间件或日志过滤快速使用、在 ToLogPayload 里直接展开为 JSON 字段，也能被你代码里的其他地方读取并追加新标签。
+	trace.AddRequestTag(controllerCtx, "controller", "create_user")
 	controllerStatus := "success"
 	controllerCode := strconv.Itoa(code.ErrSuccess)
 	controllerDetails := map[string]interface{}{
@@ -71,12 +85,7 @@ func (u *UserController) Create(ctx *gin.Context) {
 	}
 	//建立联系人唯一性校验计划(用户名 手机 email)
 	handler := u.ensureCreateHandler()
-	/*
-		这段 handler == nil 的判断是在兜底防御：
-		ensureCreateHandler 若无法返回有效的处理器（目前只有在 u 为 nil 或未来有人修改工厂逻辑才会发生），这里就立即中止流程。
-		这样不会触发空指针或 panic，而是返回结构化的 ErrServerBusy 错误，写回 HTTP 响应，同时记录审计和链路信息，方便排查。
-		因此它让控制器在初始化缺失或配置错误时也能优雅降级，对客户端友好，并保留必要的观测数据。
-	*/
+
 	if handler == nil {
 		err := errors.WithCode(code.ErrServerBusy, "创建控制流程未初始化")
 		controllerStatus = "error"
@@ -260,6 +269,7 @@ func (u *UserController) createUserWithTimeout(ctx *gin.Context, _ *v1.User) (co
 	if requestCtx == nil {
 		requestCtx = context.Background()
 	}
+	// 如果已有截止时间，直接使用原上下文
 	if _, hasDeadline := requestCtx.Deadline(); hasDeadline {
 		return requestCtx, nil, nil
 	}
@@ -292,6 +302,10 @@ func (u *UserController) writeCreateUserResponse(ctx *gin.Context, err error, pa
 	core.WriteResponse(ctx, err, payload)
 }
 
+// createAwaitTimeout 获取用户创建操作的等待超时时间。
+// 优先从配置选项中读取 ServerRunOptions.CtxTimeout，若未设置则使用默认值 30 秒。
+//
+// return: 超时时间，单位为 time.Duration。
 func (u *UserController) createAwaitTimeout() time.Duration {
 	if u != nil && u.options != nil && u.options.ServerRunOptions != nil && u.options.ServerRunOptions.CtxTimeout > 0 {
 		return u.options.ServerRunOptions.CtxTimeout

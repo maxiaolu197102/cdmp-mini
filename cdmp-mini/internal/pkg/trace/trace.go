@@ -72,12 +72,12 @@ type RequestContext struct {
 
 // BusinessMetrics summarizes overall business outcome for a request.
 type BusinessMetrics struct {
-	Operation       string                 `json:"operation"`
-	TotalDurationMs float64                `json:"total_duration_ms"`
-	OverallStatus   string                 `json:"overall_status"`
-	BusinessCode    string                 `json:"business_code"`
-	BusinessMessage string                 `json:"business_message"`
-	Summary         map[string]interface{} `json:"performance_summary,omitempty"`
+	Operation       string                 `json:"operation"`                     // 业务操作名称，对应 Trace.Operation，常见值如 "user.create"
+	TotalDurationMs float64                `json:"total_duration_ms"`             // 整体耗时（毫秒），>=0，等于 Trace 完结时 End-Start
+	OverallStatus   string                 `json:"overall_status"`                // 汇总状态：success/degraded/error
+	BusinessCode    string                 `json:"business_code"`                 // 业务编码，与错误码体系映射，如 "0"/"10001"
+	BusinessMessage string                 `json:"business_message"`              // 业务描述信息，可为空；用于日志提示
+	Summary         map[string]interface{} `json:"performance_summary,omitempty"` // 附加性能指标，如各模块耗时，按需扩展
 }
 
 // Span represents a single timed operation within a trace.
@@ -166,7 +166,7 @@ type Trace struct {
 	Service   string //服务名称
 	Component string //组件名称
 	Operation string //操作名称
-	Phase     Phase  //阶段（HTTP/异步）
+	Phase     Phase  //阶段（HTTP/async）
 
 	Start time.Time //开始时间
 	End   time.Time //结束时间
@@ -521,7 +521,7 @@ func (t *Trace) MarshalSpans() []*Span {
 	return spans
 }
 
-// ToLogPayload builds the final log message payload.
+// 将追踪链路中的所有 Span（同步 + 异步）、性能指标、错误分类等数据，封装为traceLogPayload结构体（日志专用载体），最终输出结构化日志oLogPayload builds the final log message payload.
 func (t *Trace) ToLogPayload(asyncSpans []*Span) traceLogPayload {
 	spans := t.MarshalSpans()
 	if len(asyncSpans) > 0 {

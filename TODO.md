@@ -1,8 +1,27 @@
-- [x] Reduce high-cardinality tags in K6 delete_force script (set `params.tags.name`)
-- [ ] Investigate 5m delete_force run: http_req_duration p99 ≈ 8.8s and 29k dropped iterations (consider higher maxVUs or lower rates)
-- [ ] Trace-based analysis: pinpoint Kafka consumption bottleneck (fetch vs. flush-to-MySQL vs. ack) and outline speed-up options
-- [ ] Design batch workflow scenario, collect trace metrics, and evaluate bulk path latency
-- [ ] Investigate MySQL slow queries/resource usage during pressure windows (why queries miss the 200 ms budget; inspect indexes, pool sizing, lock waits)
-- [x] Revisit user-store read timeouts for strong consistency (200 ms + retry) and document backoff/timeout adjustments
-- [ ] Evaluate workload-side mitigations: insert-to-read delay in scripts vs. speeding up Kafka-to-MySQL path (consumer concurrency, transaction tuning)
-- [ ] During pending window, prefer 404 over 504 for strong-read misses so scripts can distinguish “not yet persisted” from “DB timeout”
+- [x] 已在 K6 delete_force 脚本中降低高基数标签（设置 `params.tags.name`）
+- [ ] 待环境恢复后，当 IAM 端点 192.168.10.8:8088 可访问时重新执行 `go test ./...`
+- [ ] 排查 delete_force 5 分钟压测：`http_req_duration` p99 ≈ 8.8s 且丢弃 2.9 万次迭代（考虑提高 maxVUs 或降低速率）
+- [ ] 基于 Trace 分析 Kafka 消费瓶颈（拉取、写入 MySQL 或 ack），整理提速方案
+- [ ] 设计批处理工作流场景，采集 Trace 指标并评估批量路径延迟
+- [ ] 压测窗口内排查 MySQL 慢查询与资源使用（为何超出 200ms 预算；检查索引、连接池容量、锁等待）
+- [x] 已重新评估用户存储强一致读取超时（200ms + 重试）并记录退避/超时调整
+- [ ] 评估业务侧缓解方案：脚本中插入到读取的延迟 vs. 加速 Kafka→MySQL 链路（消费并发、事务调优）
+- [x] 已在 Pending 窗口将强一致读缺失改为返回 404（替代 504），用于区分“未写入”与“数据库超时”
+- [x] 已设计 OperationEnvelope 及通用 CRUD 元数据（operation id、trace id、幂等键）
+- [x] 已实现 QueueCoordinator 抽象，并使用 Redis 提供排队与优先级
+- [x] 已引入 RequestStateStore（Redis+DB）持久化排队/执行/补偿状态并提供查询 API
+- [x] 已泛化 OperationPipeline 覆盖 CRUD + 补偿钩子，创建流程作为试点
+- [x] 已统一 Kafka topic 与生产者头部，覆盖主流程/重试/补偿通道并提供回退持久化
+- [x] 已构建 CompensationWorker 与调度器，接入异步回滚并整合重试/死信流程
+- [x] 已扩展补偿处理器，覆盖用户记录回滚（DB + 缓存）及 Pending 租约释放指标
+- [x] 已增强可观测性：队列深度、补偿待办、回退饱和度、完整链路 Trace
+- [ ] 补充配置开关、灰度控制与迁移工具，以便在同步与队列模式之间切换
+- [ ] 泛化用户异步操作管道，使 create/update/delete/batch 等 OperationKind 共用队列与状态存储
+- [ ] 将 Update 流程接入异步队列：实现 update executor、补偿逻辑，替换直接 Kafka 投递
+- [x] 已将 Delete / DeleteCollection 流程接入异步队列并补齐补偿能力（含 force/非 force 分支）
+- [x] 已将 BatchPatch 等批量任务迁移到异步执行路径并提供幂等 operation id
+- [x] 已抽取通用 awaitOperationState 帮助函数，使 update/delete/batch 支持等待与错误码映射
+- [x] 已固化 PendingCoordinator 初始化与健康检测：提供内存降级实现、Prometheus 指标、启动失败告警
+- [ ] 扩展管理/HTTP 接口以查询操作状态（operation polling），支持客户端主动轮询
+- [ ] 增补 update/delete/batch 异步化的端到端测试与 executor 单元测试
+- [ ] 在 doc/流程/ 中补充异步改造启用步骤、监控与回滚指南

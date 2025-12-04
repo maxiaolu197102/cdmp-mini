@@ -20,6 +20,7 @@ KEY_PATTERN=""
 SHOW_VALUE=false
 CLEAR_DATA=false
 SHOW_ALL=false
+DEFAULT_CLEAR_PATTERNS=${DEFAULT_CLEAR_PATTERNS:-"genericapiserver:* pending:* user:pending:*"}
 
 # 解析命令行参数
 while [[ $# -gt 0 ]]; do
@@ -85,6 +86,23 @@ print_error() {
 # 函数：打印信息
 print_info() {
     echo -e "${BLUE}ℹ $1${NC}"
+}
+
+# 函数：按模式删除Redis键
+delete_keys_by_pattern() {
+    local port="$1"
+    local pattern="$2"
+    local removed=0
+
+    while IFS= read -r key; do
+        if [[ -n "$key" ]]; then
+            if redis-cli -c -h 192.168.10.14 -p "$port" DEL "$key" >/dev/null 2>&1; then
+                removed=$((removed + 1))
+            fi
+        fi
+    done < <(redis-cli -h 192.168.10.14 -p "$port" --raw --scan --pattern "$pattern" 2>/dev/null)
+
+    echo "$removed"
 }
 
 # 函数：安全获取Redis值
@@ -212,16 +230,37 @@ fix_corrupted_key() {
 # 清空Redis数据（如果指定了-c参数）
 if [ "$CLEAR_DATA" = true ]; then
     print_header "清空 Redis 数据"
-    print_warning "此操作将永久删除所有Redis数据！"
-    read -p "$(echo -e '${YELLOW}确认要清空所有Redis数据吗？(y/N): ${NC}')" confirm
+    print_warning "此操作将删除匹配模式的所有键，Lua 脚本不会被清空。"
+
+    default_patterns=${DEFAULT_CLEAR_PATTERNS:-"genericapiserver:* pending:* user:pending:*"}
+    prompt_patterns="$default_patterns"
+    if [[ -n "${CLEAR_PATTERNS:-}" ]]; then
+        prompt_patterns="$CLEAR_PATTERNS"
+    fi
+
+    read -p "确认要删除这些模式下的键吗？(y/N): " confirm
     if [[ $confirm =~ ^[Yy]$ ]]; then
+        read -p "请输入要清理的 key 模式（空格分隔，默认: $prompt_patterns）: " pattern_input
+
+        if [[ -n "${CLEAR_PATTERNS:-}" ]]; then
+            read -r -a patterns <<<"${CLEAR_PATTERNS}"
+        elif [[ -n "$pattern_input" ]]; then
+            read -r -a patterns <<<"$pattern_input"
+        else
+            read -r -a patterns <<<"$default_patterns"
+        fi
+
         for port in 6379 6380 6381; do
-            echo -n "清空端口 $port 的数据..."
-            redis-cli -h 192.168.10.14 -p $port FLUSHALL >/dev/null 2>&1
-            if [ $? -eq 0 ]; then
-                print_success " 成功"
+            local_total=0
+            for pattern in "${patterns[@]}"; do
+                [[ -z "$pattern" ]] && continue
+                deleted=$(delete_keys_by_pattern "$port" "$pattern")
+                local_total=$((local_total + deleted))
+            done
+            if [ $local_total -gt 0 ]; then
+                print_success "端口 $port 已删除 $local_total 个键"
             else
-                print_error " 失败"
+                print_info "端口 $port 没有匹配的键"
             fi
         done
         echo ""

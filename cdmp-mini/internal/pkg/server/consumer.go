@@ -32,6 +32,7 @@ import (
 	v1 "github.com/maxiaolu1981/cretem/nexuscore/api/apiserver/v1"
 	"github.com/maxiaolu1981/cretem/nexuscore/errors"
 	"github.com/segmentio/kafka-go"
+	"golang.org/x/sync/errgroup"
 	"gorm.io/gorm"
 )
 
@@ -85,6 +86,14 @@ const cacheNullSentinel = "rate_limit_prevention"
 const pendingMarkerCacheWindow = 500 * time.Millisecond
 const batchChannelFreeSlotDivisor = 8
 const createFastFlushTimeout = 25 * time.Millisecond
+const contactKeyWriteTimeout = 400 * time.Millisecond
+const pendingRawSnapshotPreviewLimit = 512
+
+var (
+	errPendingMarker    = stderrs.New("pending marker error")
+	errCreatePersist    = stderrs.New("create persist error")
+	errExistingSnapshot = stderrs.New("existing snapshot lookup failed")
+)
 
 type markerCacheEntry struct {
 	exists       bool
@@ -115,6 +124,17 @@ type pendingMarkerCache struct {
 
 func newPendingMarkerCache() *pendingMarkerCache {
 	return &pendingMarkerCache{entries: make(map[string]markerCacheEntry)}
+}
+
+type pendingMarkerSnapshot struct {
+	OwnerID        string      `json:"owner_id"`
+	ReleasedBy     string      `json:"released_by"`
+	State          string      `json:"state"`
+	Version        json.Number `json:"version"`
+	RequestID      string      `json:"request_id"`
+	LeaseExpiresAt string      `json:"lease_expires_at"`
+	AcquireAt      string      `json:"acquire_at"`
+	QueueDepth     int64       `json:"queue_depth"`
 }
 
 func (c *pendingMarkerCache) Get(key string) (markerCacheEntry, bool) {
@@ -153,6 +173,40 @@ func (c *pendingMarkerCache) Delete(key string) {
 	c.mu.Lock()
 	delete(c.entries, key)
 	c.mu.Unlock()
+}
+
+func truncateForLogSnippet(raw string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if len(raw) <= limit {
+		return raw
+	}
+	trimmed := raw[:limit]
+	return fmt.Sprintf("%s…(len=%d)", trimmed, len(raw))
+}
+
+// metricsComponent 返回用于指标标签的消费者标识。
+func (c *UserConsumer) metricsComponent() string {
+	if c == nil {
+		return "user_consumer"
+	}
+	group := strings.TrimSpace(c.groupID)
+	topic := strings.TrimSpace(c.topic)
+	switch {
+	case group != "" && topic != "":
+		return group + ":" + topic
+	case group != "":
+		return group
+	case topic != "":
+		return topic
+	default:
+		return "user_consumer"
+	}
 }
 
 func (c *UserConsumer) initCreatePipeline() {
@@ -206,16 +260,9 @@ func (c *UserConsumer) initCreatePipeline() {
 			ensureUserInstanceID(user)
 			return nil
 		},
-		BeforePersist: func(ctx context.Context, msg kafka.Message, user *v1.User) error {
-			c.applyLagTagsFromMessage(ctx, msg)
-			return nil
-		},
 		Persist: func(ctx context.Context, msg kafka.Message, user *v1.User) (bool, error) {
-			created, err := c.createUserInDB(ctx, user, false)
-			if err != nil {
-				return false, err
-			}
-			return created, nil
+			created, err := c.processCreateMessageWithPending(ctx, msg, user)
+			return created, err
 		},
 		OnPersistError: func(ctx context.Context, msg kafka.Message, user *v1.User, err error) {
 			errorType := getErrorType(err)
@@ -228,13 +275,9 @@ func (c *UserConsumer) initCreatePipeline() {
 		},
 		AfterSuccess: func(ctx context.Context, msg kafka.Message, user *v1.User, created bool) error {
 			defer userMessagePool.Put(user)
-			if created {
-				if err := c.setUserCache(ctx, user, nil); err != nil {
-					log.Warnf("批量创建后缓存设置失败: username=%s, error=%v", user.Name, err)
-				}
-				return nil
+			if !created {
+				log.Warnf("检测到批量创建中的重复用户，已忽略: username=%s", user.Name)
 			}
-			log.Warnf("检测到批量创建中的重复用户，已忽略: username=%s", user.Name)
 			return nil
 		},
 	})
@@ -1011,6 +1054,7 @@ func (c *UserConsumer) runFetchLoop(ctx context.Context, readerIdx int, reader *
 		}
 	}
 
+	componentLabel := c.metricsComponent()
 	for {
 		select {
 		case <-loopCtx.Done():
@@ -1024,18 +1068,23 @@ func (c *UserConsumer) runFetchLoop(ctx context.Context, readerIdx int, reader *
 		if c.pendingCoordinator != nil {
 			now := time.Now()
 			if now.Sub(lastBackpressureSample) >= backpressureSampleInterval {
-				if depth, level, sampleErr := c.pendingCoordinator.SampleQueueDepth(loopCtx); sampleErr == nil {
+				sampleStart := time.Now()
+				depth, level, sampleErr := c.pendingCoordinator.SampleQueueDepth(loopCtx)
+				sampleDuration := time.Since(sampleStart)
+				metrics.ObservePendingConsumerRedisLatency(componentLabel, "sample_queue_depth", sampleDuration, sampleErr)
+				lastBackpressureSample = now
+				if sampleErr != nil {
+					trace.AddRequestTag(loopCtx, "pending_queue_sample_error", sampleErr.Error())
+				} else {
 					currentQueueDepth = depth
 					currentBackpressure = level
-					lastBackpressureSample = now
+					metrics.SetPendingConsumerQueueDepth(componentLabel, depth)
 					if depth > 0 {
 						trace.AddRequestTag(loopCtx, "pending_queue_depth", depth)
 					}
 					if level != usercache.BackpressureNone {
 						trace.AddRequestTag(loopCtx, "pending_backpressure_level", string(level))
 					}
-				} else {
-					trace.AddRequestTag(loopCtx, "pending_queue_sample_error", sampleErr.Error())
 				}
 			}
 			if delay := c.fetchDelayForBackpressure(currentBackpressure, currentQueueDepth); delay > 0 {
@@ -1291,46 +1340,32 @@ func (c *UserConsumer) processMessage(ctx context.Context, msg kafka.Message) er
 	}
 }
 
-// processCreateOperation 处理单条用户创建消息
-//
-// 完成消息反序列化、字段校验、pending 标记验证、数据库写入以及缓存更新，确保创建流程幂等。
+// processCreateMessageWithPending 将创建消息的 pending 检查、数据库写入及清理逻辑集中处理，供单条与批处理路径复用。
 //
 // 参数：
 //
 //	ctx: 消费上下文，包含追踪信息与取消信号
-//	msg: Kafka 消息，Value 中携带用户实体数据
+//	msg: Kafka 消息
+//	user: 预解码的用户实体
 //
 // 返回值：
 //
-//	error: 出现解析、校验或写库错误时返回，nil 表示成功
-//
-// 示例：
-//
-//	if err := consumer.processCreateOperation(ctx, message); err != nil { /* 重试 */ }
+//	bool: 是否执行了数据库插入
+//	error: 发生错误时返回，nil 表示成功或降级兜底已处理
 //
 // 注意事项：
-//   - 会根据 pending 标记判断是否需要降级或跳过重复创建
-//   - 验证失败的消息会被写入死信或重试主题
-//
-// 异常情况：
-//   - 反序列化失败返回错误并写入死信
-//   - 数据库写入或缓存操作异常会触发重试
-func (c *UserConsumer) processCreateOperation(ctx context.Context, msg kafka.Message) error {
-	user := userMessagePool.Get().(*v1.User)
-	defer func() {
-		*user = v1.User{}
-		userMessagePool.Put(user)
-	}()
+//   - pending 标记缺失将尝试降级查询数据库，失败时返回 CHECK_EXISTING_FAILED
+//   - Redis 清理阶段的异常仅记录日志，不会中断流程
+func (c *UserConsumer) processCreateMessageWithPending(ctx context.Context, msg kafka.Message, user *v1.User) (bool, error) {
+	if user == nil {
+		return false, fmt.Errorf("user payload is nil")
+	}
 
-	if err := decodeUserMessage(msg.Value, user); err != nil {
-		return err
-	}
-	if err := validation.ValidateUserFields(user.Name, user.Nickname, user.Password, user.Email, user.Phone); err != nil {
-		return c.sendToDeadLetter(ctx, msg, err.Error())
-	}
+	componentLabel := c.metricsComponent()
 	user.Email = usercache.NormalizeEmail(user.Email)
 	user.Phone = usercache.NormalizePhone(user.Phone)
 	ensureUserInstanceID(user)
+	log.Infow("create consumer pipeline entered", "username", user.Name, "message_offset", msg.Offset, "partition", msg.Partition)
 
 	pendingStart := time.Now()
 	markerCtx, markerSpan := trace.StartSpan(ctx, "kafka-consumer", "pending_marker_verify")
@@ -1363,7 +1398,8 @@ func (c *UserConsumer) processCreateOperation(ctx context.Context, msg kafka.Mes
 	trace.EndSpan(markerSpan, pendingStatus, pendingCode, details)
 	if pendingErr != nil {
 		trace.AddRequestTag(ctx, "pending_marker_error", pendingErr.Error())
-		return c.sendToRetry(ctx, msg, "PENDING_MARKER_ERROR: "+pendingErr.Error())
+		wrapped := fmt.Errorf("%w: %w", errPendingMarker, pendingErr)
+		return false, fmt.Errorf("PENDING_MARKER_ERROR: %w", wrapped)
 	}
 	trace.AddRequestTag(ctx, "pending_marker_present", pendingExists)
 	pendingDegraded := false
@@ -1386,14 +1422,15 @@ func (c *UserConsumer) processCreateOperation(ctx context.Context, msg kafka.Mes
 		trace.AddRequestTag(ctx, "pending_marker_missing", true)
 		existing, err := c.loadUserSnapshotWithTrace(ctx, user.Name, "pending_marker_missing")
 		if err != nil {
-			return c.sendToRetry(ctx, msg, "CHECK_EXISTING_FAILED: "+err.Error())
+			wrapped := fmt.Errorf("%w: %w", errExistingSnapshot, err)
+			return false, fmt.Errorf("CHECK_EXISTING_FAILED: %w", wrapped)
 		}
 		if existing != nil {
 			trace.AddRequestTag(ctx, "pending_marker_missing_existing", true)
 			if err := c.setUserCache(ctx, existing, nil); err != nil {
 				log.Warnf("用户创建消息到达但该用户已存在, 刷新缓存失败: username=%s err=%v", existing.Name, err)
 			}
-			return nil
+			return false, nil
 		}
 		trace.AddRequestTag(ctx, "pending_marker_missing_fallback", true)
 		log.Warnf("未检测到用户创建pending标记，降级走数据库兜底: username=%s", user.Name)
@@ -1424,9 +1461,10 @@ func (c *UserConsumer) processCreateOperation(ctx context.Context, msg kafka.Mes
 		if markerMissingFallback {
 			trace.AddRequestTag(ctx, "pending_marker_missing_create_error", err.Error())
 			log.Errorf("pending标记缺失降级插入失败: username=%s err=%v", user.Name, err)
-			return nil
+			return false, nil
 		}
-		return c.sendToDeadLetter(ctx, msg, "CREATE_DB_ERROR: "+err.Error())
+		wrapped := fmt.Errorf("%w: %w", errCreatePersist, err)
+		return false, fmt.Errorf("CREATE_DB_ERROR: %w", wrapped)
 	}
 	trace.AddRequestTag(ctx, "create_db_inserted", created)
 
@@ -1447,6 +1485,7 @@ func (c *UserConsumer) processCreateOperation(ctx context.Context, msg kafka.Mes
 	clearStart := time.Now()
 	clearCtx, clearSpan := trace.StartSpan(ctx, "kafka-consumer", "clear_pending_marker")
 	trace.AddRequestTag(clearCtx, "username", user.Name)
+	log.Infow("pending marker clear invoked", "username", user.Name, "message_offset", msg.Offset, "partition", msg.Partition)
 	clearRedisDuration, clearErr := c.clearPendingCreateMarker(clearCtx, user.Name)
 	clearDuration := time.Since(clearStart)
 	clearStatus := "success"
@@ -1465,12 +1504,47 @@ func (c *UserConsumer) processCreateOperation(ctx context.Context, msg kafka.Mes
 		"cleared":         clearErr == nil,
 		"redis_delete_ms": clearRedisDuration.Milliseconds(),
 	})
+	metrics.ObservePendingConsumerDequeue(componentLabel, clearDuration, clearErr)
 	if clearErr != nil {
 		trace.AddRequestTag(ctx, "pending_marker_clear_failed", true)
 		log.Warnf("清理用户创建幂等标记失败: username=%s err=%v", user.Name, clearErr)
 	} else {
 		trace.AddRequestTag(ctx, "pending_marker_cleared", true)
 	}
+
+	return created, nil
+}
+
+// processCreateOperation 负责单条创建消息的解码与校验，并委托核心逻辑完成 pending 处理与落库。
+func (c *UserConsumer) processCreateOperation(ctx context.Context, msg kafka.Message) error {
+	user := userMessagePool.Get().(*v1.User)
+	defer func() {
+		*user = v1.User{}
+		userMessagePool.Put(user)
+	}()
+
+	if err := decodeUserMessage(msg.Value, user); err != nil {
+		return err
+	}
+	if err := validation.ValidateUserFields(user.Name, user.Nickname, user.Password, user.Email, user.Phone); err != nil {
+		return c.sendToDeadLetter(ctx, msg, err.Error())
+	}
+
+	created, err := c.processCreateMessageWithPending(ctx, msg, user)
+	if err != nil {
+		switch {
+		case stderrs.Is(err, errPendingMarker):
+			return c.sendToRetry(ctx, msg, err.Error())
+		case stderrs.Is(err, errExistingSnapshot):
+			return c.sendToRetry(ctx, msg, err.Error())
+		case stderrs.Is(err, errCreatePersist):
+			return c.sendToDeadLetter(ctx, msg, err.Error())
+		default:
+			return err
+		}
+	}
+	// created flag currently unused for single message path.
+	_ = created
 
 	return nil
 }
@@ -1830,9 +1904,6 @@ targetLoop:
 			break attemptLoop
 		}
 
-		if retryErr != nil {
-			break
-		}
 		if conflictUnresolved {
 			unresolvedConflicts++
 		}
@@ -2085,16 +2156,20 @@ func (c *UserConsumer) getPendingCreateMarker(ctx context.Context, username stri
 	if trimmed == "" {
 		return false, "", 0, 0, 0, nil
 	}
+	componentLabel := c.metricsComponent()
 	if cached, ok := c.markerCache.Get(trimmed); ok {
 		trace.AddRequestTag(ctx, "pending_marker_cache_hit", true)
 		now := time.Now()
+		log.Infow("pending marker cache entry", "username", trimmed, "exists", cached.exists, "owner", strings.TrimSpace(cached.ownerID), "queue_depth", cached.queueDepth, "ttl_ms", cached.remainingTTL(now).Milliseconds())
 		return cached.exists, cached.value, cached.remainingTTL(now), 0, 0, nil
 	}
 	trace.AddRequestTag(ctx, "pending_marker_cache_hit", false)
 	if c.pendingCoordinator == nil {
 		return c.legacyGetPendingCreateMarker(ctx, trimmed)
 	}
+	observeStart := time.Now()
 	snapshot, err := c.pendingCoordinator.Observe(ctx, trimmed)
+	metrics.ObservePendingConsumerRedisLatency(componentLabel, "observe_pending_marker", time.Since(observeStart), err)
 	if err != nil {
 		trace.AddRequestTag(ctx, "pending_marker_get_error", err.Error())
 		return false, "", 0, 0, 0, err
@@ -2105,6 +2180,7 @@ func (c *UserConsumer) getPendingCreateMarker(ctx context.Context, username stri
 			hasTTL:      false,
 			cacheExpiry: time.Now().Add(pendingMarkerCacheWindow),
 		})
+		log.Infow("pending marker observe miss", "username", trimmed)
 		return false, "", 0, snapshot.RedisGetDuration, snapshot.RedisTTLDur, nil
 	}
 	trace.AddRequestTag(ctx, "pending_marker_get_ms", snapshot.RedisGetDuration.Milliseconds())
@@ -2128,6 +2204,8 @@ func (c *UserConsumer) getPendingCreateMarker(ctx context.Context, username stri
 		}
 	}
 	c.markerCache.Set(trimmed, entry)
+	metrics.SetPendingConsumerQueueDepth(componentLabel, snapshot.QueueDepth)
+	log.Infow("pending marker observe hit", "username", trimmed, "owner", strings.TrimSpace(entry.ownerID), "queue_depth", entry.queueDepth, "backpressure", string(entry.backpressure), "ttl_ms", snapshot.TTL.Milliseconds())
 	return true, snapshot.Raw, snapshot.TTL, snapshot.RedisGetDuration, snapshot.RedisTTLDur, nil
 }
 
@@ -2230,6 +2308,9 @@ func (c *UserConsumer) clearPendingCreateMarker(ctx context.Context, username st
 	if trimmed == "" {
 		return 0, nil
 	}
+	componentLabel := c.metricsComponent()
+	pendingKey := usercache.PendingCreateKey(trimmed)
+	now := time.Now()
 	var cached markerCacheEntry
 	if entry, ok := c.markerCache.Get(trimmed); ok {
 		cached = entry
@@ -2237,6 +2318,7 @@ func (c *UserConsumer) clearPendingCreateMarker(ctx context.Context, username st
 	c.markerCache.Delete(trimmed)
 	if c.pendingCoordinator != nil {
 		releaseOwner := strings.TrimSpace(cached.ownerID)
+		cachedTTL := cached.remainingTTL(now)
 		var observedState *usercache.PendingState
 		if releaseOwner == "" {
 			state, observeErr := c.pendingCoordinator.Observe(ctx, trimmed)
@@ -2245,6 +2327,7 @@ func (c *UserConsumer) clearPendingCreateMarker(ctx context.Context, username st
 			} else {
 				observedState = state
 				if state != nil {
+					metrics.SetPendingConsumerQueueDepth(componentLabel, state.QueueDepth)
 					if state.QueueDepth > 0 {
 						trace.AddRequestTag(ctx, "pending_marker_release_queue_depth", state.QueueDepth)
 					}
@@ -2255,21 +2338,104 @@ func (c *UserConsumer) clearPendingCreateMarker(ctx context.Context, username st
 						releaseOwner = strings.TrimSpace(state.LeaseOwner)
 						trace.AddRequestTag(ctx, "pending_marker_release_owner_filled", true)
 					}
+					if state.TTL > 0 {
+						trace.AddRequestTag(ctx, "pending_marker_release_observed_ttl_ms", state.TTL.Milliseconds())
+					}
 				}
 			}
 		}
 		if observedState != nil && !observedState.Exists {
+			metrics.SetPendingConsumerQueueDepth(componentLabel, 0)
 			trace.AddRequestTag(ctx, "pending_marker_release_state_missing", true)
 			return 0, nil
 		}
 		releaseOwner = strings.TrimSpace(releaseOwner)
+		recoveredFromRaw := false
+		rawSnapshotPreview := ""
+		rawOwner := ""
+		rawState := ""
+		rawVersion := ""
+		rawQueueDepth := int64(0)
+		decodeErrMsg := ""
+		if observedState != nil && strings.TrimSpace(observedState.Raw) != "" {
+			preview := truncateForLogSnippet(observedState.Raw, pendingRawSnapshotPreviewLimit)
+			if preview != "" {
+				rawSnapshotPreview = preview
+				trace.AddRequestTag(ctx, "pending_marker_release_snapshot_present", true)
+			}
+			var snapshot pendingMarkerSnapshot
+			if err := json.Unmarshal([]byte(observedState.Raw), &snapshot); err != nil {
+				decodeErrMsg = err.Error()
+				trace.AddRequestTag(ctx, "pending_marker_release_snapshot_decode_error", true)
+			} else {
+				rawOwner = strings.TrimSpace(snapshot.OwnerID)
+				if rawOwner == "" {
+					rawOwner = strings.TrimSpace(snapshot.ReleasedBy)
+				}
+				rawState = strings.TrimSpace(snapshot.State)
+				rawVersion = snapshot.Version.String()
+				if snapshot.QueueDepth > 0 {
+					rawQueueDepth = snapshot.QueueDepth
+				}
+				if releaseOwner == "" && rawOwner != "" {
+					releaseOwner = rawOwner
+					recoveredFromRaw = true
+					trace.AddRequestTag(ctx, "pending_marker_release_owner_recovered", true)
+				}
+			}
+		}
 		trace.AddRequestTag(ctx, "pending_marker_release_owner_present", releaseOwner != "")
 		if releaseOwner == "" {
 			trace.AddRequestTag(ctx, "pending_marker_release_owner_missing", true)
-			log.Warnf("pending lease release skipped due to empty owner: username=%s", trimmed)
+			fields := []interface{}{"username", trimmed, "cached_owner_present", strings.TrimSpace(cached.ownerID) != ""}
+			if cached.queueDepth > 0 {
+				fields = append(fields, "cached_queue_depth", cached.queueDepth)
+			}
+			if cachedTTL > 0 {
+				fields = append(fields, "cached_ttl_ms", cachedTTL.Milliseconds())
+			}
+			if observedState != nil {
+				fields = append(fields, "observed_exists", observedState.Exists)
+				if strings.TrimSpace(observedState.LeaseOwner) != "" {
+					fields = append(fields, "observed_owner", strings.TrimSpace(observedState.LeaseOwner))
+				}
+				if observedState.QueueDepth > 0 {
+					fields = append(fields, "observed_queue_depth", observedState.QueueDepth)
+				}
+				if observedState.TTL > 0 {
+					fields = append(fields, "observed_ttl_ms", observedState.TTL.Milliseconds())
+				}
+			}
+			if rawOwner != "" {
+				fields = append(fields, "raw_owner", rawOwner)
+			}
+			if rawState != "" {
+				fields = append(fields, "raw_state", rawState)
+			}
+			if strings.TrimSpace(rawVersion) != "" {
+				fields = append(fields, "raw_version", rawVersion)
+			}
+			if rawQueueDepth != 0 {
+				fields = append(fields, "raw_queue_depth", rawQueueDepth)
+			}
+			if decodeErrMsg != "" {
+				fields = append(fields, "raw_decode_error", decodeErrMsg)
+			}
+			if rawSnapshotPreview != "" {
+				fields = append(fields, "raw_snapshot_preview", rawSnapshotPreview)
+			}
+			if pendingKey != "" {
+				fields = append(fields, "pending_key", pendingKey)
+			}
+			log.Warnw("pending marker release skipped due to empty owner", fields...)
 			return 0, usercache.ErrPendingLeaseOwnerMismatch
 		}
+		if recoveredFromRaw {
+			trace.AddRequestTag(ctx, "pending_marker_release_owner_source", "raw_snapshot")
+			log.Infow("pending marker release owner recovered from snapshot", "username", trimmed, "owner", releaseOwner, "raw_state", rawState, "raw_version", rawVersion)
+		}
 		duration, err := c.pendingCoordinator.Release(ctx, trimmed, releaseOwner)
+		metrics.ObservePendingConsumerRedisLatency(componentLabel, "release_pending_marker", duration, err)
 		trace.AddRequestTag(ctx, "pending_marker_clear_ms", duration.Milliseconds())
 		if err != nil {
 			trace.AddRequestTag(ctx, "pending_marker_clear_error", err.Error())
@@ -2286,6 +2452,7 @@ func (c *UserConsumer) clearPendingCreateMarker(ctx context.Context, username st
 					}
 				}
 				if observedState != nil {
+					metrics.SetPendingConsumerQueueDepth(componentLabel, observedState.QueueDepth)
 					if strings.TrimSpace(observedState.LeaseOwner) != "" {
 						trace.AddRequestTag(ctx, "pending_marker_release_current_owner", strings.TrimSpace(observedState.LeaseOwner))
 					}
@@ -2295,7 +2462,47 @@ func (c *UserConsumer) clearPendingCreateMarker(ctx context.Context, username st
 					if level := string(observedState.Backpressure); level != "" && observedState.Backpressure != usercache.BackpressureNone {
 						trace.AddRequestTag(ctx, "pending_marker_release_backpressure_latest", level)
 					}
+					if observedState.TTL > 0 {
+						trace.AddRequestTag(ctx, "pending_marker_release_observed_ttl_latest_ms", observedState.TTL.Milliseconds())
+					}
 				}
+				fields := []interface{}{"username", trimmed, "release_owner", releaseOwner, "duration_ms", duration.Milliseconds()}
+				if cached.queueDepth > 0 {
+					fields = append(fields, "cached_queue_depth", cached.queueDepth)
+				}
+				if cachedTTL > 0 {
+					fields = append(fields, "cached_ttl_ms", cachedTTL.Milliseconds())
+				}
+				if observedState != nil {
+					if strings.TrimSpace(observedState.LeaseOwner) != "" {
+						fields = append(fields, "current_owner", strings.TrimSpace(observedState.LeaseOwner))
+					}
+					if observedState.QueueDepth > 0 {
+						fields = append(fields, "current_queue_depth", observedState.QueueDepth)
+					}
+					if observedState.TTL > 0 {
+						fields = append(fields, "current_ttl_ms", observedState.TTL.Milliseconds())
+					}
+				}
+				log.Warnw("pending marker release owner mismatch", fields...)
+			}
+			if !stderrs.Is(err, usercache.ErrPendingLeaseOwnerMismatch) {
+				fields := []interface{}{"username", trimmed, "release_owner", releaseOwner, "duration_ms", duration.Milliseconds(), "error", err}
+				if cached.queueDepth > 0 {
+					fields = append(fields, "cached_queue_depth", cached.queueDepth)
+				}
+				if cachedTTL > 0 {
+					fields = append(fields, "cached_ttl_ms", cachedTTL.Milliseconds())
+				}
+				if observedState != nil {
+					if observedState.QueueDepth > 0 {
+						fields = append(fields, "observed_queue_depth", observedState.QueueDepth)
+					}
+					if observedState.TTL > 0 {
+						fields = append(fields, "observed_ttl_ms", observedState.TTL.Milliseconds())
+					}
+				}
+				log.Warnw("pending marker release failed", fields...)
 			}
 			return duration, err
 		}
@@ -2304,12 +2511,19 @@ func (c *UserConsumer) clearPendingCreateMarker(ctx context.Context, username st
 		if cached.queueDepth > 0 {
 			fields = append(fields, "cached_queue_depth", cached.queueDepth)
 		}
+		if cachedTTL > 0 {
+			fields = append(fields, "cached_ttl_ms", cachedTTL.Milliseconds())
+		}
 		if observedState != nil {
+			metrics.SetPendingConsumerQueueDepth(componentLabel, observedState.QueueDepth)
 			if observedState.QueueDepth > 0 {
 				fields = append(fields, "observed_queue_depth", observedState.QueueDepth)
 			}
 			if level := string(observedState.Backpressure); level != "" {
 				fields = append(fields, "observed_backpressure", level)
+			}
+			if observedState.TTL > 0 {
+				fields = append(fields, "observed_ttl_ms", observedState.TTL.Milliseconds())
 			}
 		}
 		log.Infow("pending marker cleared", fields...)
@@ -3265,9 +3479,15 @@ func (c *UserConsumer) setUserCache(ctx context.Context, user *v1.User, previous
 	statusCode := strconv.Itoa(code.ErrSuccess)
 	pipelineCount := 0
 	contactChanged := false
+	cacheTimeout := cacheWriteTimeout(c.opts)
+	cacheSkipped := cacheWriteDisabled(c.opts)
+	cacheFallbackEnabled := cacheWriteFallbackEnabled(c.opts)
+	cacheDegraded := false
+	cacheFallbackSuccess := false
 	var (
 		writeStart      time.Time
 		operationErr    error
+		finalErr        error
 		wroteCache      bool
 		prepareDuration time.Duration
 		writeDuration   time.Duration
@@ -3275,10 +3495,14 @@ func (c *UserConsumer) setUserCache(ctx context.Context, user *v1.User, previous
 	totalStart := time.Now()
 	defer func() {
 		details := map[string]any{
-			"username":        user.Name,
-			"pipeline_items":  pipelineCount,
-			"contact_changed": contactChanged,
-			"wrote_cache":     wroteCache,
+			"username":               user.Name,
+			"pipeline_items":         pipelineCount,
+			"contact_changed":        contactChanged,
+			"wrote_cache":            wroteCache,
+			"cache_timeout_ms":       cacheTimeout.Milliseconds(),
+			"cache_skipped":          cacheSkipped,
+			"cache_degraded":         cacheDegraded,
+			"cache_fallback_success": cacheFallbackSuccess,
 		}
 		if operationErr != nil {
 			details["error"] = operationErr.Error()
@@ -3305,12 +3529,14 @@ func (c *UserConsumer) setUserCache(ctx context.Context, user *v1.User, previous
 	}
 
 	var pipelineItems []storage.KeyValueTTL
+	cacheKey := ""
 	if needCacheWrite {
-		cacheKey := usercache.UserKey(user.Name)
+		cacheKey = usercache.UserKey(user.Name)
 		if cacheKey != "" {
 			data, err := usercache.Marshal(user)
 			if err != nil {
 				operationErr = err
+				finalErr = err
 				return err
 			}
 			pipelineItems = append(pipelineItems, storage.KeyValueTTL{Key: cacheKey, Value: string(data), TTL: 24 * time.Hour})
@@ -3334,24 +3560,194 @@ func (c *UserConsumer) setUserCache(ctx context.Context, user *v1.User, previous
 		pipelineItems = append(pipelineItems, buildContactCacheItems(user)...)
 	}
 
-	prepareDuration = time.Since(totalStart)
-	pipelineCount = len(pipelineItems)
+	var (
+		hasPrimaryItem bool
+		primaryItem    storage.KeyValueTTL
+		contactItems   []storage.KeyValueTTL
+		auxItems       []storage.KeyValueTTL
+	)
 	if len(pipelineItems) > 0 {
-		writeStart = time.Now()
-		wroteCache = true
-		if len(pipelineItems) == 1 {
-			item := pipelineItems[0]
-			operationErr = c.redis.SetKey(ctx, item.Key, item.Value, item.TTL)
-		} else {
-			operationErr = c.redis.BatchSet(ctx, pipelineItems)
-		}
-		writeDuration = time.Since(writeStart)
-		if operationErr != nil {
-			metrics.BusinessFailures.WithLabelValues("consumer", "set_user_cache", "redis_write_error").Inc()
-			return operationErr
+		for _, item := range pipelineItems {
+			switch {
+			case cacheKey != "" && item.Key == cacheKey:
+				hasPrimaryItem = true
+				primaryItem = item
+			case strings.HasPrefix(item.Key, "user:email:") || strings.HasPrefix(item.Key, "user:phone:"):
+				contactItems = append(contactItems, item)
+			default:
+				auxItems = append(auxItems, item)
+			}
 		}
 	}
+
+	var (
+		primaryDuration time.Duration
+		contactDuration time.Duration
+		auxDuration     time.Duration
+		primaryErr      error
+		contactErr      error
+		auxErr          error
+		contactAttempts int
+	)
+
+	prepareDuration = time.Since(totalStart)
+	pipelineCount = len(pipelineItems)
+	finalErr = nil
+	componentLabel := c.metricsComponent()
+
+	if !cacheSkipped && len(pipelineItems) > 0 {
+		writeStart = time.Now()
+		wroteCache = true
+		writeCtx := ctx
+		if cacheTimeout > 0 {
+			var cancel context.CancelFunc
+			writeCtx, cancel = context.WithTimeout(ctx, cacheTimeout)
+			defer cancel()
+		}
+		if hasPrimaryItem {
+			primaryStart := time.Now()
+			primaryErr = c.redis.SetKey(writeCtx, primaryItem.Key, primaryItem.Value, primaryItem.TTL)
+			primaryDuration = time.Since(primaryStart)
+			metrics.RecordRedisOperation("user_cache_primary_set", primaryDuration.Seconds(), primaryErr)
+		}
+		if len(contactItems) > 0 {
+			contactStart := time.Now()
+			contactAttempts = len(contactItems)
+			g, gctx := errgroup.WithContext(writeCtx)
+			var (
+				mu             sync.Mutex
+				encounteredErr error
+			)
+			for _, item := range contactItems {
+				item := item
+				g.Go(func() error {
+					if gctx.Err() != nil {
+						return gctx.Err()
+					}
+					attemptCtx := gctx
+					attemptStart := time.Now()
+					var err error
+					if contactKeyWriteTimeout > 0 {
+						err = c.redis.SetKeyWithCommandTimeout(attemptCtx, item.Key, item.Value, item.TTL, contactKeyWriteTimeout)
+					} else {
+						err = c.redis.SetKey(attemptCtx, item.Key, item.Value, item.TTL)
+					}
+					elapsed := time.Since(attemptStart)
+					metrics.RecordRedisOperation("user_cache_contact_batch_set", elapsed.Seconds(), err)
+					if err != nil {
+						mu.Lock()
+						encounteredErr = stderrs.Join(encounteredErr, err)
+						mu.Unlock()
+					}
+					return err
+				})
+			}
+			waitErr := g.Wait()
+			if waitErr != nil {
+				mu.Lock()
+				if encounteredErr == nil {
+					encounteredErr = waitErr
+				}
+				mu.Unlock()
+			}
+			contactDuration = time.Since(contactStart)
+			contactErr = encounteredErr
+			metrics.ObserveUserCacheContactBatch(componentLabel, len(contactItems), contactDuration, contactAttempts, contactErr)
+			if contactAttempts > 0 {
+				trace.AddRequestTag(ctx, "cache_contact_write_attempts", contactAttempts)
+			}
+			if contactErr != nil {
+				trace.AddRequestTag(ctx, "cache_contact_write_error", contactErr.Error())
+			}
+		}
+		if len(auxItems) > 0 {
+			auxStart := time.Now()
+			if len(auxItems) == 1 {
+				item := auxItems[0]
+				auxErr = c.redis.SetKey(writeCtx, item.Key, item.Value, item.TTL)
+			} else {
+				auxErr = c.redis.BatchSet(writeCtx, auxItems)
+			}
+			auxDuration = time.Since(auxStart)
+			metrics.RecordRedisOperation("user_cache_aux_batch_set", auxDuration.Seconds(), auxErr)
+		}
+		writeDuration = time.Since(writeStart)
+
+		nonNil := make([]error, 0, 3)
+		if primaryErr != nil {
+			nonNil = append(nonNil, primaryErr)
+		}
+		if contactErr != nil {
+			nonNil = append(nonNil, contactErr)
+		}
+		if auxErr != nil {
+			nonNil = append(nonNil, auxErr)
+		}
+		switch len(nonNil) {
+		case 0:
+			operationErr = nil
+		case 1:
+			operationErr = nonNil[0]
+		default:
+			operationErr = stderrs.Join(nonNil...)
+		}
+		finalErr = operationErr
+		if operationErr != nil {
+			metrics.BusinessFailures.WithLabelValues("consumer", "set_user_cache", "redis_write_error").Inc()
+			if shouldDegradeCacheWrite(operationErr) {
+				cacheDegraded = true
+				metrics.BusinessFailures.WithLabelValues("consumer", "set_user_cache", "redis_timeout").Inc()
+				logFields := []interface{}{
+					"username", user.Name,
+					"pipeline_items", len(pipelineItems),
+					"error", operationErr,
+				}
+				if cacheTimeout > 0 {
+					logFields = append(logFields, "timeout", cacheTimeout)
+				}
+				log.Warnw("用户缓存刷新降级，Redis 写入受限", logFields...)
+				if cacheFallbackEnabled && len(pipelineItems) > 0 {
+					fallbackItem := pipelineItems[0]
+					fallbackErr := writeUserCacheFallback(ctx, c.redis, c.opts, fallbackItem)
+					if fallbackErr == nil {
+						cacheFallbackSuccess = true
+						metrics.BusinessSuccess.WithLabelValues("consumer", "set_user_cache", "fallback_single").Inc()
+						log.Infow("用户缓存刷新降级成功，仅写主缓存键", "username", user.Name, "fallback_key", fallbackItem.Key)
+						finalErr = nil
+					} else {
+						metrics.BusinessFailures.WithLabelValues("consumer", "set_user_cache", "fallback_failed").Inc()
+						log.Warnw("用户缓存刷新降级失败", "username", user.Name, "fallback_error", fallbackErr)
+						finalErr = stderrs.Join(operationErr, fallbackErr)
+					}
+				}
+			}
+		}
+	} else if cacheSkipped {
+		finalErr = nil
+	}
+
 	totalDuration := time.Since(totalStart)
+	metrics.ObserveUserCacheRefreshPhase(componentLabel, "total", totalDuration)
+	metrics.ObserveUserCacheRefreshPhase(componentLabel, "prepare", prepareDuration)
+	if wroteCache {
+		metrics.ObserveUserCacheRefreshPhase(componentLabel, "write_total", writeDuration)
+	}
+	if hasPrimaryItem && primaryDuration > 0 {
+		metrics.ObserveUserCacheRefreshPhase(componentLabel, "primary_write", primaryDuration)
+	}
+	if contactDuration > 0 {
+		metrics.ObserveUserCacheRefreshPhase(componentLabel, "contact_write", contactDuration)
+	}
+	if auxDuration > 0 {
+		metrics.ObserveUserCacheRefreshPhase(componentLabel, "aux_write", auxDuration)
+	}
+	metrics.ObserveUserCacheRefreshItems(componentLabel, "pipeline_items", len(pipelineItems))
+	if hasPrimaryItem {
+		metrics.ObserveUserCacheRefreshItems(componentLabel, "primary_items", 1)
+	}
+	metrics.ObserveUserCacheRefreshItems(componentLabel, "contact_items", len(contactItems))
+	metrics.ObserveUserCacheRefreshItems(componentLabel, "aux_items", len(auxItems))
+	metrics.ObserveUserCacheRefreshItems(componentLabel, "contact_attempts", contactAttempts)
 	metrics.BusinessProcessingTime.WithLabelValues("consumer", "set_user_cache_prepare").Observe(prepareDuration.Seconds())
 	if wroteCache {
 		metrics.BusinessProcessingTime.WithLabelValues("consumer", "set_user_cache_write").Observe(writeDuration.Seconds())
@@ -3362,16 +3758,156 @@ func (c *UserConsumer) setUserCache(ctx context.Context, user *v1.User, previous
 	if wroteCache {
 		trace.AddRequestTag(ctx, "cache_write_ms", writeDuration.Milliseconds())
 	}
+	if hasPrimaryItem && primaryDuration > 0 {
+		trace.AddRequestTag(ctx, "cache_primary_write_ms", primaryDuration.Milliseconds())
+	}
+	if len(contactItems) > 0 {
+		trace.AddRequestTag(ctx, "cache_contact_items", len(contactItems))
+		if contactDuration > 0 {
+			trace.AddRequestTag(ctx, "cache_contact_write_ms", contactDuration.Milliseconds())
+		}
+	}
+	if len(auxItems) > 0 {
+		trace.AddRequestTag(ctx, "cache_aux_items", len(auxItems))
+		if auxDuration > 0 {
+			trace.AddRequestTag(ctx, "cache_aux_write_ms", auxDuration.Milliseconds())
+		}
+	}
 	trace.AddRequestTag(ctx, "cache_pipeline_items", len(pipelineItems))
 	trace.AddRequestTag(ctx, "cache_contacts_changed", contactChanged)
-	if needCacheWrite || contactChanged {
-		log.Infow("用户缓存刷新完成", "username", user.Name, "duration", totalDuration, "prepare_duration", prepareDuration, "write_duration", writeDuration, "cache_write", needCacheWrite, "contacts_updated", contactChanged, "pipeline_items", len(pipelineItems))
-	} else {
-		log.Debugw("用户缓存刷新跳过写入", "username", user.Name, "duration", totalDuration)
+	trace.AddRequestTag(ctx, "cache_skipped", cacheSkipped)
+	if cacheDegraded {
+		trace.AddRequestTag(ctx, "cache_degraded", true)
+	}
+	if cacheFallbackSuccess {
+		trace.AddRequestTag(ctx, "cache_fallback", "single_key")
+	}
+
+	logFields := []interface{}{
+		"username", user.Name,
+		"duration", totalDuration,
+		"prepare_duration", prepareDuration,
+		"write_duration", writeDuration,
+		"cache_write", !cacheSkipped && needCacheWrite,
+		"contacts_updated", contactChanged,
+		"pipeline_items", len(pipelineItems),
+	}
+	if cacheSkipped {
+		logFields = append(logFields, "cache_skipped", true)
+	}
+	if hasPrimaryItem && primaryDuration > 0 {
+		logFields = append(logFields, "primary_write_duration", primaryDuration)
+	}
+	if len(contactItems) > 0 {
+		logFields = append(logFields, "contact_items", len(contactItems))
+		if contactDuration > 0 {
+			logFields = append(logFields, "contact_write_duration", contactDuration)
+		}
+		if contactKeyWriteTimeout > 0 {
+			logFields = append(logFields, "contact_write_timeout", contactKeyWriteTimeout)
+		}
+		if contactAttempts > 0 {
+			logFields = append(logFields, "contact_attempts", contactAttempts)
+		}
+	}
+	if len(auxItems) > 0 {
+		logFields = append(logFields, "aux_items", len(auxItems))
+		if auxDuration > 0 {
+			logFields = append(logFields, "aux_write_duration", auxDuration)
+		}
+	}
+	if cacheDegraded {
+		logFields = append(logFields, "cache_degraded", true)
+	}
+	if cacheFallbackSuccess {
+		logFields = append(logFields, "cache_fallback_success", true)
+	}
+
+	switch {
+	case cacheSkipped:
+		log.Infow("用户缓存刷新跳过写入", logFields...)
+	case needCacheWrite || contactChanged:
+		log.Infow("用户缓存刷新完成", logFields...)
+	default:
+		log.Debugw("用户缓存刷新跳过写入", logFields...)
+	}
+
+	if cacheSkipped {
+		metrics.BusinessSuccess.WithLabelValues("consumer", "set_user_cache", "skip_config").Inc()
 	}
 	metrics.BusinessSuccess.WithLabelValues("consumer", "set_user_cache", "complete").Inc()
 
-	return operationErr
+	return finalErr
+}
+
+func shouldDegradeCacheWrite(err error) bool {
+	if err == nil {
+		return false
+	}
+	if stderrs.Is(err, context.DeadlineExceeded) || stderrs.Is(err, context.Canceled) {
+		return true
+	}
+	if stderrs.Is(err, storage.ErrRedisIsDown) {
+		return true
+	}
+	var timeoutErr interface{ Timeout() bool }
+	if stderrs.As(err, &timeoutErr) && timeoutErr.Timeout() {
+		return true
+	}
+	return false
+}
+
+func cacheWriteTimeout(opts *options.KafkaOptions) time.Duration {
+	if opts == nil || opts.CacheWriteTimeout < 0 {
+		return 0
+	}
+	return opts.CacheWriteTimeout
+}
+
+func cacheWriteDisabled(opts *options.KafkaOptions) bool {
+	if opts == nil {
+		return false
+	}
+	return opts.SkipCacheWrite
+}
+
+func cacheWriteFallbackEnabled(opts *options.KafkaOptions) bool {
+	if opts == nil {
+		return true
+	}
+	return opts.CacheWriteFallback
+}
+
+func cacheWriteFallbackTimeout(opts *options.KafkaOptions) time.Duration {
+	base := cacheWriteTimeout(opts)
+	if base <= 0 {
+		return 0
+	}
+	limit := base / 2
+	if limit <= 0 {
+		limit = base
+	}
+	if limit > time.Second {
+		limit = time.Second
+	}
+	return limit
+}
+
+func writeUserCacheFallback(ctx context.Context, redisClient *storage.RedisCluster, opts *options.KafkaOptions, item storage.KeyValueTTL) error {
+	if redisClient == nil {
+		return nil
+	}
+	key := strings.TrimSpace(item.Key)
+	if key == "" {
+		return nil
+	}
+	fallbackCtx := ctx
+	if timeout := cacheWriteFallbackTimeout(opts); timeout > 0 {
+		var cancel context.CancelFunc
+		fallbackCtx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	return redisClient.SetKey(fallbackCtx, key, item.Value, item.TTL)
 }
 
 func (c *UserConsumer) deleteUserCache(ctx context.Context, username string) error {
@@ -3647,14 +4183,83 @@ func (c *UserConsumer) batchCreateToDB(ctx context.Context, msgs []kafka.Message
 		return
 	}
 
-	for _, msg := range msgs {
+	parallelism := c.opts.BatchCreateParallelism
+	if parallelism <= 0 {
+		parallelism = c.opts.WorkerCount
+	}
+	if parallelism <= 0 {
+		parallelism = 1
+	}
+	if len(msgs) > 0 && parallelism > len(msgs) {
+		parallelism = len(msgs)
+	}
+	if parallelism < 1 {
+		parallelism = 1
+	}
+	trace.AddRequestTag(ctx, "batch_parallelism", parallelism)
+
+	successCounter := atomic.Int32{}
+	var (
+		errMu    sync.Mutex
+		firstErr error
+	)
+	recordErr := func(err error) {
+		if err == nil {
+			return
+		}
+		errMu.Lock()
+		if firstErr == nil {
+			firstErr = err
+		}
+		errMu.Unlock()
+	}
+
+	processOne := func(msg kafka.Message) {
 		outcome := c.createPipeline.Process(ctx, msg)
 		if outcome.Err != nil {
-			opErr = outcome.Err
+			recordErr(outcome.Err)
+			return
 		}
 		if outcome.Created {
-			successful++
+			successCounter.Add(1)
 		}
+	}
+
+	if parallelism <= 1 || len(msgs) <= 1 {
+		for i := range msgs {
+			if ctx.Err() != nil {
+				recordErr(ctx.Err())
+				break
+			}
+			processOne(msgs[i])
+		}
+	} else {
+		sem := make(chan struct{}, parallelism)
+		var wg sync.WaitGroup
+		for i := range msgs {
+			if ctx.Err() != nil {
+				recordErr(ctx.Err())
+				break
+			}
+			msg := msgs[i]
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(m kafka.Message) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				if ctx.Err() != nil {
+					recordErr(ctx.Err())
+					return
+				}
+				processOne(m)
+			}(msg)
+		}
+		wg.Wait()
+	}
+
+	successful = int(successCounter.Load())
+	if firstErr != nil {
+		opErr = firstErr
 	}
 
 	if successful > 0 {

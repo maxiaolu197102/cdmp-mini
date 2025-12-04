@@ -31,14 +31,14 @@ const (
 const (
 	ConsumerGroupPrefix = "user-service-prod"
 	// Topic 定义
-	UserCreateTopic     = "user.create.v1"
-	UserUpdateTopic     = "user.update.v1"
-	UserDeleteTopic     = "user.delete.v1"
-	UserRetryTopic      = "user.retry.v1"
-	UserDeadLetterTopic = "user.deadletter.v1"
+	UserOperationTopic      = "user.operations.v1"
+	UserOperationRetryTopic = "user.operations.retry.v1"
+	UserOperationCompTopic  = "user.operations.comp.v1"
+	UserDeadLetterTopic     = "user.deadletter.v1"
 
 	// Header Keys
 	HeaderOperation         = "operation"
+	HeaderChannel           = "operation-channel"
 	HeaderOriginalTimestamp = "original-timestamp"
 	HeaderRetryCount        = "retry-count"
 	HeaderRetryError        = "retry-error"
@@ -53,6 +53,11 @@ const (
 	OperationCreate = "create"
 	OperationUpdate = "update"
 	OperationDelete = "delete"
+
+	// Operation Channels
+	ChannelPrimary      = "primary"
+	ChannelRetry        = "retry"
+	ChannelCompensation = "compensation"
 
 	// 重试配置
 	// MaxRetryCount  = 5

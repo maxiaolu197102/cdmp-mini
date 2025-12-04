@@ -25,6 +25,7 @@ type RedisOptions struct {
 	MaxConnLifetime       time.Duration `json:"max-conn-lifetime"        mapstructure:"max-conn-lifetime"        description:"Maximum connection lifetime in seconds"`
 	Wait                  bool          `json:"wait"                     mapstructure:"wait"                     description:"Wait for available connection when pool is exhausted"`
 	PoolSize              int           `json:"pool-size"                mapstructure:"pool-size"                description:"Connection pool size per node (cluster mode)"`
+	MinIdleConns          int           `json:"min-idle-conns"           mapstructure:"min-idle-conns"           description:"Minimum number of idle connections kept per node"`
 	MaxRetries            int           `json:"max-retries"        mapstructure:"max-retries"`
 	MaxRetryDelay         time.Duration `json:"max-retry-delay"   mapstructure:"max-retry-delay"`
 }
@@ -40,7 +41,7 @@ func NewRedisOptions() *RedisOptions {
 		Password:              "",
 		Database:              0,
 		MasterName:            "",
-		MaxIdle:               25,               // 空闲连接数          // 最大活跃连接数
+		MaxIdle:               600,              // 空闲连接上限（0 表示不限制）
 		Timeout:               60 * time.Second, // 连接超时
 		EnableCluster:         true,             // 集群模式
 		UseSSL:                false,
@@ -48,8 +49,9 @@ func NewRedisOptions() *RedisOptions {
 		IdleTimeout:           120 * time.Second,  // 空闲超时2分钟
 		MaxConnLifetime:       1800 * time.Second, // 连接生命周期30分钟
 		Wait:                  true,               // 池耗尽时等待
-		PoolSize:              90,                 // 🔥 与MaxActive一致
-		MaxRetries:            3,
+		PoolSize:              1200,               // 默认每节点 1200 个连接
+		MinIdleConns:          480,                // 默认保持 480 个空闲连接
+		MaxRetries:            1,
 		MaxRetryDelay:         30 * time.Second,
 	}
 }
@@ -73,7 +75,7 @@ func (r *RedisOptions) Complete() {
 
 	// 连接池配置默认值
 	if r.MaxIdle <= 0 {
-		r.MaxIdle = 10 // 默认最大空闲连接数
+		r.MaxIdle = 0 // 0 表示交由 go-redis 自行控制
 	}
 	if r.MaxActive <= 0 {
 		r.MaxActive = 100 // 默认最大活跃连接数
@@ -98,6 +100,21 @@ func (r *RedisOptions) Complete() {
 			r.PoolSize = 10 // 单机模式：10个连接
 		}
 	}
+	if r.MinIdleConns < 0 {
+		r.MinIdleConns = 0
+	}
+	if r.MinIdleConns == 0 {
+		if r.PoolSize > 0 {
+			// 默认保持 30% 的 MinIdle，至少保留 32 个连接
+			calc := r.PoolSize * 3 / 10
+			if calc < 32 {
+				calc = 32
+			}
+			r.MinIdleConns = calc
+		} else {
+			r.MinIdleConns = 32
+		}
+	}
 
 	// 等待策略默认值（高并发推荐设置为true）
 	// Wait字段是bool类型，默认值为false，这里不强制设置
@@ -118,7 +135,7 @@ func (r *RedisOptions) Complete() {
 	}
 
 	if r.MaxRetries < 0 {
-		r.MaxRetries = 3 // 默认重试次数
+		r.MaxRetries = 1 // 默认重试次数
 	}
 
 	if r.MaxRetryDelay <= 0 {
@@ -199,15 +216,16 @@ func (r *RedisOptions) AddFlags(fs *pflag.FlagSet) {
 	fs.BoolVar(&r.EnableCluster, "redis.enable-cluster", r.EnableCluster, "Enable Redis cluster mode (requires multiple addresses in redis.addrs)")
 
 	// 连接池基础优化配置
-	fs.IntVar(&r.MaxIdle, "redis.optimisation-max-idle", r.MaxIdle, "Maximum number of idle connections in the pool (recommended: 10-2000)")
-	fs.IntVar(&r.MaxActive, "redis.optimisation-max-active", r.MaxActive, "Maximum number of active connections in the pool (recommended: 100-20000)")
+	fs.IntVar(&r.MaxIdle, "redis.optimisation-max-idle", r.MaxIdle, "Maximum number of idle connections in the pool (0 to disable explicit limit)")
+	fs.IntVar(&r.MaxActive, "redis.optimisation-max-active", r.MaxActive, "Maximum number of active connections in the pool (recommended: 500-5000)")
 	fs.DurationVar(&r.Timeout, "redis.timeout", r.Timeout,
 		"Connection timeout in seconds (0 for no timeout)")
 	// 新增的连接池高级配置（针对高并发优化）
 	fs.DurationVar(&r.IdleTimeout, "redis.idle-timeout", r.IdleTimeout, "Idle connection timeout in seconds (connections idle longer than this will be closed)")
 	fs.DurationVar(&r.MaxConnLifetime, "redis.max-conn-lifetime", r.MaxConnLifetime, "Maximum connection lifetime in seconds (connections older than this will be recycled)")
 	fs.BoolVar(&r.Wait, "redis.wait", r.Wait, "Wait for available connection when pool is exhausted (recommended for high concurrency scenarios)")
-	fs.IntVar(&r.PoolSize, "redis.pool-size", r.PoolSize, "Connection pool size per node (especially important for cluster mode, recommended: 50-100)")
+	fs.IntVar(&r.PoolSize, "redis.pool-size", r.PoolSize, "Connection pool size per node (especially important for cluster mode, recommended: 400-1200)")
+	fs.IntVar(&r.MinIdleConns, "redis.min-idle-conns", r.MinIdleConns, "Minimum number of idle connections to keep ready per node")
 
 	// SSL/TLS安全配置
 	fs.BoolVar(&r.UseSSL, "redis.use-ssl", r.UseSSL, "Enable SSL/TLS for Redis connections")

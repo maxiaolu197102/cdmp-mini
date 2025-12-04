@@ -797,7 +797,7 @@ func runObservabilitySnapshot(t *testing.T, env *framework.Env, data *getDataset
 	result.code = resp.Code
 	result.message = resp.Message
 	result.checks["duration_recorded"] = result.duration > 0
-	result.checks["business_code"] = resp.Code != 0
+	result.checks["business_code"] = resp.Code == code.ErrSuccess
 	result.checks["message_present"] = resp.Message != ""
 	result.success = resp.HTTPStatus() == http.StatusOK && resp.Code == code.ErrSuccess
 	result.notes = append(result.notes, fmt.Sprintf("duration=%s", result.duration))

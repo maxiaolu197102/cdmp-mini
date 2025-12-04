@@ -21,7 +21,17 @@ const (
 	DefaultContactPreflightMaxConcurrency = 64
 	//MinUserPendingCreateTTL guarantees pending markers survive slow consumer restarts and large Kafka backlogs.
 	MinUserPendingCreateTTL = 10 * time.Minute
+	operationModeSync       = "sync"
+	operationModeQueue      = "queue"
+	operationModeRollout    = "rollout"
 )
+
+var defaultOperationQueueKinds = []string{
+	"create",
+	"update",
+	"delete",
+	"batch",
+}
 
 type ServerRunOptions struct {
 	Mode                              string        `json:"mode"        mapstructure:"mode"`
@@ -69,15 +79,21 @@ type ServerRunOptions struct {
 	MaxQueueSize     int           `json:"max-queue-size" mapstructure:"max-queue-size"`
 	TimeoutThreshold time.Duration `json:"timeout-threshold" mapstructure:"timeout-threshold"`
 	// 新增：Kafka 生产者失败消息的降级目录
-	ProducerFallbackDir   string        `json:"producer-fallback-dir" mapstructure:"producer-fallback-dir"`
-	PasswordHashCost      int           `json:"password-hash-cost" mapstructure:"password-hash-cost"`
-	PasswordHashAlgorithm string        `json:"password-hash-algorithm" mapstructure:"password-hash-algorithm"`
-	Argon2Time            uint32        `json:"argon2-time" mapstructure:"argon2-time"`
-	Argon2MemoryKB        uint32        `json:"argon2-memory-kb" mapstructure:"argon2-memory-kb"`
-	Argon2Parallelism     uint32        `json:"argon2-parallelism" mapstructure:"argon2-parallelism"`
-	Argon2KeyLength       uint32        `json:"argon2-key-length" mapstructure:"argon2-key-length"`
-	Argon2SaltLength      uint32        `json:"argon2-salt-length" mapstructure:"argon2-salt-length"`
-	UserPendingCreateTTL  time.Duration `json:"userPendingCreateTTL" mapstructure:"userPendingCreateTTL"`
+	ProducerFallbackDir          string        `json:"producer-fallback-dir" mapstructure:"producer-fallback-dir"`
+	PasswordHashCost             int           `json:"password-hash-cost" mapstructure:"password-hash-cost"`
+	PasswordHashAlgorithm        string        `json:"password-hash-algorithm" mapstructure:"password-hash-algorithm"`
+	Argon2Time                   uint32        `json:"argon2-time" mapstructure:"argon2-time"`
+	Argon2MemoryKB               uint32        `json:"argon2-memory-kb" mapstructure:"argon2-memory-kb"`
+	Argon2Parallelism            uint32        `json:"argon2-parallelism" mapstructure:"argon2-parallelism"`
+	Argon2KeyLength              uint32        `json:"argon2-key-length" mapstructure:"argon2-key-length"`
+	Argon2SaltLength             uint32        `json:"argon2-salt-length" mapstructure:"argon2-salt-length"`
+	UserPendingCreateTTL         time.Duration `json:"userPendingCreateTTL" mapstructure:"userPendingCreateTTL"`
+	OperationMode                string        `json:"operationMode" mapstructure:"operationMode"`
+	OperationRolloutPercent      int           `json:"operationRolloutPercent" mapstructure:"operationRolloutPercent"`
+	OperationRolloutStickyHeader string        `json:"operationRolloutStickyHeader" mapstructure:"operationRolloutStickyHeader"`
+	OperationQueueKinds          []string      `json:"operationQueueKinds" mapstructure:"operationQueueKinds"`
+	OperationQueueUserAllowlist  []string      `json:"operationQueueUserAllowlist" mapstructure:"operationQueueUserAllowlist"`
+	OperationQueueUserBlocklist  []string      `json:"operationQueueUserBlocklist" mapstructure:"operationQueueUserBlocklist"`
 }
 
 // NewServerRunOptions 初始化并返回服务器运行的默认配置选项
@@ -179,7 +195,12 @@ func NewServerRunOptions() *ServerRunOptions {
 		// Argon2SaltLength 为 Argon2 盐长度（字节），HashConfig() 使用，须 >=16 以保证随机度。
 		Argon2SaltLength: 16,
 		// UserPendingCreateTTL 控制 Redis 用户创建幂等标记的TTL，user_service.markPendingCreate() 读取，必须 >=MinUserPendingCreateTTL。
-		UserPendingCreateTTL: MinUserPendingCreateTTL,
+		UserPendingCreateTTL:        MinUserPendingCreateTTL,
+		OperationMode:               operationModeSync,
+		OperationRolloutPercent:     100,
+		OperationQueueKinds:         append([]string{}, defaultOperationQueueKinds...),
+		OperationQueueUserAllowlist: nil,
+		OperationQueueUserBlocklist: nil,
 	}
 }
 
@@ -215,6 +236,30 @@ func (s *ServerRunOptions) Complete() {
 	if !s.Healthz {
 		s.Healthz = true
 	}
+
+	s.OperationMode = strings.TrimSpace(strings.ToLower(s.OperationMode))
+	if s.OperationMode == "" {
+		s.OperationMode = operationModeSync
+	}
+	if s.OperationMode != operationModeSync && s.OperationMode != operationModeQueue && s.OperationMode != operationModeRollout {
+		s.OperationMode = operationModeQueue
+	}
+	if s.OperationRolloutPercent < 0 {
+		s.OperationRolloutPercent = 0
+	} else if s.OperationRolloutPercent > 100 {
+		s.OperationRolloutPercent = 100
+	}
+	s.OperationRolloutStickyHeader = strings.ToLower(strings.TrimSpace(s.OperationRolloutStickyHeader))
+	if len(s.OperationQueueKinds) == 0 {
+		s.OperationQueueKinds = append([]string{}, defaultOperationQueueKinds...)
+	} else {
+		s.OperationQueueKinds = normalizeStringSlice(s.OperationQueueKinds)
+		if len(s.OperationQueueKinds) == 0 {
+			s.OperationQueueKinds = append([]string{}, defaultOperationQueueKinds...)
+		}
+	}
+	s.OperationQueueUserAllowlist = normalizeStringSlice(s.OperationQueueUserAllowlist)
+	s.OperationQueueUserBlocklist = normalizeStringSlice(s.OperationQueueUserBlocklist)
 
 	if s.UserTraceLogSampleRate < 0 {
 		s.UserTraceLogSampleRate = 0
@@ -630,4 +675,30 @@ func (s *ServerRunOptions) AddFlags(fs *pflag.FlagSet) {
 	fs.Uint32Var(&s.Argon2KeyLength, "server.argon2-key-length", s.Argon2KeyLength, "argon2id 输出哈希长度 (字节)")
 	fs.Uint32Var(&s.Argon2SaltLength, "server.argon2-salt-length", s.Argon2SaltLength, "argon2id 盐长度 (字节)")
 	fs.DurationVar(&s.UserPendingCreateTTL, "server.user-pending-create-ttl", s.UserPendingCreateTTL, "Redis 用户创建幂等标记的过期时间")
+	fs.StringVar(&s.OperationMode, "server.operation-mode", s.OperationMode, "用户异步操作模式：sync（完全同步）、queue（全部进入异步队列）、rollout（按百分比分流）")
+	fs.IntVar(&s.OperationRolloutPercent, "server.operation-rollout-percent", s.OperationRolloutPercent, "当 operation-mode=rollout 时，进入异步队列的百分比 (0-100)")
+	fs.StringVar(&s.OperationRolloutStickyHeader, "server.operation-rollout-header", s.OperationRolloutStickyHeader, "用于粘性灰度的请求头名，留空则以用户名进行哈希")
+	fs.StringSliceVar(&s.OperationQueueKinds, "server.operation-queue-kinds", s.OperationQueueKinds, "进入异步队列的操作类型列表（默认: create,update,delete,batch）")
+	fs.StringSliceVar(&s.OperationQueueUserAllowlist, "server.operation-queue-user-allowlist", s.OperationQueueUserAllowlist, "强制走异步队列的用户名白名单（小写匹配）")
+	fs.StringSliceVar(&s.OperationQueueUserBlocklist, "server.operation-queue-user-blocklist", s.OperationQueueUserBlocklist, "强制走同步模式的用户名黑名单（小写匹配）")
+}
+
+func normalizeStringSlice(items []string) []string {
+	if len(items) == 0 {
+		return items
+	}
+	set := make(map[string]struct{}, len(items))
+	result := make([]string, 0, len(items))
+	for _, raw := range items {
+		trimmed := strings.ToLower(strings.TrimSpace(raw))
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := set[trimmed]; exists {
+			continue
+		}
+		set[trimmed] = struct{}{}
+		result = append(result, trimmed)
+	}
+	return result
 }

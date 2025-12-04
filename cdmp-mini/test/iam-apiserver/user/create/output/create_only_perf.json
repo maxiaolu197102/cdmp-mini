@@ -1,0 +1,39 @@
+[
+  {
+    "scenario": "specialized/create_only_smoke",
+    "requests": 512,
+    "success_rate": 1,
+    "error_rate": 0,
+    "duration_ms": 922,
+    "qps": 555.0726050470406,
+    "error_count": 0,
+    "success_count": 512,
+    "latency": {
+      "min_ms": 24.489338,
+      "max_ms": 132.333333,
+      "avg_ms": 56.115755,
+      "p50_ms": 53.623626,
+      "p90_ms": 81.299348,
+      "p95_ms": 90.196872,
+      "p99_ms": 108.773934
+    },
+    "counters": {
+      "cache_checks": 0,
+      "cache_hits": 0,
+      "degraded": 0,
+      "peak_concurrency": 32,
+      "stages": 1
+    },
+    "notes": [
+      "创建链路专项 - 不触发清理，聚焦 Create API 延迟",
+      "Load pattern=uniform",
+      "仅验证创建接口，不进入清理路径",
+      "适用于对齐后端 create 链路调优后的延迟曲线",
+      "username distribution: len_12=171, len_28=171, len_45=170",
+      "password distribution: complex=256, simple=256",
+      "email distribution: corp.internal=171, custom-domain.test=170, example.com=171",
+      "phone distribution: domestic=256, international=256",
+      "TPS=555.07"
+    ]
+  }
+]

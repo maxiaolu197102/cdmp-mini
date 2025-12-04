@@ -12,6 +12,8 @@ type createState struct {
 }
 
 // WithCreateState ensures the create request state holder exists on the context chain.
+// return: 新的上下文，包含创建状态结构体。
+
 func WithCreateState(ctx context.Context) context.Context {
 	if ctx == nil {
 		ctx = context.Background()

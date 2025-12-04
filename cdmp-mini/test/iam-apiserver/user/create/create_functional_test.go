@@ -2,6 +2,7 @@ package create
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net/http"
@@ -684,6 +685,145 @@ func TestCreateFunctional(t *testing.T) {
 			},
 		})
 	})
+}
+
+func TestCreateOperationModeScenarios(t *testing.T) {
+	env := framework.NewEnv(t)
+	outputDir := env.EnsureOutputDir(t, testDir)
+	recorder := framework.NewRecorder(t, outputDir, "create_modes")
+	defer recorder.Flush(t)
+
+	if env.UserVersionUnsupported() {
+		t.Skip("backend missing user version column; skipping create operation mode scenarios")
+	}
+
+	original, err := env.GetUserOperationMode()
+	if err != nil {
+		t.Fatalf("fetch operation mode: %v", err)
+	}
+
+	cloneConfig := func(cfg framework.OperationModeConfig) framework.OperationModeConfig {
+		dup := cfg
+		dup.QueueKinds = append([]string{}, cfg.QueueKinds...)
+		dup.AllowUsers = append([]string{}, cfg.AllowUsers...)
+		dup.BlockUsers = append([]string{}, cfg.BlockUsers...)
+		return dup
+	}
+
+	queueKinds := []string{"create", "update", "delete", "batch"}
+	syncCfg := cloneConfig(original)
+	syncCfg.Mode = "sync"
+	syncCfg.RolloutPercent = 0
+	syncCfg.AllowUsers = nil
+	syncCfg.BlockUsers = nil
+
+	queueCfg := cloneConfig(original)
+	queueCfg.Mode = "queue"
+	queueCfg.RolloutPercent = 100
+	queueCfg.QueueKinds = append([]string{}, queueKinds...)
+	queueCfg.AllowUsers = nil
+	queueCfg.BlockUsers = nil
+
+	t.Cleanup(func() {
+		if _, restoreErr := env.SetUserOperationMode(original); restoreErr != nil {
+			t.Logf("restore operation mode: %v", restoreErr)
+		}
+	})
+
+	const basePassword = "InitPassw0rd!"
+	metricNames := []string{"operation_worker_iterations_total", "operation_compensation_total"}
+
+	cases := []struct {
+		name        string
+		cfg         framework.OperationModeConfig
+		description string
+	}{
+		{
+			name:        "sync",
+			cfg:         syncCfg,
+			description: "同步执行路径",
+		},
+		{
+			name:        "queue",
+			cfg:         queueCfg,
+			description: "队列异步路径",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			applied, err := env.SetUserOperationMode(tc.cfg)
+			if err != nil {
+				t.Fatalf("set operation mode %s: %v", tc.name, err)
+			}
+
+			spec := env.NewUserSpec("create_mode_"+tc.name+"_", basePassword)
+			payload := defaultCreatePayload(spec)
+
+			beforeMetrics, err := env.MetricsSnapshot(metricNames...)
+			if err != nil {
+				t.Logf("metrics snapshot before %s: %v", tc.name, err)
+				beforeMetrics = nil
+			}
+
+			start := time.Now()
+			outcome := performCreate(t, env, "", payload)
+			assertStatus(t, outcome.resp, http.StatusCreated, code.ErrSuccess)
+
+			waitStart := time.Now()
+			if err := env.WaitForUser(spec.Name, 30*time.Second); err != nil {
+				if errors.Is(err, framework.ErrUserVersionColumnMissing) || env.UserVersionUnsupported() {
+					t.Skip("backend missing user version column; skipping create operation mode scenarios")
+				}
+				t.Fatalf("wait for user ready: %v", err)
+			}
+			waitDuration := time.Since(waitStart)
+
+			afterMetrics := map[string]float64{}
+			if snapshot, err := env.MetricsSnapshot(metricNames...); err != nil {
+				t.Logf("metrics snapshot after %s: %v", tc.name, err)
+			} else {
+				afterMetrics = snapshot
+			}
+
+			deltaNotes := make([]string, 0, len(metricNames))
+			if beforeMetrics != nil && len(afterMetrics) > 0 {
+				for _, name := range metricNames {
+					before := beforeMetrics[name]
+					after := afterMetrics[name]
+					delta := after - before
+					deltaNotes = append(deltaNotes, fmt.Sprintf("%s_delta=%.0f", name, delta))
+				}
+			}
+
+			checks := map[string]bool{
+				"response":    true,
+				"user_ready":  true,
+				"metrics_log": len(deltaNotes) == len(metricNames),
+			}
+			if strings.EqualFold(applied.Mode, "queue") {
+				checks["queue_wait"] = waitDuration > 0
+			}
+
+			recorder.AddCase(framework.CaseResult{
+				Name:        fmt.Sprintf("create_mode_%s", tc.name),
+				Description: fmt.Sprintf("%s - %s", tc.description, applied.Mode),
+				Success:     true,
+				HTTPStatus:  outcome.resp.HTTPStatus(),
+				Code:        outcome.resp.Code,
+				Message:     outcome.resp.Message,
+				DurationMS:  time.Since(start).Milliseconds(),
+				Checks:      checks,
+				Notes: append([]string{
+					fmt.Sprintf("operation_mode=%s", applied.Mode),
+					fmt.Sprintf("wait_ms=%d", waitDuration.Milliseconds()),
+				}, deltaNotes...),
+			})
+
+			env.ForceDeleteUserIgnore(spec.Name)
+		})
+	}
 }
 
 // Helper functions

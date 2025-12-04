@@ -273,6 +273,7 @@ func (m *Manager) Submit(ctx context.Context, event Event) {
 	if event.OccurredAt.IsZero() {
 		event.OccurredAt = time.Now()
 	}
+	//“先克隆再缓存” 是为了保证审计数据的不可变性—— 一旦事件被提交，无论原事件如何修改，缓存和落地的审计记录都是提交时的原始状态，这是审计系统数据准确性的关键保障。
 	cloned := event.Clone()
 	m.appendRecent(cloned)
 
@@ -343,6 +344,7 @@ func (m *Manager) dispatch(event Event) {
 	}
 }
 
+// appendRecent 将事件添加到最近事件缓存中。
 func (m *Manager) appendRecent(event Event) {
 	if m == nil || !m.cfg.Enabled {
 		return

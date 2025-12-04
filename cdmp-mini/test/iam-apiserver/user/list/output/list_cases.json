@@ -6,7 +6,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 1,
+    "duration_ms": 3,
     "checks": {
       "code_ok": true,
       "http_ok": true,
@@ -14,7 +14,7 @@
       "username_match": true
     },
     "notes": [
-      "query=id=30654547\u0026limit=1",
+      "query=id=228492\u0026limit=1",
       "id 参数应精确匹配用户记录"
     ]
   },
@@ -25,7 +25,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 1,
+    "duration_ms": 2,
     "checks": {
       "code_ok": true,
       "http_ok": true,
@@ -33,7 +33,7 @@
       "username_match": true
     },
     "notes": [
-      "query=limit=5\u0026name=list_fn_primary_1762886492310074490_91977",
+      "query=limit=5\u0026name=list_fn_primary_1764607832865651310_28117",
       "name 参数应返回目标用户"
     ]
   },
@@ -44,14 +44,14 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 1,
+    "duration_ms": 2,
     "checks": {
       "code_ok": true,
       "http_ok": true,
       "no_disabled_seen": true
     },
     "notes": [
-      "query=limit=5\u0026name=list_fn_multi_d_1762886495272941891_35125",
+      "query=limit=5\u0026name=list_fn_multi_d_1764607837684404861_44044",
       "默认状态过滤应排除禁用用户"
     ]
   },
@@ -62,7 +62,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 2,
+    "duration_ms": 3,
     "checks": {
       "code_ok": true,
       "http_ok": true,
@@ -70,7 +70,7 @@
       "username_match": true
     },
     "notes": [
-      "query=limit=5\u0026name=list_fn_multi_d_1762886495272941891_35125\u0026status=0",
+      "query=limit=5\u0026name=list_fn_multi_d_1764607837684404861_44044\u0026status=0",
       "显式 status=0 应返回禁用用户"
     ]
   },
@@ -81,7 +81,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 2,
+    "duration_ms": 3,
     "checks": {
       "code_ok": true,
       "contains_active": true,
@@ -90,7 +90,7 @@
       "multi_results": true
     },
     "notes": [
-      "query=email%5Blike%5D=multi1762886494847609675\u0026status=0%2C1",
+      "query=email%5Blike%5D=multi1764607836124690255\u0026status=0%2C1",
       "returned=2",
       "status=0,1 结合 email[like] 应返回多条记录"
     ]
@@ -102,7 +102,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 1,
+    "duration_ms": 4,
     "checks": {
       "code_ok": true,
       "http_ok": true,
@@ -111,7 +111,7 @@
       "username_match": true
     },
     "notes": [
-      "query=isAdmin=true\u0026limit=5\u0026name=list_fn_admin_1762886494420269083_16691",
+      "query=isAdmin=true\u0026limit=5\u0026name=list_fn_admin_1764607835050059772_12265",
       "isAdmin=true 应仅返回管理员用户"
     ]
   },
@@ -122,7 +122,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 1,
+    "duration_ms": 69,
     "checks": {
       "code_ok": true,
       "contains_contact": true,
@@ -130,7 +130,7 @@
       "non_empty": true
     },
     "notes": [
-      "query=email%5Blike%5D=contact.list_fn_contact_1762886495700544843_67150\u0026limit=5",
+      "query=email%5Blike%5D=contact.list_fn_contact_1764607838777504555_31206\u0026limit=5",
       "returned=1",
       "email[like] 可模糊匹配邮箱"
     ]
@@ -142,7 +142,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 1,
+    "duration_ms": 4,
     "checks": {
       "code_ok": true,
       "contains_contact": true,
@@ -150,7 +150,7 @@
       "non_empty": true
     },
     "notes": [
-      "query=limit=5\u0026phone%5Blike%5D=151901",
+      "query=limit=5\u0026phone%5Blike%5D=151549",
       "returned=1",
       "phone[like] 可模糊匹配手机号"
     ]
@@ -162,7 +162,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 1,
+    "duration_ms": 3,
     "checks": {
       "code_ok": true,
       "http_ok": true,
@@ -170,8 +170,8 @@
       "within_window": true
     },
     "notes": [
-      "query=createdAt%5Bgte%5D=2025-11-12T02%3A40%3A33%2B08%3A00\u0026createdAt%5Blte%5D=2025-11-12T02%3A42%3A33%2B08%3A00\u0026name=list_fn_primary_1762886492310074490_91977",
-      "target_created_at=2025-11-12T02:41:33+08:00",
+      "query=createdAt%5Bgte%5D=2025-12-02T00%3A49%3A33%2B08%3A00\u0026createdAt%5Blte%5D=2025-12-02T00%3A51%3A33%2B08%3A00\u0026name=list_fn_primary_1764607832865651310_28117",
+      "target_created_at=2025-12-02T00:50:33+08:00",
       "createdAt 窗口应准确筛选用户"
     ]
   },
@@ -182,7 +182,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 1,
+    "duration_ms": 3,
     "checks": {
       "code_ok": true,
       "http_ok": true,
@@ -190,8 +190,8 @@
       "returned_two": true
     },
     "notes": [
-      "query=email%5Blike%5D=page1762886496126681725\u0026limit=2\u0026offset=1\u0026status=1",
-      "expected=[list_fn_page_2_1762886496978595661_16695,list_fn_page_1_1762886496552525113_02107]",
+      "query=email%5Blike%5D=page1764607839348189544\u0026limit=2\u0026offset=1\u0026status=1",
+      "expected=[list_fn_page_2_1764607841585558960_34688,list_fn_page_1_1764607840060331822_34931]",
       "limit/offset 应按 id DESC 分页"
     ]
   },
@@ -202,7 +202,7 @@
     "http_status": 200,
     "code": 100001,
     "message": "操作成功",
-    "duration_ms": 1,
+    "duration_ms": 74,
     "checks": {
       "code_ok": true,
       "http_ok": true,
@@ -210,7 +210,7 @@
       "username_match": true
     },
     "notes": [
-      "query=fieldSelector=name%3Dlist_fn_primary_1762886492310074490_91977\u0026limit=5",
+      "query=fieldSelector=name%3Dlist_fn_primary_1764607832865651310_28117\u0026limit=5",
       "fieldSelector=name=xxx 仍保持兼容"
     ]
   },
@@ -221,7 +221,7 @@
     "http_status": 400,
     "code": 110004,
     "message": "[code: 110004] status 参数值非法: not-a-number",
-    "duration_ms": 1,
+    "duration_ms": 2,
     "checks": {
       "code_invalid": true,
       "http_bad_request": true

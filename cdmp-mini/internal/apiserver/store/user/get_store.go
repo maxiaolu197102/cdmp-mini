@@ -43,10 +43,22 @@ func (u *Users) Get(ctx context.Context, username string,
 	var resultUser *v1.User
 
 	// 配置生产级重试策略
+	initialDelay := opt.MysqlOptions.InitialDelay
+	if initialDelay <= 0 {
+		initialDelay = 500 * time.Millisecond
+	} else if initialDelay < 500*time.Millisecond {
+		initialDelay = 500 * time.Millisecond
+	}
+
+	maxDelay := opt.MysqlOptions.MaxDelay
+	if maxDelay <= 0 || maxDelay < initialDelay {
+		maxDelay = initialDelay
+	}
+
 	queryConfig := db.RetryConfig{
 		MaxAttempts:   opt.MysqlOptions.MaxRetryAttempts, // 最多重试2次（总共3次尝试）
-		InitialDelay:  opt.MysqlOptions.InitialDelay,     // 初始延迟
-		MaxDelay:      opt.MysqlOptions.MaxDelay,         // 大并发下适当增加最大延迟
+		InitialDelay:  initialDelay,                      // 初始延迟
+		MaxDelay:      maxDelay,                          // 大并发下适当增加最大延迟
 		BackoffFactor: opt.MysqlOptions.BackoffFactor,
 		Jitter:        opt.MysqlOptions.Jitter,
 		IsRetryable:   u.isRetryableError,

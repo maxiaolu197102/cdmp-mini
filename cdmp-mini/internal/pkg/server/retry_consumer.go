@@ -1004,15 +1004,24 @@ func (rc *RetryConsumer) deleteUserFromDB(ctx context.Context, username string) 
 
 func (rc *RetryConsumer) setUserCache(ctx context.Context, user *v1.User, previous *v1.User) error {
 	var (
-		startTime    time.Time
-		operationErr error
-		wroteCache   bool
+		writeStart    time.Time
+		operationErr  error
+		wroteCache    bool
+		writeDuration time.Duration
 	)
 	defer func() {
 		if wroteCache {
-			metrics.RecordRedisOperation("set", time.Since(startTime).Seconds(), operationErr)
+			observed := writeDuration
+			if observed <= 0 && !writeStart.IsZero() {
+				observed = time.Since(writeStart)
+			}
+			metrics.RecordRedisOperation("set", observed.Seconds(), operationErr)
 		}
 	}()
+
+	cacheTimeout := cacheWriteTimeout(rc.kafkaOptions)
+	cacheSkipped := cacheWriteDisabled(rc.kafkaOptions)
+	cacheFallbackEnabled := cacheWriteFallbackEnabled(rc.kafkaOptions)
 
 	needCacheWrite := true
 	if previous != nil && cacheEquivalent(previous, user) {
@@ -1050,21 +1059,50 @@ func (rc *RetryConsumer) setUserCache(ctx context.Context, user *v1.User, previo
 		pipelineItems = append(pipelineItems, buildContactCacheItems(user)...)
 	}
 
+	if cacheSkipped {
+		log.L(ctx).Infow("用户缓存刷新跳过写入", "username", user.Name, "reason", "config_skip")
+		return nil
+	}
+
+	finalErr := operationErr
 	if len(pipelineItems) > 0 {
-		startTime = time.Now()
+		writeStart = time.Now()
 		wroteCache = true
+		writeCtx := ctx
+		if cacheTimeout > 0 {
+			var cancel context.CancelFunc
+			writeCtx, cancel = context.WithTimeout(ctx, cacheTimeout)
+			defer cancel()
+		}
 		if len(pipelineItems) == 1 {
 			item := pipelineItems[0]
-			operationErr = rc.redis.SetKey(ctx, item.Key, item.Value, item.TTL)
+			operationErr = rc.redis.SetKey(writeCtx, item.Key, item.Value, item.TTL)
 		} else {
-			operationErr = rc.redis.BatchSet(ctx, pipelineItems)
+			operationErr = rc.redis.BatchSet(writeCtx, pipelineItems)
 		}
+		writeDuration = time.Since(writeStart)
+		finalErr = operationErr
 		if operationErr != nil {
-			log.L(ctx).Errorw("缓存写入失败", "username", user.Name, "error", operationErr)
-			return operationErr
+			log.L(ctx).Warnw("缓存写入失败", "username", user.Name, "error", operationErr)
+			metrics.BusinessFailures.WithLabelValues("retry_consumer", "set_user_cache", "redis_write_error").Inc()
+			if shouldDegradeCacheWrite(operationErr) {
+				metrics.BusinessFailures.WithLabelValues("retry_consumer", "set_user_cache", "redis_timeout").Inc()
+				if cacheFallbackEnabled && len(pipelineItems) > 0 {
+					fallbackErr := writeUserCacheFallback(ctx, rc.redis, rc.kafkaOptions, pipelineItems[0])
+					if fallbackErr == nil {
+						metrics.BusinessSuccess.WithLabelValues("retry_consumer", "set_user_cache", "fallback_single").Inc()
+						log.L(ctx).Infow("缓存写入降级成功，仅写主缓存键", "username", user.Name)
+						finalErr = nil
+					} else {
+						metrics.BusinessFailures.WithLabelValues("retry_consumer", "set_user_cache", "fallback_failed").Inc()
+						log.L(ctx).Warnw("缓存写入降级失败", "username", user.Name, "fallback_error", fallbackErr)
+						finalErr = errors.Join(operationErr, fallbackErr)
+					}
+				}
+			}
 		}
 	}
-	return operationErr
+	return finalErr
 }
 
 func (rc *RetryConsumer) deleteUserCache(ctx context.Context, username string) error {

@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/code"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/options"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/ratelimiter"
 	"golang.org/x/time/rate"
@@ -65,6 +66,23 @@ type AuditEvent struct {
 	UserAgent    string         `json:"UserAgent"`
 	Metadata     map[string]any `json:"Metadata"`
 	OccurredAt   time.Time      `json:"OccurredAt"`
+}
+
+// OperationModeConfig mirrors the admin API payload for configuring runtime operation modes.
+type OperationModeConfig struct {
+	Mode           string   `json:"mode"`
+	RolloutPercent int      `json:"rolloutPercent"`
+	StickyHeader   string   `json:"stickyHeader,omitempty"`
+	QueueKinds     []string `json:"queueKinds,omitempty"`
+	AllowUsers     []string `json:"allowUsers,omitempty"`
+	BlockUsers     []string `json:"blockUsers,omitempty"`
+}
+
+func isBusinessSuccess(codeValue int) bool {
+	if codeValue == 0 {
+		return true
+	}
+	return codeValue == code.ErrSuccess
 }
 
 // Env 存储E2E测试环境的核心配置与状态信息，包含服务地址、认证信息、客户端实例及限流控制等
@@ -459,6 +477,181 @@ func isAuthExpiredStatus(status int) bool {
 	return status == http.StatusUnauthorized || status == 419
 }
 
+// GetUserOperationMode retrieves the current user service operation mode snapshot via admin API.
+func (e *Env) GetUserOperationMode() (OperationModeConfig, error) {
+	resp, err := e.AdminRequest(http.MethodGet, "/admin/users/operation-mode", nil)
+	if err != nil {
+		return OperationModeConfig{}, err
+	}
+	if resp == nil {
+		return OperationModeConfig{}, fmt.Errorf("operation mode response is nil")
+	}
+	if resp.HTTPStatus() != http.StatusOK {
+		return OperationModeConfig{}, fmt.Errorf("operation mode fetch failed: http=%d code=%d message=%s", resp.HTTPStatus(), resp.Code, resp.Message)
+	}
+	if !isBusinessSuccess(resp.Code) {
+		return OperationModeConfig{}, fmt.Errorf("operation mode fetch failed: code=%d message=%s", resp.Code, resp.Message)
+	}
+	if len(resp.Data) == 0 {
+		return OperationModeConfig{}, fmt.Errorf("operation mode payload empty")
+	}
+	var payload struct {
+		Config OperationModeConfig `json:"config"`
+	}
+	if err := json.Unmarshal(resp.Data, &payload); err != nil {
+		return OperationModeConfig{}, fmt.Errorf("decode operation mode payload: %w", err)
+	}
+	return payload.Config, nil
+}
+
+// SetUserOperationMode applies the provided configuration and returns the applied snapshot.
+func (e *Env) SetUserOperationMode(cfg OperationModeConfig) (OperationModeConfig, error) {
+	sanitized := OperationModeConfig{
+		Mode:           strings.ToLower(strings.TrimSpace(cfg.Mode)),
+		RolloutPercent: cfg.RolloutPercent,
+		StickyHeader:   strings.ToLower(strings.TrimSpace(cfg.StickyHeader)),
+		QueueKinds:     normalizeOperationModeList(cfg.QueueKinds),
+		AllowUsers:     normalizeOperationModeList(cfg.AllowUsers),
+		BlockUsers:     normalizeOperationModeList(cfg.BlockUsers),
+	}
+
+	type operationModeUpdate struct {
+		Mode           *string   `json:"mode,omitempty"`
+		RolloutPercent *int      `json:"rolloutPercent,omitempty"`
+		StickyHeader   *string   `json:"stickyHeader,omitempty"`
+		QueueKinds     *[]string `json:"queueKinds,omitempty"`
+		AllowUsers     *[]string `json:"allowUsers,omitempty"`
+		BlockUsers     *[]string `json:"blockUsers,omitempty"`
+	}
+
+	mode := sanitized.Mode
+	rollout := sanitized.RolloutPercent
+	sticky := sanitized.StickyHeader
+	queueKinds := sanitized.QueueKinds
+	allowList := sanitized.AllowUsers
+	blockList := sanitized.BlockUsers
+
+	if queueKinds == nil {
+		queueKinds = []string{}
+	}
+	if allowList == nil {
+		allowList = []string{}
+	}
+	if blockList == nil {
+		blockList = []string{}
+	}
+
+	payload := operationModeUpdate{
+		Mode:           &mode,
+		RolloutPercent: &rollout,
+		StickyHeader:   &sticky,
+		QueueKinds:     &queueKinds,
+		AllowUsers:     &allowList,
+		BlockUsers:     &blockList,
+	}
+
+	resp, err := e.AdminRequest(http.MethodPut, "/admin/users/operation-mode", payload)
+	if err != nil {
+		return OperationModeConfig{}, err
+	}
+	if resp == nil {
+		return OperationModeConfig{}, fmt.Errorf("operation mode update response is nil")
+	}
+	if resp.HTTPStatus() != http.StatusOK {
+		return OperationModeConfig{}, fmt.Errorf("operation mode update failed: http=%d code=%d message=%s", resp.HTTPStatus(), resp.Code, resp.Message)
+	}
+	if !isBusinessSuccess(resp.Code) {
+		return OperationModeConfig{}, fmt.Errorf("operation mode update failed: code=%d message=%s", resp.Code, resp.Message)
+	}
+	if len(resp.Data) == 0 {
+		return OperationModeConfig{}, fmt.Errorf("operation mode update payload empty")
+	}
+
+	var payloadResp struct {
+		Config OperationModeConfig `json:"config"`
+	}
+	if err := json.Unmarshal(resp.Data, &payloadResp); err != nil {
+		return OperationModeConfig{}, fmt.Errorf("decode operation mode update payload: %w", err)
+	}
+	return payloadResp.Config, nil
+}
+
+func normalizeOperationModeList(items []string) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for _, raw := range items {
+		trimmed := strings.ToLower(strings.TrimSpace(raw))
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+	if len(out) == 0 {
+		return []string{}
+	}
+	return out
+}
+
+// MetricsSnapshot returns the aggregated values for the provided Prometheus metric
+// names by scraping the service /metrics endpoint. All samples matching the metric
+// name (regardless of label set) are summed to produce a single value per metric.
+func (e *Env) MetricsSnapshot(names ...string) (map[string]float64, error) {
+	if len(names) == 0 {
+		return map[string]float64{}, nil
+	}
+	lookup := make(map[string]struct{}, len(names))
+	results := make(map[string]float64, len(names))
+	for _, name := range names {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			continue
+		}
+		lookup[trimmed] = struct{}{}
+		results[trimmed] = 0
+	}
+	if len(lookup) == 0 {
+		return results, nil
+	}
+
+	metricsURL := fmt.Sprintf("%s/metrics", e.BaseURL)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, metricsURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := e.Client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if len(line) == 0 || line[0] == '#' {
+			continue
+		}
+		for name := range lookup {
+			if strings.HasPrefix(line, name) {
+				results[name] += parseMetricValue(line)
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
 func (e *Env) RandomUsername(prefix string) string {
 	const maxLen = 45
 	ts := strconv.FormatInt(time.Now().UnixNano(), 10)
@@ -547,10 +740,17 @@ func (e *Env) CreateUserAndWait(t *testing.T, spec UserSpec, wait time.Duration)
 }
 
 func (e *Env) ForceDeleteUser(username string) (*APIResponse, error) {
+	return e.ForceDeleteUserWithContext(context.Background(), username)
+}
+
+func (e *Env) ForceDeleteUserWithContext(ctx context.Context, username string) (*APIResponse, error) {
 	path := fmt.Sprintf("/v1/users/%s/force", username)
 	req, err := e.newRequest(http.MethodDelete, path, nil)
 	if err != nil {
 		return nil, err
+	}
+	if ctx != nil {
+		req = req.WithContext(ctx)
 	}
 	token, err := e.adminTokenValue()
 	if err != nil {
@@ -564,7 +764,7 @@ func (e *Env) ForceDeleteUserIgnore(username string) {
 	if username == "" {
 		return
 	}
-	if _, err := e.ForceDeleteUser(username); err != nil {
+	if _, err := e.ForceDeleteUserWithContext(context.Background(), username); err != nil {
 		fmt.Fprintf(os.Stderr, "[warn] cleanup user %s failed: %v\n", username, err)
 	}
 }

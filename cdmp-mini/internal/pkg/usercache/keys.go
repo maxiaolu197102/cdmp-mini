@@ -1,6 +1,9 @@
 package usercache
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // Redis 缓存相关的键前缀与哨兵标记常量。
 const (
@@ -128,11 +131,7 @@ func BlacklistKey(username string) string {
 
 // PendingCreateKey 返回记录用户创建幂等状态的 key。
 func PendingCreateKey(username string) string {
-	trimmed := strings.TrimSpace(username)
-	if trimmed == "" {
-		return ""
-	}
-	return pendingCreatePrefix + trimmed
+	return userScopedKey(pendingCreatePrefix, username)
 }
 
 // PendingCreatePrefix 返回 pending 租约Key的前缀，便于扫描。
@@ -142,14 +141,79 @@ func PendingCreatePrefix() string {
 
 // PendingUserDepthKey 返回用户级队列深度的计数Key。
 func PendingUserDepthKey(username string) string {
-	trimmed := strings.TrimSpace(username)
-	if trimmed == "" {
-		return ""
-	}
-	return pendingUserDepthPrefix + trimmed
+	return userScopedKey(pendingUserDepthPrefix, username)
 }
 
 // PendingUserDepthPrefix 返回用户级队列深度计数的前缀。
 func PendingUserDepthPrefix() string {
 	return pendingUserDepthPrefix
+}
+
+func userScopedKey(prefix, username string) string {
+	trimmed := strings.TrimSpace(username)
+	if trimmed == "" {
+		return ""
+	}
+	normalizedPrefix := normalizeKeyPrefix(prefix)
+	if normalizedPrefix == "" {
+		return fmt.Sprintf("%s:%s", userHashTag(trimmed), trimmed)
+	}
+	return fmt.Sprintf("%s%s:%s", normalizedPrefix, userHashTag(trimmed), trimmed)
+}
+
+func normalizeKeyPrefix(prefix string) string {
+	normalized := strings.TrimSpace(prefix)
+	if normalized == "" {
+		return ""
+	}
+	if !strings.HasSuffix(normalized, ":") {
+		normalized += ":"
+	}
+	return normalized
+}
+
+const pendingHashTag = "{pending}"
+
+func userHashTag(username string) string {
+	return pendingHashTag
+}
+
+func usernameFromTaggedKey(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	if strings.HasPrefix(trimmed, "{user:") {
+		if end := strings.Index(trimmed, "}"); end >= 0 {
+			remainder := strings.TrimSpace(trimmed[end+1:])
+			remainder = strings.TrimPrefix(remainder, ":")
+			remainder = strings.TrimSpace(remainder)
+			if remainder != "" {
+				return remainder
+			}
+			inside := strings.TrimSpace(trimmed[len("{user:"):end])
+			if inside != "" {
+				return inside
+			}
+		}
+	}
+	if idx := strings.Index(trimmed, ":"); idx >= 0 {
+		candidate := strings.TrimSpace(trimmed[idx+1:])
+		if candidate != "" {
+			return candidate
+		}
+	}
+	return trimmed
+}
+
+func usernameFromKeyWithPrefix(key, prefix string) string {
+	trimmedKey := strings.TrimSpace(key)
+	if trimmedKey == "" {
+		return ""
+	}
+	normalizedPrefix := normalizeKeyPrefix(prefix)
+	if normalizedPrefix != "" && strings.HasPrefix(trimmedKey, normalizedPrefix) {
+		trimmedKey = strings.TrimSpace(strings.TrimPrefix(trimmedKey, normalizedPrefix))
+	}
+	return usernameFromTaggedKey(trimmedKey)
 }

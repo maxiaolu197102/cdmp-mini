@@ -1,0 +1,43 @@
+[
+  {
+    "name": "create_mode_sync",
+    "description": "同步执行路径 - sync",
+    "success": true,
+    "http_status": 201,
+    "code": 100001,
+    "message": "用户创建成功",
+    "duration_ms": 821,
+    "checks": {
+      "metrics_log": true,
+      "response": true,
+      "user_ready": true
+    },
+    "notes": [
+      "operation_mode=sync",
+      "wait_ms=435",
+      "operation_worker_iterations_total_delta=28420",
+      "operation_compensation_total_delta=0"
+    ]
+  },
+  {
+    "name": "create_mode_queue",
+    "description": "队列异步路径 - queue",
+    "success": true,
+    "http_status": 201,
+    "code": 100001,
+    "message": "用户创建成功",
+    "duration_ms": 913,
+    "checks": {
+      "metrics_log": true,
+      "queue_wait": true,
+      "response": true,
+      "user_ready": true
+    },
+    "notes": [
+      "operation_mode=queue",
+      "wait_ms=246",
+      "operation_worker_iterations_total_delta=29157",
+      "operation_compensation_total_delta=0"
+    ]
+  }
+]

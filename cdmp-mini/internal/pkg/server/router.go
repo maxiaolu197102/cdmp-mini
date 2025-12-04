@@ -225,5 +225,6 @@ func (g *GenericAPIServer) installAdminRoutes() error {
 	RegisterRateLimitAdminHandlers(admin, g.redis, g.options)
 	RegisterAuditAdminHandlers(admin, g.audit, g.options)
 	RegisterLoginLimitHandlers(admin, g, g.options)
+	RegisterOperationModeAdminHandlers(admin, g.userService, g.options)
 	return nil
 }

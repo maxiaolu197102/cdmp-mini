@@ -1,0 +1,34 @@
+[
+  {
+    "name": "batch_mode_sync",
+    "description": "batch patch in sync mode",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "用户信息更新成功",
+    "duration_ms": 413,
+    "checks": {
+      "response": true,
+      "state_applied": true
+    },
+    "notes": [
+      "marker=batch_sync"
+    ]
+  },
+  {
+    "name": "batch_mode_queue",
+    "description": "batch patch in queue mode",
+    "success": true,
+    "http_status": 200,
+    "code": 100001,
+    "message": "用户信息更新成功",
+    "duration_ms": 454,
+    "checks": {
+      "response": true,
+      "state_applied": true
+    },
+    "notes": [
+      "marker=batch_queue"
+    ]
+  }
+]

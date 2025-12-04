@@ -1,0 +1,12 @@
+=== RUN   TestCreatePerformanceCreateOnly
+full /home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/create/output
+    create_performance_test.go:1086: create_only_smoke latency breakdown: avg=1.635315519s p95=3.252230262s p99=3.557289037s min=594.549925ms max=4.390770418s wait_avg=0s success=512 failure=0
+    create_performance_test.go:1087: create_only_smoke: average latency 1.635315519s above target 250ms
+    create_performance_test.go:1090: create_only_smoke latency breakdown: avg=1.635315519s p95=3.252230262s p99=3.557289037s min=594.549925ms max=4.390770418s wait_avg=0s
+    create_performance_test.go:1091: create_only_smoke: p95 latency 3.252230262s above target 400ms
+    create_performance_test.go:1094: create_only_smoke latency breakdown: avg=1.635315519s p95=3.252230262s p99=3.557289037s min=594.549925ms max=4.390770418s wait_avg=0s
+    create_performance_test.go:1095: create_only_smoke: p99 latency 3.557289037s above target 550ms
+--- FAIL: TestCreatePerformanceCreateOnly (28.11s)
+FAIL
+FAIL	github.com/maxiaolu1981/cretem/cdmp-mini/test/iam-apiserver/user/create	28.122s
+FAIL

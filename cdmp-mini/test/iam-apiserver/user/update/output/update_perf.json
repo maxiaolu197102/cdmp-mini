@@ -4,18 +4,18 @@
     "requests": 20,
     "success_rate": 1,
     "error_rate": 0,
-    "duration_ms": 92,
-    "qps": 216.556919950774,
+    "duration_ms": 411,
+    "qps": 48.637944580695404,
     "error_count": 0,
     "success_count": 20,
     "latency": {
-      "min_ms": 4.118934,
-      "max_ms": 5.131502,
-      "avg_ms": 4.615360000000001,
-      "p50_ms": 4.536307000000001,
-      "p90_ms": 4.881746500000001,
-      "p95_ms": 5.03969115,
-      "p99_ms": 5.11313983
+      "min_ms": 7.070358,
+      "max_ms": 94.3663,
+      "avg_ms": 20.555875249999996,
+      "p50_ms": 14.6193815,
+      "p90_ms": 34.225699600000006,
+      "p95_ms": 41.619620050000044,
+      "p99_ms": 83.81696400999994
     },
     "notes": [
       "PUT 单记录延迟基线"
@@ -26,87 +26,21 @@
     "requests": 20,
     "success_rate": 1,
     "error_rate": 0,
-    "duration_ms": 83,
-    "qps": 238.98931990187862,
+    "duration_ms": 457,
+    "qps": 43.75667096429374,
     "error_count": 0,
     "success_count": 20,
     "latency": {
-      "min_ms": 3.381039,
-      "max_ms": 5.657853,
-      "avg_ms": 4.180796300000001,
-      "p50_ms": 4.255344,
-      "p90_ms": 4.5755864,
-      "p95_ms": 4.680113950000001,
-      "p99_ms": 5.462305189999999
+      "min_ms": 4.231209,
+      "max_ms": 85.141072,
+      "avg_ms": 22.84716415,
+      "p50_ms": 8.6619525,
+      "p90_ms": 55.36386230000004,
+      "p95_ms": 78.70404585000001,
+      "p99_ms": 83.85366676999999
     },
     "notes": [
       "PATCH 单记录延迟基线"
-    ]
-  },
-  {
-    "scenario": "update_parallel_put",
-    "requests": 200,
-    "success_rate": 1,
-    "error_rate": 0,
-    "duration_ms": 103,
-    "qps": 1932.3759621396534,
-    "error_count": 0,
-    "success_count": 200,
-    "latency": {
-      "min_ms": 4.22272,
-      "max_ms": 28.249644,
-      "avg_ms": 9.67583821,
-      "p50_ms": 8.309456,
-      "p90_ms": 14.9220911,
-      "p95_ms": 19.224438099999958,
-      "p99_ms": 27.054424809999997
-    },
-    "notes": [
-      "PUT 更新昵称+邮箱吞吐"
-    ]
-  },
-  {
-    "scenario": "patch_parallel_profile",
-    "requests": 200,
-    "success_rate": 1,
-    "error_rate": 0,
-    "duration_ms": 100,
-    "qps": 1981.9214476731167,
-    "error_count": 0,
-    "success_count": 200,
-    "latency": {
-      "min_ms": 3.537589,
-      "max_ms": 15.346116,
-      "avg_ms": 9.201908975,
-      "p50_ms": 9.022180500000001,
-      "p90_ms": 12.2138789,
-      "p95_ms": 13.436962099999999,
-      "p99_ms": 15.077516769999999
-    },
-    "notes": [
-      "PATCH 更新昵称吞吐"
-    ]
-  },
-  {
-    "scenario": "patch_batch_condition",
-    "requests": 10,
-    "success_rate": 1,
-    "error_rate": 0,
-    "duration_ms": 32,
-    "qps": 306.8140736474661,
-    "error_count": 0,
-    "success_count": 10,
-    "latency": {
-      "min_ms": 2.421799,
-      "max_ms": 3.796493,
-      "avg_ms": 3.2586407,
-      "p50_ms": 3.467435,
-      "p90_ms": 3.6907780999999997,
-      "p95_ms": 3.7436355499999996,
-      "p99_ms": 3.78592151
-    },
-    "notes": [
-      "PATCH 批量条件更新请求耗时"
     ]
   }
 ]

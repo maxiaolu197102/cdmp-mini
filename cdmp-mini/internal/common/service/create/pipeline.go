@@ -27,6 +27,8 @@ type PendingResult struct {
 	TTL             time.Duration
 	SetDuration     time.Duration
 	RefreshDuration time.Duration
+	OwnerID         string
+	Backend         string
 }
 
 // PipelineConfig 为通用创建流程提供自定义钩子。

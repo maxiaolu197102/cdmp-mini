@@ -10,6 +10,7 @@ import (
 const (
 	degradeReasonCache       = "redis_cache_error"
 	degradeReasonPlaceholder = "redis_placeholder_error"
+	degradeReasonCommandSlow = "redis_command_slow"
 )
 
 // CacheClient 定义唯一性检查所需的缓存客户端能力。
@@ -21,6 +22,14 @@ type CacheClient interface {
 	SetKey(ctx context.Context, key string, value string, ttl time.Duration) error
 	SetNX(ctx context.Context, key string, value interface{}, ttl time.Duration) (bool, error)
 	DeleteKey(ctx context.Context, key string) (bool, error)
+}
+
+type cacheClientWithTimeout interface {
+	CacheClient
+	GetKeyWithCommandTimeout(ctx context.Context, key string, timeout time.Duration) (string, error)
+	SetKeyWithCommandTimeout(ctx context.Context, key string, value string, ttl time.Duration, timeout time.Duration) error
+	SetNXWithCommandTimeout(ctx context.Context, key string, value interface{}, ttl time.Duration, timeout time.Duration) (bool, error)
+	DeleteKeyWithCommandTimeout(ctx context.Context, key string, timeout time.Duration) (bool, error)
 }
 
 // LoggerHooks 封装唯一性检查过程中的日志回调。
@@ -57,31 +66,37 @@ type LoggerHooks struct {
 // param ShouldReleasePlaceholder: 判断返回错误时是否需要释放占位符。
 // param NewLookupContext: 构造带超时控制的上下文，为空时回退到 context.WithTimeout。
 // param LookupTimeout: 单次查库的超时时间，小于等于0表示不限。
+// param CommandTimeout: 单次缓存命令的执行超时，>0 时使用带超时的客户端调用。
+// param CommandLatencyDegradeThreshold: 缓存命令耗时触发降级的阈值，<=0 时不生效。
+// param CommandLatencyDegradeReason: 命令耗时触发降级时的原因标签，留空回退到默认值。
 // param IsNotFound: 判断错误是否为“未找到”，用于终止重试。
 // param IsCacheMiss: 判断缓存访问是否未命中，未提供时默认所有错误均视为异常。
 // param RecordStep: 记录性能指标的回调，用于链路观测。
 // param Logger: 日志钩子，用于输出缓存或占位异常。
 type CheckerConfig[S any, E any] struct {
-	Store                    S
-	Cache                    CacheClient
-	PlaceholderTTL           time.Duration
-	CacheTTL                 time.Duration
-	PlaceholderFallback      string
-	CacheReady               func() bool
-	DegradeActive            func(context.Context) bool
-	EnsurePlaceholder        func(context.Context, string, string)
-	MarkDegraded             func(context.Context, string, ...interface{})
-	Retry                    func(int, func(error) bool, func() (interface{}, error)) (interface{}, error)
-	RetryPredicate           func(error) bool
-	MaxRetries               int
-	ShouldDegrade            func(error) bool
-	ShouldReleasePlaceholder func(error) bool
-	NewLookupContext         func(context.Context, time.Duration) (context.Context, context.CancelFunc)
-	LookupTimeout            time.Duration
-	IsNotFound               func(error) bool
-	IsCacheMiss              func(error) bool
-	RecordStep               func(ctx context.Context, step string, field string, owner string, duration time.Duration, err error)
-	Logger                   LoggerHooks
+	Store                          S
+	Cache                          CacheClient
+	PlaceholderTTL                 time.Duration
+	CacheTTL                       time.Duration
+	PlaceholderFallback            string
+	CacheReady                     func() bool
+	DegradeActive                  func(context.Context) bool
+	EnsurePlaceholder              func(context.Context, string, string)
+	MarkDegraded                   func(context.Context, string, ...interface{})
+	Retry                          func(int, func(error) bool, func() (interface{}, error)) (interface{}, error)
+	RetryPredicate                 func(error) bool
+	MaxRetries                     int
+	ShouldDegrade                  func(error) bool
+	ShouldReleasePlaceholder       func(error) bool
+	NewLookupContext               func(context.Context, time.Duration) (context.Context, context.CancelFunc)
+	LookupTimeout                  time.Duration
+	CommandTimeout                 time.Duration
+	CommandLatencyDegradeThreshold time.Duration
+	CommandLatencyDegradeReason    string
+	IsNotFound                     func(error) bool
+	IsCacheMiss                    func(error) bool
+	RecordStep                     func(ctx context.Context, step string, field string, owner string, duration time.Duration, err error)
+	Logger                         LoggerHooks
 }
 
 // FieldConfig 定义单个唯一性字段的校验细节。
@@ -115,6 +130,7 @@ type FieldConfig[S any, E any] struct {
 	DegradeReason         string
 	DegradeKV             []interface{}
 	StepName              string
+	StepPrefix            string
 }
 
 // Checker 提供可复用的字段唯一性校验逻辑。
@@ -122,6 +138,63 @@ type FieldConfig[S any, E any] struct {
 // note: Checker 本身无状态，可在多 goroutine 中并发调用 EnsureFieldUnique。
 type Checker[S any, E any] struct {
 	cfg CheckerConfig[S, E]
+}
+
+func (c *Checker[S, E]) recordPhaseStep(ctx context.Context, fieldCfg FieldConfig[S, E], phase, defaultName string, duration time.Duration, stepErr error) {
+	if c == nil || c.cfg.RecordStep == nil {
+		return
+	}
+	stepName := defaultName
+	if prefix := strings.TrimSpace(fieldCfg.StepPrefix); prefix != "" {
+		if strings.TrimSpace(phase) != "" {
+			stepName = fmt.Sprintf("%s_%s", prefix, phase)
+		} else {
+			stepName = prefix
+		}
+	}
+	c.cfg.RecordStep(ctx, stepName, fieldCfg.FieldKey, fieldCfg.AllowedOwner, duration, stepErr)
+}
+
+func (c *Checker[S, E]) slowCommandReason() string {
+	if c == nil {
+		return degradeReasonCommandSlow
+	}
+	reason := strings.TrimSpace(c.cfg.CommandLatencyDegradeReason)
+	if reason == "" {
+		return degradeReasonCommandSlow
+	}
+	return reason
+}
+
+func (c *Checker[S, E]) maybeDegradeSlowCommand(ctx context.Context, fieldCfg FieldConfig[S, E], phase string, duration time.Duration) {
+	if c == nil {
+		return
+	}
+	threshold := c.cfg.CommandLatencyDegradeThreshold
+	if threshold <= 0 || duration <= threshold {
+		return
+	}
+	reason := c.slowCommandReason()
+	if c.cfg.MarkDegraded != nil {
+		kv := []interface{}{
+			"field", fieldCfg.FieldKey,
+			"phase", phase,
+			"duration_ms", duration.Milliseconds(),
+			"threshold_ms", threshold.Milliseconds(),
+		}
+		c.cfg.MarkDegraded(ctx, reason, kv...)
+	}
+	if c.cfg.Logger.Warn != nil {
+		c.cfg.Logger.Warn(
+			"唯一性缓存命令耗时超过阈值",
+			"cacheKey", fieldCfg.CacheKey,
+			"field", fieldCfg.FieldKey,
+			"phase", phase,
+			"duration", duration,
+			"threshold", threshold,
+			"reason", reason,
+		)
+	}
 }
 
 // NewChecker 构建一个通用唯一性检查器实例，聚合缓存、占位、查库与降级策略。
@@ -169,21 +242,14 @@ func (c *Checker[S, E]) EnsureFieldUnique(ctx context.Context, fieldCfg FieldCon
 	}
 
 	cache := c.cfg.Cache
-	/*
-		可能放行的情况 缓存占位符中记录的 “字段所有者”
-		= 允许占用该字段的实体标识（例如用户名）
-		1.update 操作（同一用户修改自身字段）
-		2.create 操作（同一用户重复提交 / 幂等请求）
-		3.delete 后重新 create（同一用户回收字段后复用）
 
-	*/
-	isAllowed := fieldCfg.IsAllowedOwner //判断缓存命中是否可放行，未提供时默认大小写不敏感比对。
+	isAllowed := fieldCfg.IsAllowedOwner
 	if isAllowed == nil {
 		isAllowed = func(existingOwner, allowedOwner string) bool {
 			return strings.EqualFold(existingOwner, allowedOwner)
 		}
 	}
-	//「真实用户占位成功 + 缓存已预热 → 跳过查(true)；降级兜底占位 / 占位异常 → 强制查库」(返回false)
+
 	skipPlaceholderLookup := fieldCfg.SkipPlaceholderLookup
 	if skipPlaceholderLookup == nil {
 		skipPlaceholderLookup = func(string) bool { return false }
@@ -197,33 +263,69 @@ func (c *Checker[S, E]) EnsureFieldUnique(ctx context.Context, fieldCfg FieldCon
 		placeholderValue = c.cfg.PlaceholderFallback
 	}
 
+	var (
+		commandTimeout time.Duration
+		timeoutClient  cacheClientWithTimeout
+	)
+	if c.cfg.CommandTimeout > 0 {
+		if tc, ok := cache.(cacheClientWithTimeout); ok {
+			timeoutClient = tc
+			commandTimeout = c.cfg.CommandTimeout
+		}
+	}
+	useTimeout := timeoutClient != nil && commandTimeout > 0
+
+	getKey := func(callCtx context.Context, key string) (string, error) {
+		if useTimeout {
+			return timeoutClient.GetKeyWithCommandTimeout(callCtx, key, commandTimeout)
+		}
+		return cache.GetKey(callCtx, key)
+	}
+
+	setNX := func(callCtx context.Context, key string, value interface{}, ttl time.Duration) (bool, error) {
+		if useTimeout {
+			return timeoutClient.SetNXWithCommandTimeout(callCtx, key, value, ttl, commandTimeout)
+		}
+		return cache.SetNX(callCtx, key, value, ttl)
+	}
+
+	setKey := func(callCtx context.Context, key, value string, ttl time.Duration) error {
+		if useTimeout {
+			return timeoutClient.SetKeyWithCommandTimeout(callCtx, key, value, ttl, commandTimeout)
+		}
+		return cache.SetKey(callCtx, key, value, ttl)
+	}
+
+	deleteKey := func(callCtx context.Context, key string) (bool, error) {
+		if useTimeout {
+			return timeoutClient.DeleteKeyWithCommandTimeout(callCtx, key, commandTimeout)
+		}
+		return cache.DeleteKey(callCtx, key)
+	}
+
 	var placeholderAcquired bool
 	start := time.Now()
 	defer func() {
-		if c.cfg.RecordStep != nil {
-			stepName := fieldCfg.StepName
-			if strings.TrimSpace(stepName) == "" {
+		stepName := strings.TrimSpace(fieldCfg.StepName)
+		if stepName == "" {
+			if prefix := strings.TrimSpace(fieldCfg.StepPrefix); prefix != "" {
+				stepName = prefix + "_total"
+			} else {
 				stepName = "ensure_field_unique"
 			}
-			c.cfg.RecordStep(ctx, stepName, fieldCfg.FieldKey, fieldCfg.AllowedOwner, time.Since(start), err)
 		}
+		c.recordPhaseStep(ctx, fieldCfg, "total", stepName, time.Since(start), err)
 		if placeholderAcquired && err != nil && cache != nil && c.cfg.ShouldReleasePlaceholder(err) {
-			if _, releaseErr := cache.DeleteKey(ctx, fieldCfg.CacheKey); releaseErr != nil && c.cfg.Logger.Warn != nil {
+			releaseStart := time.Now()
+			_, releaseErr := deleteKey(ctx, fieldCfg.CacheKey)
+			c.recordPhaseStep(ctx, fieldCfg, "placeholder_release", "ensure_field_placeholder_release", time.Since(releaseStart), releaseErr)
+			if releaseErr != nil && c.cfg.Logger.Warn != nil {
 				c.cfg.Logger.Warn("唯一性占位释放失败", "cacheKey", fieldCfg.CacheKey, "field", fieldCfg.FieldKey, "error", releaseErr)
 			}
 		}
 	}()
 
-	/*
-		create 链路中降级开关的 “被动触发” 特性
-			现有逻辑中，降级开关（DegradeActive）确实不会主动开启，而是依赖下游异常 “被动激活”：
-			初始状态：createState 挂载到 ctx 时，degraded 标记默认为 false，所有校验走正常流程（查缓存→占位→查库）。
-			触发条件：仅当关键步骤（如预检、查库、Redis 操作）出现可降级错误（超时、上下文取消、依赖不可用等），才会调用 markCreateDegraded 将 degraded 置为 true。
-			后续影响：一旦标记生效，unique.Checker 会跳过数据库兜底校验，仅靠缓存占位快速放行，减少对故障依赖的访问，属于 “故障后的自我保护”
-	*/
-	// 判断是否已处于降级模式
 	if c.cfg.DegradeActive != nil && c.cfg.DegradeActive(ctx) {
-		//若缓存客户端和占位符写入回调存在 → 执行占位符写入/兜底
 		if cache != nil && c.cfg.EnsurePlaceholder != nil {
 			c.cfg.EnsurePlaceholder(ctx, fieldCfg.CacheKey, placeholderValue)
 		}
@@ -248,7 +350,17 @@ func (c *Checker[S, E]) EnsureFieldUnique(ctx context.Context, fieldCfg FieldCon
 		return fmt.Errorf("field %s is already taken", fieldCfg.FieldKey)
 	}
 
-	cachedOwner, cacheErr := cache.GetKey(ctx, fieldCfg.CacheKey)
+	var (
+		cachedOwner string
+		cacheErr    error
+	)
+	getStart := time.Now()
+	cachedOwner, cacheErr = getKey(ctx, fieldCfg.CacheKey)
+	recordErr := cacheErr
+	if cacheErr != nil && c.cfg.IsCacheMiss != nil && c.cfg.IsCacheMiss(cacheErr) {
+		recordErr = nil
+	}
+	c.recordPhaseStep(ctx, fieldCfg, "cache_get", "ensure_field_cache_get", time.Since(getStart), recordErr)
 	if cacheErr != nil {
 		if c.cfg.IsCacheMiss == nil || !c.cfg.IsCacheMiss(cacheErr) {
 			if c.cfg.MarkDegraded != nil {
@@ -277,7 +389,14 @@ func (c *Checker[S, E]) EnsureFieldUnique(ctx context.Context, fieldCfg FieldCon
 	}
 
 	if strings.TrimSpace(cachedOwner) == "" {
-		ok, setErr := cache.SetNX(ctx, fieldCfg.CacheKey, placeholderValue, c.cfg.PlaceholderTTL)
+		var (
+			ok     bool
+			setErr error
+		)
+		setStart := time.Now()
+		ok, setErr = setNX(ctx, fieldCfg.CacheKey, placeholderValue, c.cfg.PlaceholderTTL)
+		setDuration := time.Since(setStart)
+		c.recordPhaseStep(ctx, fieldCfg, "placeholder_setnx", "ensure_field_placeholder_setnx", setDuration, setErr)
 		if setErr != nil {
 			if c.cfg.MarkDegraded != nil {
 				c.cfg.MarkDegraded(ctx, degradeReasonPlaceholder, "field", fieldCfg.FieldKey, "error", setErr.Error())
@@ -285,32 +404,46 @@ func (c *Checker[S, E]) EnsureFieldUnique(ctx context.Context, fieldCfg FieldCon
 			if c.cfg.Logger.Warn != nil {
 				c.cfg.Logger.Warn("唯一性占位失败", "cacheKey", fieldCfg.CacheKey, "field", fieldCfg.FieldKey, "error", setErr)
 			}
-		} else if ok {
-			placeholderAcquired = true
-			cachedOwner = placeholderValue
-			if c.cfg.CacheReady != nil && c.cfg.CacheReady() && skipPlaceholderLookup(placeholderValue) {
-				return nil
-			}
 		} else {
-			refreshed, refreshErr := cache.GetKey(ctx, fieldCfg.CacheKey)
-			if refreshErr == nil {
-				cachedOwner = refreshed
-			} else if c.cfg.IsCacheMiss == nil || !c.cfg.IsCacheMiss(refreshErr) {
-				if c.cfg.Logger.Warn != nil {
-					c.cfg.Logger.Warn("唯一性占位刷新失败", "cacheKey", fieldCfg.CacheKey, "field", fieldCfg.FieldKey, "error", refreshErr)
+			c.maybeDegradeSlowCommand(ctx, fieldCfg, "placeholder_setnx", setDuration)
+			if ok {
+				placeholderAcquired = true
+				cachedOwner = placeholderValue
+				if c.cfg.CacheReady != nil && c.cfg.CacheReady() && skipPlaceholderLookup(placeholderValue) {
+					return nil
+				}
+			} else {
+				var (
+					refreshed  string
+					refreshErr error
+				)
+				refreshStart := time.Now()
+				refreshed, refreshErr = getKey(ctx, fieldCfg.CacheKey)
+				recordRefreshErr := refreshErr
+				if refreshErr != nil && c.cfg.IsCacheMiss != nil && c.cfg.IsCacheMiss(refreshErr) {
+					recordRefreshErr = nil
+				}
+				c.recordPhaseStep(ctx, fieldCfg, "cache_get_after_setnx", "ensure_field_cache_get_after_setnx", time.Since(refreshStart), recordRefreshErr)
+				if refreshErr == nil {
+					cachedOwner = refreshed
+				} else if c.cfg.IsCacheMiss == nil || !c.cfg.IsCacheMiss(refreshErr) {
+					if c.cfg.Logger.Warn != nil {
+						c.cfg.Logger.Warn("唯一性占位刷新失败", "cacheKey", fieldCfg.CacheKey, "field", fieldCfg.FieldKey, "error", refreshErr)
+					}
 				}
 			}
 		}
-		if strings.TrimSpace(cachedOwner) != "" {
-			if !isAllowed(cachedOwner, fieldCfg.AllowedOwner) {
-				if fieldCfg.ConflictError != nil {
-					return fieldCfg.ConflictError(fieldCfg.FieldLabel, fieldCfg.FieldValue)
-				}
-				return fmt.Errorf("field %s is already taken", fieldCfg.FieldKey)
+	}
+
+	if strings.TrimSpace(cachedOwner) != "" {
+		if !isAllowed(cachedOwner, fieldCfg.AllowedOwner) {
+			if fieldCfg.ConflictError != nil {
+				return fieldCfg.ConflictError(fieldCfg.FieldLabel, fieldCfg.FieldValue)
 			}
-			if !placeholderAcquired {
-				return nil
-			}
+			return fmt.Errorf("field %s is already taken", fieldCfg.FieldKey)
+		}
+		if !placeholderAcquired {
+			return nil
 		}
 	}
 
@@ -335,13 +468,20 @@ func (c *Checker[S, E]) EnsureFieldUnique(ctx context.Context, fieldCfg FieldCon
 	if owner == "" || isAllowed(owner, fieldCfg.AllowedOwner) {
 		return nil
 	}
-	if err := cache.SetKey(ctx, fieldCfg.CacheKey, owner, c.cfg.CacheTTL); err != nil {
+	setStart := time.Now()
+	cacheErr = setKey(ctx, fieldCfg.CacheKey, owner, c.cfg.CacheTTL)
+	setDuration := time.Since(setStart)
+	if cacheErr != nil {
+		c.recordPhaseStep(ctx, fieldCfg, "cache_set", "ensure_field_cache_set", setDuration, cacheErr)
 		if c.cfg.MarkDegraded != nil {
-			c.cfg.MarkDegraded(ctx, degradeReasonCache, "field", fieldCfg.FieldKey, "error", err.Error())
+			c.cfg.MarkDegraded(ctx, degradeReasonCache, "field", fieldCfg.FieldKey, "error", cacheErr.Error())
 		}
 		if c.cfg.Logger.Warn != nil {
-			c.cfg.Logger.Warn("唯一性缓存写入失败", "cacheKey", fieldCfg.CacheKey, "field", fieldCfg.FieldKey, "error", err)
+			c.cfg.Logger.Warn("唯一性缓存写入失败", "cacheKey", fieldCfg.CacheKey, "field", fieldCfg.FieldKey, "error", cacheErr)
 		}
+	} else {
+		c.recordPhaseStep(ctx, fieldCfg, "cache_set", "ensure_field_cache_set", setDuration, nil)
+		c.maybeDegradeSlowCommand(ctx, fieldCfg, "cache_set", setDuration)
 	}
 	if fieldCfg.ConflictError != nil {
 		return fieldCfg.ConflictError(fieldCfg.FieldLabel, fieldCfg.FieldValue)
@@ -368,9 +508,7 @@ func (c *Checker[S, E]) runLookup(ctx context.Context, fieldCfg FieldConfig[S, E
 		}
 		start := time.Now()
 		entity, err := fieldCfg.Lookup(lookupCtx, c.cfg.Store, fieldCfg.FieldValue)
-		if c.cfg.RecordStep != nil {
-			c.cfg.RecordStep(ctx, "ensure_field_lookup", fieldCfg.FieldKey, fieldCfg.AllowedOwner, time.Since(start), err)
-		}
+		c.recordPhaseStep(ctx, fieldCfg, "lookup", "ensure_field_lookup", time.Since(start), err)
 		if err != nil {
 			if c.cfg.IsNotFound != nil && c.cfg.IsNotFound(err) {
 				return nil, nil

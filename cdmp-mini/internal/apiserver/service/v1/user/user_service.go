@@ -18,6 +18,7 @@ import (
 	storectx "github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/store"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/store/interfaces"
 	createpipeline "github.com/maxiaolu1981/cretem/cdmp-mini/internal/common/service/create"
+	operation "github.com/maxiaolu1981/cretem/cdmp-mini/internal/common/service/operation"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/common/service/unique"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/audit"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/code"
@@ -36,6 +37,7 @@ import (
 	v1 "github.com/maxiaolu1981/cretem/nexuscore/api/apiserver/v1"
 	metav1 "github.com/maxiaolu1981/cretem/nexuscore/component-base/meta/v1"
 	"github.com/maxiaolu1981/cretem/nexuscore/errors"
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/semaphore"
 	"golang.org/x/sync/singleflight"
 )
@@ -77,6 +79,35 @@ const (
 	// 用途: 控制单批预热的拉取量，权衡速度与负载
 	// 生效范围: 联系方式预热任务
 	contactWarmupBatchSize = 1000
+	// pendingWarmupRequestCount 待审批协调器预热请求数量
+	// 数值定义: 3
+	// 数据类型: 整型常量
+	// 用途: 控制预热流程的请求数量，避免对 Redis 施加额外压力
+	// 生效范围: pending 协调器预热流程
+	pendingWarmupRequestCount = 3
+	// pendingWarmupSyntheticPrefix 待审批协调器预热占位前缀
+	// 字符串格式: __pending_warmup__
+	// 用途: 区分预热合成用户，避免与真实用户名冲突
+	// 生效范围: pending 协调器预热流程
+	pendingWarmupSyntheticPrefix = "__pending_warmup__"
+	// pendingWarmupOperationTimeout 待审批协调器预热操作超时
+	// 数值定义: 300ms
+	// 数据类型: time.Duration 常量
+	// 用途: 限制预热 Acquire/Release 操作耗时，避免阻塞上线文
+	// 生效范围: pending 协调器预热流程
+	pendingWarmupOperationTimeout = 300 * time.Millisecond
+	// pendingWarmupDelay 待审批协调器预热节流延迟
+	// 数值定义: 150ms
+	// 数据类型: time.Duration 常量
+	// 用途: 拉长预热请求间隔，避免瞬时打爆 Redis
+	// 生效范围: pending 协调器预热流程
+	pendingWarmupDelay = 150 * time.Millisecond
+	// pendingBackpressureMaxDelay pending 背压等待最大值
+	// 数值定义: 80ms
+	// 数据类型: time.Duration 常量
+	// 用途: 限制 acquire 前的排队等待，避免尾部延迟过长
+	// 生效范围: markUserPendingCreate 背压节流
+	pendingBackpressureMaxDelay = 80 * time.Millisecond
 	// contactCacheTTL 联系方式缓存有效期
 	// 数值定义: 24h
 	// 数据类型: time.Duration 常量
@@ -170,6 +201,24 @@ type UserService struct {
 	// 用途: 串联用户创建所需的校验与调用步骤
 	// 生效范围: 用户创建服务调用链
 	createPipeline *createpipeline.Pipeline[*v1.User]
+	// operationPipelineOnce 确保异步操作管道只初始化一次
+	operationPipelineOnce sync.Once
+	// operationPipeline 用户操作异步管道
+	operationPipeline *operation.Pipeline
+	// operationQueue 操作队列协调器
+	operationQueue operation.QueueCoordinator
+	// operationStateStore 操作状态存储
+	operationStateStore operation.RequestStateStore
+	// operationExecutor 操作执行器注册表
+	operationExecutor *userOperationExecutor
+	// operationWorkersWG 操作管道工作协程等待组
+	operationWorkersWG sync.WaitGroup
+	// operationWorkersCancel 终止操作管道工作协程的取消函数
+	operationWorkersCancel context.CancelFunc
+	// operationModeInit 确保运行模式控制器初始化一次
+	operationModeInit sync.Once
+	// operationModeCtrl 运行模式控制器
+	operationModeCtrl *operationModeController
 
 	// contactWarmupMu 联系方式预热互斥锁
 	// 数据类型: sync.Mutex 结构体
@@ -449,6 +498,7 @@ func NewUserService(store interfaces.Factory, redis *storage.RedisCluster, opts 
 		}
 		svc.pendingCoordinator = usercache.NewPendingCoordinator(redis, cfg)
 	}
+	svc.ensureOperationModeController()
 	svc.initCreatePipeline()
 	return svc
 }
@@ -459,6 +509,44 @@ func (u *UserService) PendingCoordinator() *usercache.PendingCoordinator {
 		return nil
 	}
 	return u.pendingCoordinator
+}
+
+func (u *UserService) ensureOperationModeController() *operationModeController {
+	if u == nil {
+		return nil
+	}
+	u.operationModeInit.Do(func() {
+		cfg := defaultOperationModeConfig()
+		if u.Options != nil && u.Options.ServerRunOptions != nil {
+			cfg = operationModeConfigFromOptions(u.Options.ServerRunOptions)
+		}
+		u.operationModeCtrl = newOperationModeController(cfg)
+	})
+	return u.operationModeCtrl
+}
+
+func (u *UserService) decideOperationMode(ctx context.Context, kind operation.OperationKind, subject string) OperationMode {
+	ctrl := u.ensureOperationModeController()
+	if ctrl == nil {
+		return OperationModeQueue
+	}
+	return ctrl.Decide(ctx, kind, subject)
+}
+
+func (u *UserService) UpdateOperationMode(cfg OperationModeConfig) OperationModeConfig {
+	ctrl := u.ensureOperationModeController()
+	if ctrl == nil {
+		return cloneOperationModeConfig(defaultOperationModeConfig())
+	}
+	return ctrl.Update(cfg)
+}
+
+func (u *UserService) OperationModeSnapshot() OperationModeConfig {
+	ctrl := u.ensureOperationModeController()
+	if ctrl == nil {
+		return cloneOperationModeConfig(defaultOperationModeConfig())
+	}
+	return ctrl.Snapshot()
 }
 
 func (u *UserService) userStoreReadOnly() interfaces.UserStore {
@@ -945,6 +1033,9 @@ func (u *UserService) pendingLeaseMetadata(ctx context.Context, username string)
 	if legacyID := ctx.Value("requestID"); legacyID != nil {
 		meta.LegacyRequestID = fmt.Sprint(legacyID)
 	}
+	if u != nil && u.pendingCoordinator != nil {
+		meta.Backend = u.pendingCoordinator.Backend()
+	}
 	return meta
 }
 
@@ -980,18 +1071,22 @@ func (u *UserService) pendingLeaseMetadata(ctx context.Context, username string)
 // 异常情况：
 //   - Redis 操作失败会返回 ErrRedis 相关错误码
 //   - 当上下文超时时会提前终止并返回错误
-func (u *UserService) markUserPendingCreate(ctx context.Context, username string) (bool, bool, time.Duration, time.Duration, time.Duration, error) {
-	if u == nil {
-		return false, false, 0, 0, 0, nil
-	}
+func (u *UserService) markUserPendingCreate(ctx context.Context, username string) (bool, bool, time.Duration, time.Duration, time.Duration, string, string, error) {
 	trimmed := strings.TrimSpace(username)
 	if trimmed == "" {
-		return false, false, 0, 0, 0, nil
+		return false, false, 0, 0, 0, "", "", nil
 	}
 	if u.pendingCoordinator == nil {
 		trace.AddRequestTag(ctx, "pending_coordinator_missing", true)
 		log.Errorw("pending coordinator not initialized", "component", "user_service", "username", trimmed)
-		return false, false, 0, 0, 0, errors.WithCode(code.ErrServerBusy, "pending coordinator 未初始化")
+		return false, false, 0, 0, 0, "", "", errors.WithCode(code.ErrServerBusy, "pending coordinator 未初始化")
+	}
+	if u.isRedisDegradeActive() {
+		trace.AddRequestTag(ctx, "pending_marker_degraded_skip", true)
+		if metrics.PendingLeaseEvents != nil {
+			metrics.PendingLeaseEvents.WithLabelValues("user_service", "acquire_skip_degraded").Inc()
+		}
+		return false, false, 0, 0, 0, "", "", nil
 	}
 	if depth, level, sampleErr := u.pendingCoordinator.SampleQueueDepth(ctx); sampleErr != nil {
 		trace.AddRequestTag(ctx, "pending_queue_sample_error", sampleErr.Error())
@@ -1005,13 +1100,16 @@ func (u *UserService) markUserPendingCreate(ctx context.Context, username string
 				metrics.PendingLeaseEvents.WithLabelValues("user_service", "pre_acquire_backpressure").Inc()
 			}
 			if delay := u.pendingCoordinator.BackpressureDelay(level, depth); delay > 0 {
+				if pendingBackpressureMaxDelay > 0 && delay > pendingBackpressureMaxDelay {
+					delay = pendingBackpressureMaxDelay
+				}
 				trace.AddRequestTag(ctx, "pending_backpressure_delay_ms", delay.Milliseconds())
 				log.Infow("pending lease pre-acquire delay", "component", "user_service", "username", trimmed, "queue_depth", depth, "backpressure", string(level), "delay_ms", delay.Milliseconds())
 				if !waitWithContext(ctx, delay) {
 					if ctx != nil {
-						return false, false, 0, 0, 0, ctx.Err()
+						return false, false, 0, 0, 0, "", "", ctx.Err()
 					}
-					return false, false, 0, 0, 0, context.Canceled
+					return false, false, 0, 0, 0, "", "", context.Canceled
 				}
 				if metrics.PendingLeaseEvents != nil {
 					metrics.PendingLeaseEvents.WithLabelValues("user_service", "pre_acquire_delay").Inc()
@@ -1037,7 +1135,7 @@ func (u *UserService) markUserPendingCreate(ctx context.Context, username string
 						trace.AddRequestTag(ctx, "pending_expired_at", acquireErr.State.ExpiredAt.Format(time.RFC3339Nano))
 					}
 					u.handleExpiredPendingConflict(ctx, trimmed, acquireErr.State)
-					return false, false, 0, 0, 0, errors.WithCode(code.ErrServerBusy, "用户创建任务正在恢复，请稍后再试")
+					return false, false, 0, 0, 0, "", "", errors.WithCode(code.ErrServerBusy, "用户创建任务正在恢复，请稍后再试")
 				}
 			}
 			switch acquireErr.Reason {
@@ -1049,17 +1147,21 @@ func (u *UserService) markUserPendingCreate(ctx context.Context, username string
 					level = acquireErr.State.Backpressure
 				}
 				log.Warnw("pending lease rejected by backpressure", "component", "user_service", "username", trimmed, "queue_depth", depth, "backpressure", string(level))
-				return false, false, 0, 0, 0, errors.WithCode(code.ErrServerBusy, "用户创建排队中，请稍后重试")
+				return false, false, 0, 0, 0, "", "", errors.WithCode(code.ErrServerBusy, "用户创建排队中，请稍后重试")
 			case usercache.AcquireFailureConflict:
-				return false, false, 0, 0, 0, errors.WithCode(code.ErrServerBusy, "用户创建正在进行，请稍后再试")
+				return false, false, 0, 0, 0, "", "", errors.WithCode(code.ErrServerBusy, "用户创建正在进行，请稍后再试")
 			}
 		}
-		return false, false, 0, 0, 0, err
+		return false, false, 0, 0, 0, "", "", err
 	}
 	lease := result.Lease
 	if lease == nil {
 		trace.AddRequestTag(ctx, "pending_marker_setnx_ms", result.SetNXDuration.Milliseconds())
-		return false, false, 0, result.SetNXDuration, 0, nil
+		backend := ""
+		if u.pendingCoordinator != nil {
+			backend = u.pendingCoordinator.Backend()
+		}
+		return false, false, 0, result.SetNXDuration, 0, "", backend, nil
 	}
 	pendingTTL := time.Until(lease.LeaseExpiresAt)
 	if pendingTTL < 0 {
@@ -1077,7 +1179,11 @@ func (u *UserService) markUserPendingCreate(ctx context.Context, username string
 		trace.AddRequestTag(ctx, "pending_marker_ttl_ms", pendingTTL.Milliseconds())
 	}
 	trace.AddRequestTag(ctx, "pending_lease_owner", lease.OwnerID)
-	return true, false, pendingTTL, result.SetNXDuration, 0, nil
+	backend := strings.TrimSpace(lease.Metadata.Backend)
+	if backend == "" && u.pendingCoordinator != nil {
+		backend = u.pendingCoordinator.Backend()
+	}
+	return true, false, pendingTTL, result.SetNXDuration, 0, lease.OwnerID, backend, nil
 }
 
 func (u *UserService) handleExpiredPendingConflict(ctx context.Context, username string, state *usercache.PendingState) {
@@ -1099,6 +1205,17 @@ func (u *UserService) handleExpiredPendingConflict(ctx context.Context, username
 		metrics.PendingLeaseEvents.WithLabelValues("user_service", "expired_conflict").Inc()
 	}
 	trace.AddRequestTag(ctx, "pending_expired_conflict", true)
+}
+
+func (u *UserService) pendingCoordinatorOrder(backendHint string) []*usercache.PendingCoordinator {
+	if u == nil {
+		return nil
+	}
+	coord := u.pendingCoordinator
+	if coord == nil {
+		return nil
+	}
+	return []*usercache.PendingCoordinator{coord}
 }
 
 func (u *UserService) redisOpTimeout() time.Duration {
@@ -1947,17 +2064,24 @@ func (u *UserService) ensureContactUniqueness(ctx context.Context, user *v1.User
 		preflight = make(map[string]*v1.User)
 	}
 
+	type contactCheck struct {
+		cacheKey string
+		label    string
+		value    string
+		fieldKey string
+		lookup   func(context.Context, interfaces.UserStore, string) (*v1.User, error)
+	}
+
+	checks := make([]contactCheck, 0, 2)
+
 	if email != "" {
 		emailCopy := email
-		if err := u.ensureContactUnique(
-			ctx,
-			store,
-			u.generateEmailCacheKey(emailCopy),
-			user.Name,
-			"邮箱",
-			emailCopy,
-			"email",
-			func(lookupCtx context.Context, fieldStore interfaces.UserStore, value string) (*v1.User, error) {
+		checks = append(checks, contactCheck{
+			cacheKey: u.generateEmailCacheKey(emailCopy),
+			label:    "邮箱",
+			value:    emailCopy,
+			fieldKey: "email",
+			lookup: func(lookupCtx context.Context, fieldStore interfaces.UserStore, value string) (*v1.User, error) {
 				if err := lookupCtx.Err(); err != nil {
 					return nil, err
 				}
@@ -1972,22 +2096,17 @@ func (u *UserService) ensureContactUniqueness(ctx context.Context, user *v1.User
 				}
 				return fieldStore.GetByEmail(lookupCtx, value, u.Options)
 			},
-		); err != nil {
-			return nil, false, err
-		}
+		})
 	}
 
 	if phone != "" {
 		phoneCopy := phone
-		if err := u.ensureContactUnique(
-			ctx,
-			store,
-			u.generatePhoneCacheKey(phoneCopy),
-			user.Name,
-			"手机号",
-			phoneCopy,
-			"phone",
-			func(lookupCtx context.Context, fieldStore interfaces.UserStore, value string) (*v1.User, error) {
+		checks = append(checks, contactCheck{
+			cacheKey: u.generatePhoneCacheKey(phoneCopy),
+			label:    "手机号",
+			value:    phoneCopy,
+			fieldKey: "phone",
+			lookup: func(lookupCtx context.Context, fieldStore interfaces.UserStore, value string) (*v1.User, error) {
 				if err := lookupCtx.Err(); err != nil {
 					return nil, err
 				}
@@ -2002,7 +2121,38 @@ func (u *UserService) ensureContactUniqueness(ctx context.Context, user *v1.User
 				}
 				return fieldStore.GetByPhone(lookupCtx, value, u.Options)
 			},
-		); err != nil {
+		})
+	}
+
+	runCheck := func(runCtx context.Context, spec contactCheck) error {
+		return u.ensureContactUnique(
+			runCtx,
+			store,
+			spec.cacheKey,
+			user.Name,
+			spec.label,
+			spec.value,
+			spec.fieldKey,
+			spec.lookup,
+		)
+	}
+
+	switch len(checks) {
+	case 0:
+		return preflight, usernameChecked, nil
+	case 1:
+		if err := runCheck(ctx, checks[0]); err != nil {
+			return nil, false, err
+		}
+	default:
+		group, groupCtx := errgroup.WithContext(ctx)
+		for _, spec := range checks {
+			spec := spec
+			group.Go(func() error {
+				return runCheck(groupCtx, spec)
+			})
+		}
+		if err := group.Wait(); err != nil {
 			return nil, false, err
 		}
 	}

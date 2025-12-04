@@ -225,7 +225,7 @@ func (p *UserProducer) handleErrors() {
 如果 Sarama 在重试上限内仍失败，会把消息推到 Errors() 通道，当前代码只是在 handleErrors 中记录日志并落盘到 fallbackDir，不会再次投递，因此不会自动回到主主题或重试主题。
 是否需要额外的业务级重试取决于对主流程的可靠性要求：
 如果依赖 Kafka 的自带重试 + 本地降级文件即可满足（例如后续有离线补偿工具处理降级文件），可以保持现状。
-如果希望系统自动恢复，可考虑在 handleErrors 里结合指数退避、限次重发，或把失败消息转发到 user.retry.v1 交由消费者侧重试，再配合死信队列。
+如果希望系统自动恢复，可考虑在 handleErrors 里结合指数退避、限次重发，或把失败消息转发到 user.operations.retry.v1 交由消费者侧重试，再配合死信队列。
 还可以增加后台补偿任务读取 fallbackDir，把未发送成功的消息重新写回 Kafka。
 现状分析
 

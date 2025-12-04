@@ -55,8 +55,9 @@ var (
 	TraceSpanDuration      *prometheus.HistogramVec
 	TraceOperationDuration *prometheus.HistogramVec
 
-	UserCreateStepDuration   *prometheus.HistogramVec
-	UserCreateSlowStepsTotal *prometheus.CounterVec
+	UserCreateStepDuration            *prometheus.HistogramVec
+	UserCreateSlowStepsTotal          *prometheus.CounterVec
+	UserContactPlaceholderSetDuration *prometheus.HistogramVec
 
 	AuditEventsTotal   *prometheus.CounterVec // 审计事件计数
 	AuditEventFailures *prometheus.CounterVec // 审计失败计数
@@ -96,20 +97,56 @@ var (
 
 var (
 	// Pending lease / coordinator 指标
-	PendingLeaseActiveGauge       *prometheus.GaugeVec
-	PendingLeaseQueueDepth        *prometheus.GaugeVec
-	PendingLeaseQueueDepthSample  *prometheus.HistogramVec
-	PendingLeaseBackpressureLevel *prometheus.GaugeVec
-	PendingLeaseEvents            *prometheus.CounterVec
-	PendingLeaseHoldDuration      *prometheus.HistogramVec
+	PendingLeaseActiveGauge         *prometheus.GaugeVec
+	PendingLeaseQueueDepth          *prometheus.GaugeVec
+	PendingLeaseQueueDepthSample    *prometheus.HistogramVec
+	PendingLeaseBackpressureLevel   *prometheus.GaugeVec
+	PendingLeaseEvents              *prometheus.CounterVec
+	PendingLeaseFallbackTotal       *prometheus.CounterVec
+	PendingLeaseHoldDuration        *prometheus.HistogramVec
+	PendingLeaseCalibrationDuration *prometheus.HistogramVec
+	PendingCoordinatorHealth        *prometheus.GaugeVec
+	PendingLeaseLuaAttempts         *prometheus.CounterVec
+
+	// Pending consumer 观测指标
+	PendingConsumerQueueDepth      *prometheus.GaugeVec
+	PendingConsumerRedisLatency    *prometheus.HistogramVec
+	PendingConsumerDequeueDuration *prometheus.HistogramVec
+)
+
+var (
+	OperationQueueReadyDepth         *prometheus.GaugeVec
+	OperationQueueScheduledDepth     *prometheus.GaugeVec
+	OperationQueueInflightGauge      *prometheus.GaugeVec
+	OperationQueueFallbackGauge      *prometheus.GaugeVec
+	OperationWorkerIterations        *prometheus.CounterVec
+	OperationWorkerIterationDuration *prometheus.HistogramVec
+	OperationCompensationTotal       *prometheus.CounterVec
+	OperationCompensationDuration    *prometheus.HistogramVec
+
+	OperationModeDecisions      *prometheus.CounterVec
+	OperationModeCurrent        *prometheus.GaugeVec
+	OperationModeRolloutPercent *prometheus.GaugeVec
+	OperationModeAllowlistSize  *prometheus.GaugeVec
+	OperationModeBlocklistSize  *prometheus.GaugeVec
 )
 
 // Redis操作指标
 var (
-	RedisOperations        *prometheus.CounterVec
-	RedisOperationDuration *prometheus.HistogramVec
-	RedisErrors            *prometheus.CounterVec
-	RedisCacheSize         *prometheus.GaugeVec
+	RedisOperations              *prometheus.CounterVec
+	RedisOperationDuration       *prometheus.HistogramVec
+	RedisErrors                  *prometheus.CounterVec
+	RedisCacheSize               *prometheus.GaugeVec
+	StorageSetNXDuration         *prometheus.HistogramVec
+	RedisCommandStageDuration    *prometheus.HistogramVec
+	RedisPoolTotalConnections    *prometheus.GaugeVec
+	RedisPoolInUseConnections    *prometheus.GaugeVec
+	RedisPoolIdleConnections     *prometheus.GaugeVec
+	RedisPoolWaitDurationSeconds *prometheus.GaugeVec
+	RedisPoolWaitCountTotal      *prometheus.GaugeVec
+	RedisPoolHitsTotal           *prometheus.GaugeVec
+	RedisPoolMissesTotal         *prometheus.GaugeVec
+	RedisPoolTimeoutsTotal       *prometheus.GaugeVec
 )
 
 // Redis集群监控指标
@@ -188,6 +225,13 @@ var (
 	CacheNullValueOperations *prometheus.CounterVec
 	// UserProtectionEvents 统计用户防护动作触发次数，例如负缓存、黑名单
 	UserProtectionEvents *prometheus.CounterVec
+	// 用户缓存联系人写入批处理指标
+	UserCacheContactBatchDuration *prometheus.HistogramVec
+	UserCacheContactBatchSize     *prometheus.HistogramVec
+	UserCacheContactBatchRetries  *prometheus.CounterVec
+	UserCacheRefreshPhaseDuration *prometheus.HistogramVec
+	UserCacheRefreshItems         *prometheus.HistogramVec
+	UserContactPlaceholderEvents  *prometheus.CounterVec
 )
 
 // -------------------------- 2. 在 init 函数中初始化指标 + 手动注册 --------------------------
@@ -356,6 +400,23 @@ func init() {
 			Help: "Total number of user create sub-steps exceeding the slow threshold",
 		},
 		[]string{"step", "field"},
+	)
+
+	UserContactPlaceholderSetDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "user_contact_placeholder_set_duration_seconds",
+			Help:    "Duration distribution for contact placeholder SetNX operations",
+			Buckets: []float64{0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.35, 0.5, 0.75, 1.0},
+		},
+		[]string{"step", "field", "status"},
+	)
+
+	UserContactPlaceholderEvents = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "user_contact_placeholder_events_total",
+			Help: "Total number of contact placeholder operations grouped by step and result",
+		},
+		[]string{"step", "field", "result"},
 	)
 
 	AuditEventsTotal = prometheus.NewCounterVec(
@@ -566,6 +627,14 @@ func init() {
 		[]string{"component", "event"},
 	)
 
+	PendingLeaseFallbackTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "pending_lease_fallback_total",
+			Help: "Total number of pending lease operations served via degraded fallback",
+		},
+		[]string{"component", "operation", "reason"},
+	)
+
 	PendingLeaseHoldDuration = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "pending_lease_hold_duration_seconds",
@@ -573,6 +642,163 @@ func init() {
 			Buckets: []float64{0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60, 120, 300},
 		},
 		[]string{"component", "result"},
+	)
+
+	PendingLeaseCalibrationDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "pending_lease_calibration_duration_seconds",
+			Help:    "Runtime of full pending lease calibration rounds grouped by component and result",
+			Buckets: []float64{0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 40, 60, 120},
+		},
+		[]string{"component", "result"},
+	)
+
+	PendingCoordinatorHealth = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "pending_coordinator_health",
+			Help: "Health of the pending coordinator backend (1=healthy,0=unhealthy)",
+		},
+		[]string{"component", "backend"},
+	)
+
+	PendingLeaseLuaAttempts = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "pending_lease_lua_attempts_total",
+			Help: "Total pending lease Lua acquire attempts grouped by outcome",
+		},
+		[]string{"component", "outcome"},
+	)
+
+	PendingConsumerQueueDepth = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "pending_consumer_queue_depth",
+			Help: "Depth samples reported by pending queue consumers after coordinator probes",
+		},
+		[]string{"component"},
+	)
+
+	PendingConsumerRedisLatency = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "pending_consumer_redis_latency_seconds",
+			Help:    "Redis round-trip latency observed by pending queue consumers",
+			Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2},
+		},
+		[]string{"component", "operation", "status"},
+	)
+
+	PendingConsumerDequeueDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "pending_consumer_dequeue_duration_seconds",
+			Help:    "End-to-end dequeue duration for pending queue consumers",
+			Buckets: []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5},
+		},
+		[]string{"component", "outcome"},
+	)
+
+	OperationQueueReadyDepth = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "operation_queue_ready_depth",
+			Help: "Current length of the ready queue for async operations",
+		},
+		[]string{"resource"},
+	)
+
+	OperationQueueScheduledDepth = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "operation_queue_scheduled_depth",
+			Help: "Number of operations scheduled for future retry",
+		},
+		[]string{"resource"},
+	)
+
+	OperationQueueInflightGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "operation_queue_inflight_total",
+			Help: "Number of operations currently marked in-flight",
+		},
+		[]string{"resource"},
+	)
+
+	OperationQueueFallbackGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "operation_queue_fallback_active",
+			Help: "Indicator flag showing if an in-memory fallback queue is active",
+		},
+		[]string{"resource"},
+	)
+
+	OperationWorkerIterations = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "operation_worker_iterations_total",
+			Help: "Count of worker loop iterations grouped by outcome",
+		},
+		[]string{"resource", "outcome"},
+	)
+
+	OperationWorkerIterationDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "operation_worker_iteration_seconds",
+			Help:    "Duration spent inside a single worker iteration",
+			Buckets: []float64{0.001, 0.0025, 0.005, 0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1, 2, 5},
+		},
+		[]string{"resource", "outcome"},
+	)
+
+	OperationCompensationTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "operation_compensation_total",
+			Help: "Total number of compensation attempts grouped by outcome",
+		},
+		[]string{"resource", "outcome"},
+	)
+
+	OperationCompensationDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "operation_compensation_duration_seconds",
+			Help:    "Duration of compensation handlers grouped by outcome",
+			Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10},
+		},
+		[]string{"resource", "outcome"},
+	)
+
+	OperationModeDecisions = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "operation_mode_decisions_total",
+			Help: "Total number of operation mode decisions grouped by resource kind and outcome",
+		},
+		[]string{"component", "kind", "mode"},
+	)
+
+	OperationModeCurrent = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "operation_mode_current",
+			Help: "Current operation mode flag per component and mode",
+		},
+		[]string{"component", "mode"},
+	)
+
+	OperationModeRolloutPercent = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "operation_mode_rollout_percent",
+			Help: "Rollout percentage for operation mode per component",
+		},
+		[]string{"component"},
+	)
+
+	OperationModeAllowlistSize = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "operation_mode_allowlist_size",
+			Help: "Number of allowlisted subjects for queue mode",
+		},
+		[]string{"component"},
+	)
+
+	OperationModeBlocklistSize = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "operation_mode_blocklist_size",
+			Help: "Number of blocklisted subjects forcing sync mode",
+		},
+		[]string{"component"},
 	)
 
 	// -------------------------- 初始化：数据库操作指标 --------------------------
@@ -681,6 +907,88 @@ func init() {
 			Help: "Redis缓存大小",
 		},
 		[]string{"key_pattern"},
+	)
+
+	StorageSetNXDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "redis_storage_setnx_duration_seconds",
+			Help:    "Duration of Redis SetNX executions invoked by the storage layer",
+			Buckets: []float64{0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.35, 0.5, 0.75, 1.0},
+		},
+		[]string{"status"},
+	)
+
+	RedisCommandStageDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "redis_command_stage_duration_seconds",
+			Help:    "Breakdown of Redis command latency by stage (total, queue, service)",
+			Buckets: []float64{0.0005, 0.001, 0.0025, 0.005, 0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1, 2},
+		},
+		[]string{"component", "node", "command", "stage", "status"},
+	)
+
+	RedisPoolTotalConnections = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "redis_pool_total_connections",
+			Help: "Total connections currently allocated by the Redis client pool",
+		},
+		[]string{"component", "node"},
+	)
+
+	RedisPoolInUseConnections = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "redis_pool_in_use_connections",
+			Help: "Connections from the Redis pool that are currently in use",
+		},
+		[]string{"component", "node"},
+	)
+
+	RedisPoolIdleConnections = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "redis_pool_idle_connections",
+			Help: "Idle connections currently available in the Redis client pool",
+		},
+		[]string{"component", "node"},
+	)
+
+	RedisPoolWaitDurationSeconds = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "redis_pool_wait_duration_seconds",
+			Help: "Cumulative time spent waiting for Redis pool connections",
+		},
+		[]string{"component", "node"},
+	)
+
+	RedisPoolWaitCountTotal = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "redis_pool_wait_events_total",
+			Help: "Cumulative number of waits encountered when acquiring Redis pool connections",
+		},
+		[]string{"component", "node"},
+	)
+
+	RedisPoolHitsTotal = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "redis_pool_hits_total",
+			Help: "Cumulative number of times a free Redis connection was available",
+		},
+		[]string{"component", "node"},
+	)
+
+	RedisPoolMissesTotal = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "redis_pool_misses_total",
+			Help: "Cumulative number of times Redis pool had to create a new connection",
+		},
+		[]string{"component", "node"},
+	)
+
+	RedisPoolTimeoutsTotal = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "redis_pool_timeouts_total",
+			Help: "Cumulative number of timeouts when waiting for Redis pool connections",
+		},
+		[]string{"component", "node"},
 	)
 
 	// -------------------------- 初始化：Redis集群监控指标 --------------------------
@@ -1010,6 +1318,50 @@ func init() {
 		[]string{"type"}, // type: negative_cache, blacklist
 	)
 
+	UserCacheContactBatchDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "user_cache_contact_batch_duration_seconds",
+			Help:    "Redis pipeline duration when writing contact cache batches",
+			Buckets: []float64{0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 20, 30, 45, 60, 90, 120},
+		},
+		[]string{"component", "status"},
+	)
+
+	UserCacheContactBatchSize = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "user_cache_contact_batch_size",
+			Help:    "Number of contact cache keys written per Redis batch",
+			Buckets: []float64{1, 2, 3, 4, 5, 6, 8, 10, 15, 20},
+		},
+		[]string{"component", "status"},
+	)
+
+	UserCacheContactBatchRetries = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "user_cache_contact_batch_retries_total",
+			Help: "Total number of retry attempts when writing contact cache batches",
+		},
+		[]string{"component", "status"},
+	)
+
+	UserCacheRefreshPhaseDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "user_cache_refresh_phase_duration_seconds",
+			Help:    "Duration distribution for individual phases during user cache refresh",
+			Buckets: []float64{0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 20, 30, 45, 60, 90, 120},
+		},
+		[]string{"component", "phase"},
+	)
+
+	UserCacheRefreshItems = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "user_cache_refresh_item_count",
+			Help:    "Number of cache items processed per category during refresh",
+			Buckets: []float64{1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 32},
+		},
+		[]string{"component", "item_type"},
+	)
+
 	// -------------------------- 手动注册所有指标到 Prometheus 默认注册表 --------------------------
 	// MustRegister：注册失败会panic（适合初始化阶段，提前暴露配置错误）
 	prometheus.MustRegister(
@@ -1038,6 +1390,8 @@ func init() {
 		TraceOperationDuration,
 		UserCreateStepDuration,
 		UserCreateSlowStepsTotal,
+		UserContactPlaceholderSetDuration,
+		UserContactPlaceholderEvents,
 		AuditEventsTotal,
 		AuditEventFailures,
 
@@ -1062,7 +1416,27 @@ func init() {
 		PendingLeaseQueueDepthSample,
 		PendingLeaseBackpressureLevel,
 		PendingLeaseEvents,
+		PendingLeaseFallbackTotal,
 		PendingLeaseHoldDuration,
+		PendingLeaseCalibrationDuration,
+		PendingCoordinatorHealth,
+		PendingLeaseLuaAttempts,
+		PendingConsumerQueueDepth,
+		PendingConsumerRedisLatency,
+		PendingConsumerDequeueDuration,
+		OperationQueueReadyDepth,
+		OperationQueueScheduledDepth,
+		OperationQueueInflightGauge,
+		OperationQueueFallbackGauge,
+		OperationWorkerIterations,
+		OperationWorkerIterationDuration,
+		OperationCompensationTotal,
+		OperationCompensationDuration,
+		OperationModeDecisions,
+		OperationModeCurrent,
+		OperationModeRolloutPercent,
+		OperationModeAllowlistSize,
+		OperationModeBlocklistSize,
 
 		// 数据库指标
 		DatabaseQueryDuration,
@@ -1080,6 +1454,16 @@ func init() {
 		RedisOperationDuration,
 		RedisErrors,
 		RedisCacheSize,
+		StorageSetNXDuration,
+		RedisCommandStageDuration,
+		RedisPoolTotalConnections,
+		RedisPoolInUseConnections,
+		RedisPoolIdleConnections,
+		RedisPoolWaitDurationSeconds,
+		RedisPoolWaitCountTotal,
+		RedisPoolHitsTotal,
+		RedisPoolMissesTotal,
+		RedisPoolTimeoutsTotal,
 
 		// 新增指标
 		ProducerInFlightCurrent,
@@ -1135,6 +1519,11 @@ func init() {
 		CacheNullValuesCount, // 修正：现在可以正确注册
 		CacheNullValueOperations,
 		UserProtectionEvents,
+		UserCacheContactBatchDuration,
+		UserCacheContactBatchSize,
+		UserCacheContactBatchRetries,
+		UserCacheRefreshPhaseDuration,
+		UserCacheRefreshItems,
 	)
 }
 
@@ -1374,6 +1763,239 @@ func RecordRedisOperation(operation string, duration float64, err error) {
 	}
 
 	RedisOperations.WithLabelValues(operation, status).Inc()
+}
+
+// RedisCommandStage enumerates different latency segments we export.
+type RedisCommandStage string
+
+const (
+	RedisStageTotal   RedisCommandStage = "total"
+	RedisStageQueue   RedisCommandStage = "queue"
+	RedisStageService RedisCommandStage = "service"
+)
+
+// ObserveRedisCommandDurations records detailed latency breakdown for a Redis command.
+func ObserveRedisCommandDurations(component, node, command string, total, queue, service time.Duration, err error) {
+	if RedisCommandStageDuration == nil {
+		return
+	}
+
+	componentLabel := normalizeLabelValue(component, "default")
+	nodeLabel := normalizeLabelValue(node, "unknown")
+	commandLabel := normalizeLabelValue(strings.ToLower(command), "unknown")
+	status := "success"
+	if err != nil {
+		status = "error"
+	}
+
+	observeStage := func(stage RedisCommandStage, value time.Duration) {
+		if value < 0 {
+			value = 0
+		}
+		RedisCommandStageDuration.WithLabelValues(componentLabel, nodeLabel, commandLabel, string(stage), status).Observe(value.Seconds())
+	}
+
+	observeStage(RedisStageTotal, total)
+	observeStage(RedisStageQueue, queue)
+	observeStage(RedisStageService, service)
+}
+
+// RedisPoolSnapshot captures a point-in-time view of client pool utilization counters.
+type RedisPoolSnapshot struct {
+	TotalConns          float64
+	IdleConns           float64
+	InUseConns          float64
+	WaitDurationSeconds float64
+	WaitCount           float64
+	Hits                float64
+	Misses              float64
+	Timeouts            float64
+}
+
+// ObserveRedisPoolStats updates Prometheus gauges with the provided pool snapshot.
+func ObserveRedisPoolStats(component, node string, snapshot RedisPoolSnapshot) {
+	componentLabel := normalizeLabelValue(component, "default")
+	nodeLabel := normalizeLabelValue(node, "unknown")
+
+	if RedisPoolTotalConnections != nil {
+		RedisPoolTotalConnections.WithLabelValues(componentLabel, nodeLabel).Set(snapshot.TotalConns)
+	}
+	if RedisPoolInUseConnections != nil {
+		RedisPoolInUseConnections.WithLabelValues(componentLabel, nodeLabel).Set(snapshot.InUseConns)
+	}
+	if RedisPoolIdleConnections != nil {
+		RedisPoolIdleConnections.WithLabelValues(componentLabel, nodeLabel).Set(snapshot.IdleConns)
+	}
+	if RedisPoolWaitDurationSeconds != nil {
+		RedisPoolWaitDurationSeconds.WithLabelValues(componentLabel, nodeLabel).Set(snapshot.WaitDurationSeconds)
+	}
+	if RedisPoolWaitCountTotal != nil {
+		RedisPoolWaitCountTotal.WithLabelValues(componentLabel, nodeLabel).Set(snapshot.WaitCount)
+	}
+	if RedisPoolHitsTotal != nil {
+		RedisPoolHitsTotal.WithLabelValues(componentLabel, nodeLabel).Set(snapshot.Hits)
+	}
+	if RedisPoolMissesTotal != nil {
+		RedisPoolMissesTotal.WithLabelValues(componentLabel, nodeLabel).Set(snapshot.Misses)
+	}
+	if RedisPoolTimeoutsTotal != nil {
+		RedisPoolTimeoutsTotal.WithLabelValues(componentLabel, nodeLabel).Set(snapshot.Timeouts)
+	}
+}
+
+// ObserveStorageSetNX 记录底层存储层调用 SetNX 的耗时分布。
+func ObserveStorageSetNX(duration time.Duration, err error) {
+	if StorageSetNXDuration == nil {
+		return
+	}
+	status := "success"
+	if err != nil {
+		status = "error"
+	}
+	StorageSetNXDuration.WithLabelValues(status).Observe(duration.Seconds())
+}
+
+// RecordOperationQueueDepth 更新异步操作队列的关键深度指标。
+func RecordOperationQueueDepth(resource string, ready, scheduled, inflight int64) {
+	label := normalizeLabelValue(resource, "unknown")
+	if ready < 0 {
+		ready = 0
+	}
+	if scheduled < 0 {
+		scheduled = 0
+	}
+	if inflight < 0 {
+		inflight = 0
+	}
+	if OperationQueueReadyDepth != nil {
+		OperationQueueReadyDepth.WithLabelValues(label).Set(float64(ready))
+	}
+	if OperationQueueScheduledDepth != nil {
+		OperationQueueScheduledDepth.WithLabelValues(label).Set(float64(scheduled))
+	}
+	if OperationQueueInflightGauge != nil {
+		OperationQueueInflightGauge.WithLabelValues(label).Set(float64(inflight))
+	}
+}
+
+// SetOperationQueueFallback 标记是否启用内存回退队列。
+func SetOperationQueueFallback(resource string, active bool) {
+	if OperationQueueFallbackGauge == nil {
+		return
+	}
+	value := 0.0
+	if active {
+		value = 1.0
+	}
+	label := normalizeLabelValue(resource, "unknown")
+	OperationQueueFallbackGauge.WithLabelValues(label).Set(value)
+}
+
+// ObservePendingConsumerRedisLatency 记录消费者访问 Redis 的往返耗时。
+func ObservePendingConsumerRedisLatency(component, operation string, duration time.Duration, err error) {
+	if PendingConsumerRedisLatency == nil {
+		return
+	}
+	comp := normalizeLabelValue(component, "user_consumer")
+	op := normalizeLabelValue(operation, "unknown")
+	status := "success"
+	if err != nil {
+		status = "error"
+	}
+	PendingConsumerRedisLatency.WithLabelValues(comp, op, status).Observe(duration.Seconds())
+}
+
+// ObserveUserCacheContactBatch 记录联系人批量写入的耗时、批量大小与重试次数。
+func ObserveUserCacheContactBatch(component string, batchSize int, duration time.Duration, attempts int, err error) {
+	comp := normalizeLabelValue(component, "user_consumer")
+	status := "success"
+	if err != nil {
+		status = "error"
+	}
+	if UserCacheContactBatchDuration != nil && duration > 0 {
+		UserCacheContactBatchDuration.WithLabelValues(comp, status).Observe(duration.Seconds())
+	}
+	if batchSize < 0 {
+		batchSize = 0
+	}
+	if UserCacheContactBatchSize != nil {
+		UserCacheContactBatchSize.WithLabelValues(comp, status).Observe(float64(batchSize))
+	}
+	if attempts > 1 && UserCacheContactBatchRetries != nil {
+		UserCacheContactBatchRetries.WithLabelValues(comp, status).Add(float64(attempts - 1))
+	}
+}
+
+// ObserveUserCacheRefreshPhase 记录缓存刷新各阶段的耗时分布。
+func ObserveUserCacheRefreshPhase(component, phase string, duration time.Duration) {
+	if duration <= 0 || UserCacheRefreshPhaseDuration == nil {
+		return
+	}
+	comp := normalizeLabelValue(component, "user_consumer")
+	ph := normalizeLabelValue(phase, "unknown")
+	UserCacheRefreshPhaseDuration.WithLabelValues(comp, ph).Observe(duration.Seconds())
+}
+
+// ObserveUserCacheRefreshItems 记录缓存刷新过程中的各类元素数量（如管道条目、联系人条目等）。
+func ObserveUserCacheRefreshItems(component, itemType string, count int) {
+	if UserCacheRefreshItems == nil {
+		return
+	}
+	if count < 0 {
+		count = 0
+	}
+	comp := normalizeLabelValue(component, "user_consumer")
+	it := normalizeLabelValue(itemType, "unknown")
+	UserCacheRefreshItems.WithLabelValues(comp, it).Observe(float64(count))
+}
+
+// ObservePendingConsumerDequeue 记录消费者从消息开始清理到完成的耗时。
+func ObservePendingConsumerDequeue(component string, duration time.Duration, err error) {
+	if PendingConsumerDequeueDuration == nil {
+		return
+	}
+	comp := normalizeLabelValue(component, "user_consumer")
+	outcome := "success"
+	if err != nil {
+		outcome = "error"
+	}
+	PendingConsumerDequeueDuration.WithLabelValues(comp, outcome).Observe(duration.Seconds())
+}
+
+// SetPendingConsumerQueueDepth 更新消费者侧采样到的队列深度。
+func SetPendingConsumerQueueDepth(component string, depth int64) {
+	if PendingConsumerQueueDepth == nil {
+		return
+	}
+	if depth < 0 {
+		depth = 0
+	}
+	comp := normalizeLabelValue(component, "user_consumer")
+	PendingConsumerQueueDepth.WithLabelValues(comp).Set(float64(depth))
+}
+
+// RecordOperationWorkerIteration 统计一次工作线程迭代，并记录耗时。
+func RecordOperationWorkerIteration(resource, outcome string, duration time.Duration) {
+	resourceLabel := normalizeLabelValue(resource, "unknown")
+	outcomeLabel := normalizeLabelValue(outcome, "unknown")
+	if OperationWorkerIterations != nil {
+		OperationWorkerIterations.WithLabelValues(resourceLabel, outcomeLabel).Inc()
+	}
+	if OperationWorkerIterationDuration != nil {
+		OperationWorkerIterationDuration.WithLabelValues(resourceLabel, outcomeLabel).Observe(duration.Seconds())
+	}
+}
+
+// ObserveOperationCompensation 记录补偿处理的结果与耗时。
+func ObserveOperationCompensation(resource, outcome string, duration time.Duration) {
+	resourceLabel := normalizeLabelValue(resource, "unknown")
+	outcomeLabel := normalizeLabelValue(outcome, "unknown")
+	if OperationCompensationTotal != nil {
+		OperationCompensationTotal.WithLabelValues(resourceLabel, outcomeLabel).Inc()
+	}
+	if OperationCompensationDuration != nil {
+		OperationCompensationDuration.WithLabelValues(resourceLabel, outcomeLabel).Observe(duration.Seconds())
+	}
 }
 
 // RecordKafkaProducerOperation 记录Kafka生产者操作指标
@@ -1624,6 +2246,43 @@ func RecordUserCreateStep(step, field string, duration time.Duration) {
 	}
 }
 
+// ObserveUserContactPlaceholderSet 记录联系人占位命令的耗时，用于定位 SetNX 阶段的尾延迟。
+const userContactPlaceholderSlowThreshold = 20 * time.Millisecond
+
+func ObserveUserContactPlaceholderSet(step, field string, duration time.Duration, err error) {
+	if UserContactPlaceholderSetDuration == nil {
+		return
+	}
+	switch step {
+	case "ensure_contact_unique_placeholder_setnx", "redis_placeholder_setnx":
+	default:
+		return
+	}
+	status := "success"
+	if err != nil {
+		status = "error"
+	} else if duration > userContactPlaceholderSlowThreshold {
+		status = "slow"
+	}
+	UserContactPlaceholderSetDuration.WithLabelValues(
+		normalizeLabelValue(step, "unknown"),
+		normalizeLabelValue(field, "unknown"),
+		status,
+	).Observe(duration.Seconds())
+}
+
+// RecordUserContactPlaceholderEvent 记录联系人唯一性路径的命令结果与降级分支，便于定位 Redis 退化场景。
+func RecordUserContactPlaceholderEvent(step, field, result string) {
+	if UserContactPlaceholderEvents == nil {
+		return
+	}
+	UserContactPlaceholderEvents.WithLabelValues(
+		normalizeLabelValue(step, "unknown"),
+		normalizeLabelValue(field, "unknown"),
+		normalizeLabelValue(result, "unknown"),
+	).Inc()
+}
+
 // RecordBusinessQPS 记录业务QPS（供外部调用）
 func RecordBusinessQPS(service, operation string, qps float64) {
 	BusinessOperationsRate.WithLabelValues(service, operation).Set(qps)
@@ -1632,6 +2291,17 @@ func RecordBusinessQPS(service, operation string, qps float64) {
 // RecordBusinessErrorRate 记录业务错误率
 func RecordBusinessErrorRate(service, operation string, errorRate float64) {
 	BusinessErrorRate.WithLabelValues(service, operation).Set(errorRate)
+}
+
+// RecordPendingLeaseFallback 记录 PendingCoordinator 在降级兜底路径上的命中次数，便于观测 Redis 降级对并发的影响范围。
+func RecordPendingLeaseFallback(component, operation, reason string) {
+	if PendingLeaseFallbackTotal == nil {
+		return
+	}
+	comp := normalizeLabelValue(component, "unknown")
+	op := normalizeLabelValue(operation, "unknown")
+	rs := normalizeLabelValue(reason, "unknown")
+	PendingLeaseFallbackTotal.WithLabelValues(comp, op, rs).Inc()
 }
 
 // RecordTraceSpanDuration records duration for individual trace spans.
@@ -1673,6 +2343,45 @@ func RecordAuditFailure(action, resourceType string) {
 		resourceType = "unknown"
 	}
 	AuditEventFailures.WithLabelValues(action, resourceType).Inc()
+}
+
+var operationModeGaugeModes = []string{"sync", "queue", "rollout"}
+
+// RecordOperationModeDecision increments counters for mode decisions per component and operation kind.
+func RecordOperationModeDecision(component, kind, mode string) {
+	if component == "" {
+		component = "unknown"
+	}
+	if kind == "" {
+		kind = "unknown"
+	}
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		mode = "unknown"
+	}
+	OperationModeDecisions.WithLabelValues(component, kind, mode).Inc()
+}
+
+// PublishOperationModeSnapshot updates gauges reflecting the active mode and rollout metadata.
+func PublishOperationModeSnapshot(component, mode string, rolloutPercent, allowCount, blockCount int) {
+	if component == "" {
+		component = "unknown"
+	}
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		mode = "unknown"
+	}
+	for _, candidate := range operationModeGaugeModes {
+		value := 0.0
+		if candidate == mode {
+			value = 1.0
+		}
+		OperationModeCurrent.WithLabelValues(component, candidate).Set(value)
+	}
+	OperationModeCurrent.WithLabelValues(component, mode).Set(1.0)
+	OperationModeRolloutPercent.WithLabelValues(component).Set(float64(rolloutPercent))
+	OperationModeAllowlistSize.WithLabelValues(component).Set(float64(allowCount))
+	OperationModeBlocklistSize.WithLabelValues(component).Set(float64(blockCount))
 }
 
 // RecordUserProtectionEvent 记录用户防护动作的触发次数。

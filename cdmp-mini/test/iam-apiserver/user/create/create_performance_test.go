@@ -2,6 +2,7 @@ package create
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"hash/fnv"
 	"math"
@@ -28,6 +29,8 @@ const (
 
 const perfOutputDir = "/home/mxl/cdmp-mini/cdmp-mini/test/iam-apiserver/user/create"
 
+var createOnlyConcurrency = flag.Int("create_only_concurrency", 0, "override concurrency for create_only scenario")
+
 type loadPattern string
 
 type scenarioCategory string
@@ -51,6 +54,7 @@ type scenarioOptions struct {
 	AvailabilityGoal  float64
 	AspirationalTPS   float64
 	Notes             []string
+	DisableCleanup    bool
 }
 
 type workloadStage struct {
@@ -64,13 +68,15 @@ type workloadStage struct {
 }
 
 type performanceScenario struct {
-	Name        string
-	Category    scenarioCategory
-	Description string
-	Pattern     loadPattern
-	Stages      []workloadStage
-	Options     scenarioOptions
-	Generator   userGenerator
+	Name         string
+	Category     scenarioCategory
+	Description  string
+	Pattern      loadPattern
+	Stages       []workloadStage
+	Options      scenarioOptions
+	Generator    userGenerator
+	ModeOverride *framework.OperationModeConfig
+	AsyncMetrics []string
 }
 
 type userVariant struct {
@@ -242,10 +248,12 @@ func (r *scenarioResult) record(outcome operationOutcome) {
 	}
 	if outcome.degraded {
 		r.degraded++
-		state := r.cleanup[outcome.variant.Spec.Name]
-		state.Degraded = true
-		state.RequireWait = true
-		r.cleanup[outcome.variant.Spec.Name] = state
+		if !r.scenario.Options.DisableCleanup {
+			state := r.cleanup[outcome.variant.Spec.Name]
+			state.Degraded = true
+			state.RequireWait = true
+			r.cleanup[outcome.variant.Spec.Name] = state
+		}
 	} else if outcome.success {
 		r.success++
 	} else {
@@ -254,7 +262,7 @@ func (r *scenarioResult) record(outcome operationOutcome) {
 			r.errors = append(r.errors, outcome.err.Error())
 		}
 	}
-	if outcome.created {
+	if outcome.created && !r.scenario.Options.DisableCleanup {
 		requireWait := r.scenario.Options.SkipWaitForReady
 		state := r.cleanup[outcome.variant.Spec.Name]
 		if requireWait {
@@ -456,12 +464,93 @@ func cloneCounter(src map[string]int) map[string]int {
 	return dst
 }
 
+func cloneModeConfig(cfg framework.OperationModeConfig) framework.OperationModeConfig {
+	clone := cfg
+	clone.QueueKinds = append([]string{}, cfg.QueueKinds...)
+	clone.AllowUsers = append([]string{}, cfg.AllowUsers...)
+	clone.BlockUsers = append([]string{}, cfg.BlockUsers...)
+	return clone
+}
+
 func runPerformanceScenario(t *testing.T, env *framework.Env, recorder *framework.Recorder, sc performanceScenario) scenarioMetrics {
 	t.Helper()
+	var (
+		originalMode framework.OperationModeConfig
+		appliedMode  *framework.OperationModeConfig
+		restoreFn    func()
+		restoreOnce  sync.Once
+	)
+	if sc.ModeOverride != nil {
+		modeSnapshot, err := env.GetUserOperationMode()
+		if err != nil {
+			t.Fatalf("fetch operation mode: %v", err)
+		}
+		originalMode = modeSnapshot
+		override := cloneModeConfig(*sc.ModeOverride)
+		applied, err := env.SetUserOperationMode(override)
+		if err != nil {
+			t.Fatalf("set operation mode for scenario %s: %v", sc.Name, err)
+		}
+		appliedMode = &applied
+		restoreFn = func() {
+			restoreOnce.Do(func() {
+				if _, restoreErr := env.SetUserOperationMode(originalMode); restoreErr != nil {
+					t.Logf("restore operation mode: %v", restoreErr)
+				}
+			})
+		}
+		t.Cleanup(restoreFn)
+	}
 	env.AdminTokenOrFail(t)
 	sc.Options = sc.Options.normalized()
+	var metricsBefore map[string]float64
+	if len(sc.AsyncMetrics) > 0 {
+		if snapshot, err := env.MetricsSnapshot(sc.AsyncMetrics...); err != nil {
+			t.Logf("metrics snapshot before %s: %v", sc.Name, err)
+		} else {
+			metricsBefore = snapshot
+		}
+	}
 	res := newScenarioResult(sc)
 	t.Cleanup(func() {
+		if sc.Options.DisableCleanup {
+			if restoreFn != nil {
+				restoreFn()
+			}
+			return
+		}
+		// Force cleanup to run under sync mode so force deletes skip the async pipeline.
+		baselineMode := originalMode
+		haveBaseline := baselineMode.Mode != ""
+		if !haveBaseline {
+			if snapshot, err := env.GetUserOperationMode(); err != nil {
+				t.Logf("cleanup fetch operation mode: %v", err)
+			} else {
+				baselineMode = snapshot
+				haveBaseline = true
+			}
+		}
+		switchedToSync := false
+		if haveBaseline && !strings.EqualFold(baselineMode.Mode, "sync") {
+			syncOverride := cloneModeConfig(baselineMode)
+			syncOverride.Mode = "sync"
+			if _, err := env.SetUserOperationMode(syncOverride); err != nil {
+				t.Logf("cleanup switch to sync mode: %v", err)
+			} else {
+				switchedToSync = true
+			}
+		}
+		defer func() {
+			if switchedToSync && haveBaseline {
+				if _, err := env.SetUserOperationMode(baselineMode); err != nil {
+					t.Logf("restore operation mode after cleanup: %v", err)
+				}
+			}
+			if restoreFn != nil {
+				restoreFn()
+			}
+		}()
+
 		tasks := res.cleanupTasks()
 		standard := make([]cleanupTask, 0, len(tasks))
 		degraded := make([]string, 0, len(tasks))
@@ -518,6 +607,19 @@ func runPerformanceScenario(t *testing.T, env *framework.Env, recorder *framewor
 		}
 	}
 	notes := evaluateExpectations(t, sc, metrics)
+	asyncNotes := []string{}
+	if len(sc.AsyncMetrics) > 0 {
+		if snapshot, err := env.MetricsSnapshot(sc.AsyncMetrics...); err != nil {
+			asyncNotes = append(asyncNotes, fmt.Sprintf("metrics_after_error=%v", err))
+		} else if metricsBefore != nil {
+			for _, name := range sc.AsyncMetrics {
+				before := metricsBefore[name]
+				after := snapshot[name]
+				delta := after - before
+				asyncNotes = append(asyncNotes, fmt.Sprintf("%s_delta=%.0f", name, delta))
+			}
+		}
+	}
 	point := framework.PerformancePoint{
 		Scenario:     fmt.Sprintf("%s/%s", sc.Category, sc.Name),
 		Requests:     metrics.Requests,
@@ -555,6 +657,12 @@ func runPerformanceScenario(t *testing.T, env *framework.Env, recorder *framewor
 	if metrics.WaitAvg > 0 {
 		point.Notes = append(point.Notes, fmt.Sprintf("Mean wait-for-ready=%s", metrics.WaitAvg))
 	}
+	if appliedMode != nil {
+		point.Notes = append(point.Notes, fmt.Sprintf("operation_mode=%s", appliedMode.Mode))
+	}
+	if len(asyncNotes) > 0 {
+		point.Notes = append(point.Notes, asyncNotes...)
+	}
 	recorder.AddPerformance(point)
 	return metrics
 }
@@ -585,6 +693,11 @@ func parallelCleanup(t testing.TB, env *framework.Env, tasks []cleanupTask, opts
 	}
 	var followupMu sync.Mutex
 	followup := make([]string, 0)
+	waitLimiter := make(chan struct{}, cleanupWaitMaxConcurrent)
+	var waitBudget atomic.Int64
+	if cleanupWaitBudget > 0 {
+		waitBudget.Store(int64(cleanupWaitBudget))
+	}
 	for i := 0; i < workerCount; i++ {
 		wg.Add(1)
 		go func() {
@@ -593,23 +706,45 @@ func parallelCleanup(t testing.TB, env *framework.Env, tasks []cleanupTask, opts
 				if task.Name == "" {
 					continue
 				}
-				var waitErr error
-				if task.RequireWait {
-					if err := env.WaitForUser(task.Name, waitTimeout); err != nil {
-						t.Logf("cleanup wait for user %s failed: %v", task.Name, err)
-						waitErr = err
-					}
-				}
 				needFollow := false
 				deleted, err := attemptForceDelete(env, task.Name)
 				if err != nil {
 					t.Logf("cleanup delete %s failed: %v", task.Name, err)
+				}
+				if !deleted && task.RequireWait {
+					allowWait := cleanupWaitBudget <= 0
+					if !allowWait {
+						remaining := waitBudget.Add(-1)
+						if remaining < 0 {
+							waitBudget.Add(1)
+						} else {
+							allowWait = true
+						}
+					}
+					if allowWait {
+						waitLimiter <- struct{}{}
+						func() {
+							defer func() { <-waitLimiter }()
+							if waitErr := env.WaitForUser(task.Name, waitTimeout); waitErr != nil {
+								t.Logf("cleanup wait for user %s failed: %v", task.Name, waitErr)
+								needFollow = true
+								return
+							}
+							retryDeleted, retryErr := attemptForceDelete(env, task.Name)
+							if retryErr != nil {
+								t.Logf("cleanup delete %s after wait failed: %v", task.Name, retryErr)
+								needFollow = true
+								return
+							}
+							if !retryDeleted {
+								needFollow = true
+							}
+						}()
+					} else {
+						needFollow = true
+					}
+				} else if !deleted || err != nil {
 					needFollow = true
-				} else if !deleted {
-					needFollow = true
-				} else if waitErr != nil {
-					// Wait failed but delete succeeded; nothing further to do.
-					waitErr = nil
 				}
 				if needFollow {
 					followupMu.Lock()
@@ -718,22 +853,70 @@ func degradedUserExists(env *framework.Env, name string) (bool, error) {
 	}
 }
 
+const (
+	forceDeleteMaxAttempts    = 4
+	forceDeleteBackoffStep    = 75 * time.Millisecond
+	forceDeleteRequestTimeout = 3 * time.Second
+	cleanupWaitMaxConcurrent  = 4
+	cleanupWaitBudget         = 32
+)
+
 func attemptForceDelete(env *framework.Env, name string) (bool, error) {
-	resp, err := env.ForceDeleteUser(name)
-	if err != nil {
-		return false, err
+	if env == nil || name == "" {
+		return false, nil
 	}
+
+	var lastErr error
+	for attempt := 1; attempt <= forceDeleteMaxAttempts; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), forceDeleteRequestTimeout)
+		resp, err := env.ForceDeleteUserWithContext(ctx, name)
+		cancel()
+		if err != nil {
+			lastErr = err
+		} else if resp == nil {
+			lastErr = fmt.Errorf("nil response while deleting user %s", name)
+		} else {
+			status := resp.HTTPStatus()
+			switch status {
+			case http.StatusOK, http.StatusNotFound:
+				return true, nil
+			case http.StatusInternalServerError:
+				if deletionLikelyNotFound(resp) {
+					return true, nil
+				}
+				lastErr = fmt.Errorf("unexpected delete status %d for user %s", status, name)
+			default:
+				lastErr = fmt.Errorf("unexpected delete status %d for user %s", status, name)
+			}
+		}
+
+		if attempt < forceDeleteMaxAttempts {
+			time.Sleep(time.Duration(attempt) * forceDeleteBackoffStep)
+			continue
+		}
+	}
+
+	if lastErr == nil {
+		lastErr = fmt.Errorf("force delete %s failed after retries", name)
+	}
+	return false, lastErr
+}
+
+func deletionLikelyNotFound(resp *framework.APIResponse) bool {
 	if resp == nil {
-		return false, fmt.Errorf("nil response while deleting user %s", name)
+		return false
 	}
-	switch resp.HTTPStatus() {
-	case http.StatusOK:
-		return true, nil
-	case http.StatusNotFound:
-		return true, nil
-	default:
-		return false, fmt.Errorf("unexpected delete status %d for user %s", resp.HTTPStatus(), name)
+	body := strings.ToLower(strings.TrimSpace(resp.Message + " " + resp.Error))
+	if body == "" {
+		return false
 	}
+	keywords := []string{"not found", "不存在", "missing", "unknown user"}
+	for _, keyword := range keywords {
+		if strings.Contains(body, keyword) {
+			return true
+		}
+	}
+	return false
 }
 
 func clearExistingUserForRetry(env *framework.Env, name string) bool {
@@ -1016,6 +1199,50 @@ func baselineConcurrentScenario() performanceScenario {
 	}
 }
 
+func queueAsyncBaselineScenario() performanceScenario {
+	override := framework.OperationModeConfig{
+		Mode:           "queue",
+		RolloutPercent: 100,
+		QueueKinds:     []string{"create"},
+	}
+	return performanceScenario{
+		Name:         "queue_async_baseline",
+		Category:     categorySpecialized,
+		Description:  "队列模式 - 异步处理基准与补偿监控",
+		Pattern:      patternUniform,
+		Generator:    newDefaultGenerator("queue"),
+		ModeOverride: &override,
+		AsyncMetrics: []string{
+			"operation_worker_iterations_total",
+			"operation_compensation_total",
+		},
+		Options: scenarioOptions{
+			EnforceSLA:       true,
+			WaitForReady:     45 * time.Second,
+			CacheChecks:      0,
+			SkipWaitForReady: false,
+			SLATargets: slaTargets{
+				Avg:         400 * time.Millisecond,
+				P95:         900 * time.Millisecond,
+				P99:         1500 * time.Millisecond,
+				SuccessRate: 0.995,
+			},
+			Notes: []string{
+				"强制切换至队列异步模式以观察 worker 处理节奏",
+				"记录 worker 迭代与补偿指标增量",
+			},
+		},
+		Stages: []workloadStage{
+			{
+				Name:        "queue_burst",
+				Requests:    512,
+				Concurrency: 32,
+				Pattern:     patternUniform,
+			},
+		},
+	}
+}
+
 func baselineSustainedScenario() performanceScenario {
 	return performanceScenario{
 		Name:        "baseline_sustained",
@@ -1211,6 +1438,42 @@ func specializedExtremeDataScenario() performanceScenario {
 				Name:        "extreme_batch",
 				Requests:    1024,
 				Concurrency: 32,
+				Pattern:     patternUniform,
+			},
+		},
+	}
+}
+
+func createOnlyScenario() performanceScenario {
+	concurrency := 32
+	if *createOnlyConcurrency > 0 {
+		concurrency = *createOnlyConcurrency
+	}
+	return performanceScenario{
+		Name:        "create_only_smoke",
+		Category:    categorySpecialized,
+		Description: "创建链路专项 - 不触发清理，聚焦 Create API 延迟",
+		Pattern:     patternUniform,
+		Generator:   newDefaultGenerator("create_only"),
+		Options: scenarioOptions{
+			EnforceSLA:       true,
+			SkipWaitForReady: true,
+			DisableCleanup:   true,
+			SLATargets: slaTargets{
+				Avg: 250 * time.Millisecond,
+				P95: 400 * time.Millisecond,
+				P99: 550 * time.Millisecond,
+			},
+			Notes: []string{
+				"仅验证创建接口，不进入清理路径",
+				"适用于对齐后端 create 链路调优后的延迟曲线",
+			},
+		},
+		Stages: []workloadStage{
+			{
+				Name:        "create_only_batch",
+				Requests:    512,
+				Concurrency: concurrency,
 				Pattern:     patternUniform,
 			},
 		},
@@ -1572,6 +1835,7 @@ func TestCreatePerformance(t *testing.T) {
 		baselineSerialScenario(),
 		baselineConcurrentScenario(),
 		baselineSustainedScenario(),
+		queueAsyncBaselineScenario(),
 		stressSpikeScenario(),
 		stressRampScenario(),
 		stressDestructiveScenario(),
@@ -1594,5 +1858,22 @@ func TestCreatePerformance(t *testing.T) {
 				t.Fatalf("scenario %s had zero successful requests", sc.Name)
 			}
 		})
+	}
+}
+
+func TestCreatePerformanceCreateOnly(t *testing.T) {
+	if testing.Short() {
+		t.Skip("create-only scenario skipped in short mode")
+	}
+	env := framework.NewEnv(t)
+	env.DisableClientRateLimiter()
+	outputDir := env.EnsureOutputDir(t, perfOutputDir)
+	recorder := framework.NewRecorder(t, outputDir, "create_only")
+	defer recorder.Flush(t)
+
+	sc := createOnlyScenario()
+	metrics := runPerformanceScenario(t, env, recorder, sc)
+	if metrics.Requests == 0 {
+		t.Fatalf("scenario %s produced no requests", sc.Name)
 	}
 }
