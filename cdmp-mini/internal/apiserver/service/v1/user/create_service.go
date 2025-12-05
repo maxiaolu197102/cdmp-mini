@@ -404,7 +404,7 @@ func (u *UserService) sendUserCreateMessage(ctx context.Context, user *v1.User) 
 	sendCtx, span := trace.StartSpan(ctx, "user-service", "producer_send_create")
 	trace.AddRequestTag(sendCtx, "username", user.Name)
 
-	errKafka := u.Producer.SendUserCreateMessage(sendCtx, user)
+	errKafka := u.Producer.SendCreateMessage(sendCtx, user)
 	u.recordUserCreateStep(ctx, "kafka_send_create_user", "kafka", user.Name, time.Since(sendStart), errKafka)
 
 	status := "success"

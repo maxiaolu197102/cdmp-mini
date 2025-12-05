@@ -16,17 +16,17 @@ import (
 )
 
 type UserController struct {
-	srv           service.ServiceManager           // 服务层实例
-	options       *options.Options                 // 配置选项
-	Producer      producer.MessageProducer         // 消息生产者
-	createHandler *createcontrol.Handler[*v1.User] // 创建处理器
+	srv           service.ServiceManager                     // 服务层实例
+	options       *options.Options                           // 配置选项
+	Producer      producer.MessageProducer[*v1.User, string] // 消息生产者
+	createHandler *createcontrol.Handler[*v1.User]           // 创建处理器
 }
 
 // NewUserController creates a user handler.
 func NewUserController(store interfaces.Factory,
 	redis *storage.RedisCluster,
 	options *options.Options,
-	producer producer.MessageProducer) (*UserController, error) {
+	producer producer.MessageProducer[*v1.User, string]) (*UserController, error) {
 
 	s, err := service.NewService(store,
 		redis, options, producer)

@@ -344,7 +344,7 @@ Redis 长期故障 持续降级依赖数据库 运维恢复 Redis 集群后，�
 链路阶段 Trace/Span 设计 日志埋点关键信息
 HTTP 层（create_control.go） 生成 Root Span（TraceID） TraceID、用户名、请求来源、参数校验结果
 服务层（create_service.go） 子 Span：ensureContactUniqueness、markUserPendingCreate TraceID、用户名、校验结果、标记键名、TTL
-Kafka 发送 子 Span：SendUserCreateMessage TraceID、用户名、Kafka Topic、消息 Offset
+Kafka 发送 子 Span：SendCreateMessage TraceID、用户名、Kafka Topic、消息 Offset
 消费者层（consumer.go） 子 Span：processCreateOperation、createUserInDB TraceID、用户名、标记状态、落库耗时、缓存刷新结果
 日志示例（结构化 JSON）
 json

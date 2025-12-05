@@ -27,7 +27,7 @@ import (
 	"github.com/segmentio/kafka-go"
 )
 
-var _ producer.MessageProducer = (*UserProducer)(nil)
+var _ producer.MessageProducer[*v1.User, string] = (*UserProducer)(nil)
 
 type UserProducer struct {
 	producer       sarama.AsyncProducer
@@ -507,7 +507,7 @@ func (p *UserProducer) handleErrors() {
 	}
 }
 
-// SendUserCreateMessage 将用户创建事件发送至 Kafka
+// SendCreateMessage 将用户创建事件发送至 Kafka
 //
 // 封装用户实体并投递到创建主题，附带链路追踪与限流控制，失败时会按配置走降级写文件。
 //
@@ -522,7 +522,7 @@ func (p *UserProducer) handleErrors() {
 //
 // 示例：
 //
-//	err := producer.SendUserCreateMessage(ctx, user)
+//	err := producer.SendCreateMessage(ctx, user)
 //	if err != nil {
 //	    // 处理发送异常
 //	}
@@ -534,7 +534,7 @@ func (p *UserProducer) handleErrors() {
 // 异常情况：
 //   - 序列化或发送失败返回对应错误码
 //   - 限流被拒绝时返回 ErrRateLimitExceeded
-func (p *UserProducer) SendUserCreateMessage(ctx context.Context, user *v1.User) error {
+func (p *UserProducer) SendCreateMessage(ctx context.Context, user *v1.User) error {
 	if p == nil {
 		return nil
 	}
@@ -652,19 +652,19 @@ func (p *UserProducer) initCreatePipeline() {
 	p.createPipeline = createproducer.NewPipeline[*v1.User](cfg)
 }
 
-func (p *UserProducer) SendUserUpdateMessage(ctx context.Context, user *v1.User) error {
+func (p *UserProducer) SendUpdateMessage(ctx context.Context, user *v1.User) error {
 	trace.AddRequestTag(ctx, "username", user.Name)
-	log.Debugf("[Producer] SendUserUpdateMessage: username=%s", user.Name)
+	log.Debugf("[Producer] SendUpdateMessage: username=%s", user.Name)
 	return p.sendUserMessage(ctx, user, OperationUpdate)
 }
 
-func (p *UserProducer) SendUserDeleteMessage(ctx context.Context, username string) error {
+func (p *UserProducer) SendDeleteMessage(ctx context.Context, username string) error {
 	spanCtx, span := trace.StartSpan(ctx, "kafka-producer", "send_delete")
 	if spanCtx != nil {
 		ctx = spanCtx
 	}
 	trace.AddRequestTag(ctx, "username", username)
-	log.Debugf("[Producer] SendUserDeleteMessage: username=%s", username)
+	log.Debugf("[Producer] SendDeleteMessage: username=%s", username)
 	deleteData := map[string]interface{}{
 		"username":   username,
 		"deleted_at": time.Now().Format(time.RFC3339),

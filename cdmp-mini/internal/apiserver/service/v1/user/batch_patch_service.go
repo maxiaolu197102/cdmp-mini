@@ -144,7 +144,7 @@ func (u *UserService) processUserBatchPatch(ctx context.Context, update *v1.User
 	update.Phone = usercache.NormalizePhone(update.Phone)
 	update.Command = v1.UserUpdateCommandBatch
 
-	if errKafka := u.Producer.SendUserUpdateMessage(processCtx, update); errKafka != nil {
+	if errKafka := u.Producer.SendUpdateMessage(processCtx, update); errKafka != nil {
 		log.Errorf("批量更新消息发送失败: %v", errKafka)
 		err = errors.WithCode(code.ErrKafkaFailed, "kafka生产者消息发送失败")
 		return err

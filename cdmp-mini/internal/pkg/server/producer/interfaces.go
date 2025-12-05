@@ -3,21 +3,22 @@ package producer
 
 import (
 	"context"
-
-	v1 "github.com/maxiaolu1981/cretem/nexuscore/api/apiserver/v1"
 )
 
-// MessageProducer 定义通用的消息生产者接口
-type MessageProducer interface {
-	// SendUserCreateMessage 发送用户创建消息
-	SendUserCreateMessage(ctx context.Context, user *v1.User) error
+// MessageProducer 定义通用的消息生产者接口，支持任意业务实体。
+//
+// T: 业务实体类型，例如 *v1.User。
+// K: 实体删除时使用的主键/标识类型，例如 string。
+type MessageProducer[T any, K any] interface {
+	// SendCreateMessage 发送创建事件。
+	SendCreateMessage(ctx context.Context, entity T) error
 
-	// SendUserUpdateMessage 发送用户更新消息
-	SendUserUpdateMessage(ctx context.Context, user *v1.User) error
+	// SendUpdateMessage 发送更新事件。
+	SendUpdateMessage(ctx context.Context, entity T) error
 
-	// SendUserDeleteMessage 发送用户删除消息
-	SendUserDeleteMessage(ctx context.Context, username string) error
+	// SendDeleteMessage 发送删除事件。
+	SendDeleteMessage(ctx context.Context, key K) error
 
-	// Close 关闭生产者连接
+	// Close 关闭生产者连接。
 	Close() error
 }

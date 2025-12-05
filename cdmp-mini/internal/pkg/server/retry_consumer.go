@@ -43,6 +43,7 @@ type RetryConsumer struct {
 	groupInstanceID    string
 	instanceIndex      int
 	pendingCoordinator *usercache.PendingCoordinator
+	workerCount        int
 }
 
 func NewRetryConsumer(db *gorm.DB, redis *storage.RedisCluster, producer *UserProducer, kafkaOptions *options.KafkaOptions, topic, groupid string, instanceIndex int) *RetryConsumer {
@@ -66,6 +67,7 @@ func NewRetryConsumer(db *gorm.DB, redis *storage.RedisCluster, producer *UserPr
 		poolComponent:   groupid,
 		groupInstanceID: groupInstanceID,
 		instanceIndex:   instanceIndex,
+		workerCount:     1,
 	}
 	if core, err := db.DB(); err != nil {
 		log.Errorf("retry consumer sqlx init failed: %v", err)
@@ -175,6 +177,16 @@ func (rc *RetryConsumer) SetPoolStatsProvider(provider func() []db.PoolStats) {
 	rc.poolReporter.provider = provider
 }
 
+func (rc *RetryConsumer) SetWorkerCount(count int) {
+	if rc == nil {
+		return
+	}
+	if count < 1 {
+		count = 1
+	}
+	rc.workerCount = count
+}
+
 func (rc *RetryConsumer) StartConsuming(ctx context.Context, workerCount int, ready *sync.WaitGroup) {
 	log.Debugf("StartConsuming 开始，worker数量: %d", workerCount)
 	log.Debugf("上下文状态: %v", ctx.Err())
@@ -214,6 +226,20 @@ func (rc *RetryConsumer) StartConsuming(ctx context.Context, workerCount int, re
 	log.Debug("等待所有worker完成...")
 	wg.Wait()
 	log.Debug("所有worker已完成，StartConsuming返回")
+}
+
+func (rc *RetryConsumer) Start(ctx context.Context, ready *sync.WaitGroup) {
+	if rc == nil {
+		if ready != nil {
+			ready.Done()
+		}
+		return
+	}
+	workers := rc.workerCount
+	if workers < 1 {
+		workers = 1
+	}
+	rc.StartConsuming(ctx, workers, ready)
 }
 
 func (rc *RetryConsumer) retryWorker(ctx context.Context, workerID int) {

@@ -1,0 +1,1 @@
+针对genericapiserver.go,在/home/mxl/cdmp-mini/doc/genericapiserver_analysis.md文档中梳理下列文档:1.核心架构总览:包括[核心定位,技术栈清单,核心模块划分(模块名，职责)，关键特性，2.组件交互架构文档：组件依赖关系图，关键交互流程。3.核心流程设计文档：a.服务器初始化流程（NewGenericAPIServer）b. Kafka 消费者设计 c.Redis Cluster 管理流程 4.部署 & 运维架构文档.a.部署依赖 b.关键配置项说明(配置项，作用) c.metric监控指标清单（指标名称[源指标名称、中文名称，作用) d.故障处理预案 5.代码规范 & 扩展架构文档:a.核心接口 / 结构体设计 b.扩展点说明 c.代码规范

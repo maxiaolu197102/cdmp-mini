@@ -30,6 +30,7 @@ import (
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/metrics"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/middleware"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/ratelimiter"
+	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/server/consumer"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/server/producer"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
@@ -43,27 +44,80 @@ import (
 	"gorm.io/gorm"
 )
 
+const (
+	userProducerKey          = "apiserver.users"
+	userOperationConsumerKey = "apiserver.users.operations"
+	userRetryConsumerKey     = "apiserver.users.retry"
+
+	mysqlHeartbeatDefaultInterval = 30 * time.Second
+	mysqlHeartbeatTimeout         = 5 * time.Second
+	kafkaHeartbeatDefaultInterval = 30 * time.Second
+	kafkaBrokerDialTimeout        = 3 * time.Second
+	kafkaMetadataTimeout          = 5 * time.Second
+	fastDebugHeartbeatInterval    = 5 * time.Second
+)
+
+type workerCountSetter interface {
+	SetWorkerCount(int)
+}
+
 type GenericAPIServer struct {
-	insecureServer *http.Server
-	*gin.Engine
-	options           *options.Options
-	redis             *storage.RedisCluster
-	redisCancel       context.CancelFunc
-	initOnce          sync.Once
-	producer          producer.MessageProducer
-	consumerCtx       context.Context
-	consumerCancel    context.CancelFunc
-	audit             *audit.Manager
-	shutdownOnce      sync.Once
-	loginLimit        atomic.Int64
-	userService       *user.UserService
-	loginUpdates      chan *v1.User
-	loginUpdateCtx    context.Context
-	loginUpdateCancel context.CancelFunc
-	loginUpdateWG     sync.WaitGroup
-	credentialCache   *credentialCache
-	loginInFlight     atomic.Int64
-	datastore         *mysql.Datastore
+	insecureServer    *http.Server          // 非TLS HTTP服务实例，默认 nil
+	*gin.Engine                             // Gin 引擎，默认通过 gin.New() 初始化
+	options           *options.Options      // 启动配置，默认由构造函数注入
+	redis             *storage.RedisCluster // Redis 集群客户端，默认 nil
+	redisCancel       context.CancelFunc    // Redis 连接取消函数，默认 nil
+	mysqlDB           *gorm.DB              // MySQL 主库连接，默认 nil
+	mysqlCancel       context.CancelFunc    // MySQL 心跳取消函数，默认 nil
+	initOnce          sync.Once             // 初始化幂等控制器，默认零值
+	producers         *producer.Registry    // Kafka 生产者注册表，默认 nil
+	consumers         *consumer.Registry    // Kafka 消费者注册表，默认 nil
+	consumerCtx       context.Context       // 消费者运行上下文，默认 nil
+	consumerCancel    context.CancelFunc    // 消费者取消函数，默认 nil
+	kafkaCancel       context.CancelFunc    // Kafka 心跳取消函数，默认 nil
+	audit             *audit.Manager        // 审计管理器，默认 nil
+	shutdownOnce      sync.Once             // 关闭流程幂等控制器，默认零值
+	loginLimit        atomic.Int64          // 登录限流计数器，默认 0
+	userService       *user.UserService     // 用户服务实例，默认 nil
+	loginUpdates      chan *v1.User         // 登录状态更新通道，默认 nil
+	loginUpdateCtx    context.Context       // 登录更新上下文，默认 nil
+	loginUpdateCancel context.CancelFunc    // 登录更新取消函数，默认 nil
+	loginUpdateWG     sync.WaitGroup        // 登录更新工作队列，默认零值
+	credentialCache   *credentialCache      // 登录凭证缓存，默认 nil
+	loginInFlight     atomic.Int64          // 并发登录计数器，默认 0
+	datastore         *mysql.Datastore      // MySQL 数据源封装，默认 nil
+}
+
+func (g *GenericAPIServer) registerUserProducer(p producer.MessageProducer[*v1.User, string]) {
+	if g == nil || p == nil {
+		return
+	}
+	if g.producers == nil {
+		g.producers = producer.NewRegistry()
+	}
+	if err := producer.RegisterProducer(g.producers, userProducerKey, p); err != nil {
+		log.Warnf("failed to register user producer: %v", err)
+	}
+}
+
+func (g *GenericAPIServer) userProducer() producer.MessageProducer[*v1.User, string] {
+	if g == nil || g.producers == nil {
+		return nil
+	}
+	prod, ok := producer.GetProducer[*v1.User, string](g.producers, userProducerKey)
+	if !ok {
+		return nil
+	}
+	return prod
+}
+
+func (g *GenericAPIServer) ensureUserProducer() producer.MessageProducer[*v1.User, string] {
+	if prod := g.userProducer(); prod != nil {
+		return prod
+	}
+	noop := &noopProducer{}
+	g.registerUserProducer(noop)
+	return noop
 }
 
 func (g *GenericAPIServer) isDebugMode() bool {
@@ -177,28 +231,20 @@ func (g *GenericAPIServer) performShutdown(ctx context.Context) {
 
 func (g *GenericAPIServer) shutdownKafka(ctx context.Context) error {
 	var combined error
+	if g.kafkaCancel != nil {
+		g.kafkaCancel()
+		g.kafkaCancel = nil
+	}
 	if g.consumerCancel != nil {
 		g.consumerCancel()
 	}
-	instances := g.getConsumerInstances()
-	if instances != nil {
-		for _, consumer := range instances.operationConsumers {
-			if consumer != nil {
-				if err := consumer.Close(); err != nil {
-					combined = stdErrors.Join(combined, err)
-				}
-			}
-		}
-		for _, consumer := range instances.retryConsumers {
-			if consumer != nil {
-				if err := consumer.Close(); err != nil {
-					combined = stdErrors.Join(combined, err)
-				}
-			}
+	if g.consumers != nil {
+		if err := g.consumers.CloseAll(); err != nil {
+			combined = stdErrors.Join(combined, err)
 		}
 	}
-	if g.producer != nil {
-		if err := g.producer.Close(); err != nil {
+	if g.producers != nil {
+		if err := g.producers.CloseAll(); err != nil {
 			combined = stdErrors.Join(combined, err)
 		}
 	}
@@ -215,6 +261,10 @@ func (g *GenericAPIServer) shutdownRedis(ctx context.Context) error {
 }
 
 func (g *GenericAPIServer) shutdownMySQL(ctx context.Context) error {
+	if g.mysqlCancel != nil {
+		g.mysqlCancel()
+		g.mysqlCancel = nil
+	}
 	factory := interfaces.Client()
 	if factory == nil {
 		return nil
@@ -225,16 +275,14 @@ func (g *GenericAPIServer) shutdownMySQL(ctx context.Context) error {
 func NewGenericAPIServer(opts *options.Options) (*GenericAPIServer, error) {
 	// 初始化日志
 	log.Infof("正在初始化GenericAPIServer服务器，环境: %s", opts.ServerRunOptions.Mode)
-	// 打印 Kafka 实例ID
-	if opts.KafkaOptions != nil {
-		log.Infof("[Kafka] 当前实例 InstanceID = %s", opts.KafkaOptions.InstanceID)
-	}
 
 	//创建服务器实例
 	g := &GenericAPIServer{
-		Engine:   gin.New(),
-		options:  opts,
-		initOnce: sync.Once{},
+		Engine:    gin.New(),
+		options:   opts,
+		initOnce:  sync.Once{},
+		producers: producer.NewRegistry(),
+		consumers: consumer.NewRegistry(),
 	}
 	g.loginLimit.Store(int64(opts.ServerRunOptions.LoginRateLimit))
 
@@ -269,6 +317,7 @@ func NewGenericAPIServer(opts *options.Options) (*GenericAPIServer, error) {
 		return nil, err
 	}
 	interfaces.SetClient(storeIns)
+	g.mysqlDB = dbIns
 	log.Infof("mysql服务器初始化成功")
 	g.auditServiceEvent("mysql", "startup", "success", nil)
 
@@ -311,6 +360,7 @@ func NewGenericAPIServer(opts *options.Options) (*GenericAPIServer, error) {
 			}
 		}()
 	}
+	g.startMySQLMonitor(dbIns)
 
 	//初始化redis
 	g.auditServiceEvent("redis", "startup", "start", nil)
@@ -344,12 +394,13 @@ func NewGenericAPIServer(opts *options.Options) (*GenericAPIServer, error) {
 		}
 		log.Warnf("调试快速启动: Kafka 初始化失败，将使用空生产者继续运行（err=%v）", err)
 		g.auditServiceEvent("kafka", "startup", "degraded", err)
-		g.producer = newNoopProducer()
-		g.setConsumerInstances(nil, nil)
+		g.registerUserProducer(newNoopProducer())
+		g.consumers = consumer.NewRegistry()
 	} else {
 		log.Info("kafka服务器启动成功")
 		g.auditServiceEvent("kafka", "startup", "success", nil)
 	}
+	g.startKafkaMonitor()
 
 	g.initUserService(storeIns)
 	g.initCredentialCache()
@@ -360,120 +411,114 @@ func NewGenericAPIServer(opts *options.Options) (*GenericAPIServer, error) {
 	g.consumerCtx = ctx
 	g.consumerCancel = cancel
 
-	// 获取所有消费者实例
-	instances := g.getConsumerInstances()
 	var consumerReady sync.WaitGroup
-	if instances != nil {
+
+	operationConsumers := g.consumers.List(userOperationConsumerKey)
+	if len(operationConsumers) > 0 {
 		workerCount := g.options.KafkaOptions.WorkerCount
 		if workerCount < 1 {
 			workerCount = 1
 		}
+		for _, mc := range operationConsumers {
+			if setter, ok := mc.(workerCountSetter); ok {
+				setter.SetWorkerCount(workerCount)
+			}
+			consumerReady.Add(1)
+			go mc.Start(ctx, &consumerReady)
+		}
+		log.Infof("已启动 %d 个操作通道消费者实例", len(operationConsumers))
+	}
 
-		// 启动所有操作消费者实例（每个实例1个worker或者配置中的数量）
-		for i := 0; i < len(instances.operationConsumers); i++ {
-			if instances.operationConsumers[i] != nil {
-				consumerReady.Add(1)
-				go instances.operationConsumers[i].StartConsuming(ctx, workerCount, &consumerReady)
+	retryConsumers := g.consumers.List(userRetryConsumerKey)
+	if len(retryConsumers) > 0 {
+		partitionCount := 0
+		brokers := g.options.KafkaOptions.Brokers
+		if len(brokers) > 0 {
+			retryCtx, retryCancel := context.WithTimeout(ctx, 5*time.Second)
+			p, err := getTopicPartitionCount(retryCtx, brokers, UserOperationRetryTopic)
+			retryCancel()
+			if err == nil {
+				partitionCount = p
+			} else {
+				if stdErrors.Is(err, context.DeadlineExceeded) {
+					log.Warnf("获取 topic %s 分区信息超时，将稍后重试: %v", UserOperationRetryTopic, err)
+				} else {
+					log.Warnf("获取 topic %s 分区信息失败: %v", UserOperationRetryTopic, err)
+				}
 			}
 		}
 
-		// 单独启动重试消费者的所有实例，保证重试主题能在消费者组中均衡分配分区
-		if len(instances.retryConsumers) > 0 {
-			// 查询 topic 分区数用于指标和并发计算
-			partitionCount := 0
-			brokers := g.options.KafkaOptions.Brokers
-			if len(brokers) > 0 {
-				retryCtx, retryCancel := context.WithTimeout(ctx, 5*time.Second)
-				p, err := getTopicPartitionCount(retryCtx, brokers, UserOperationRetryTopic)
-				retryCancel()
-				if err == nil {
-					partitionCount = p
-				} else {
-					if stdErrors.Is(err, context.DeadlineExceeded) {
-						log.Warnf("获取 topic %s 分区信息超时，将稍后重试: %v", UserOperationRetryTopic, err)
-					} else {
-						log.Warnf("获取 topic %s 分区信息失败: %v", UserOperationRetryTopic, err)
-					}
-				}
+		retryGroupId := g.consumerGroupID("retry")
+		metrics.ConsumerTopicPartitions.WithLabelValues(UserOperationRetryTopic).Set(float64(partitionCount))
+		metrics.ConsumerGroupInstances.WithLabelValues(retryGroupId).Set(float64(len(retryConsumers)))
+		if len(retryConsumers) == 0 {
+			metrics.ConsumerPartitionsNoOwner.WithLabelValues(UserOperationRetryTopic, retryGroupId).Set(float64(partitionCount))
+		} else {
+			metrics.ConsumerPartitionsNoOwner.WithLabelValues(UserOperationRetryTopic, retryGroupId).Set(0)
+		}
+
+		workersPerInstance := 1
+		if partitionCount > 0 {
+			workersPerInstance = (partitionCount + len(retryConsumers) - 1) / len(retryConsumers)
+			if workersPerInstance > RetryConsumerWorkers {
+				workersPerInstance = RetryConsumerWorkers
 			}
-
-			// 更新 prometheus 指标
-			retryGroupId := g.consumerGroupID("retry")
-			metrics.ConsumerTopicPartitions.WithLabelValues(UserOperationRetryTopic).Set(float64(partitionCount))
-			metrics.ConsumerGroupInstances.WithLabelValues(retryGroupId).Set(float64(len(instances.retryConsumers)))
-			if len(instances.retryConsumers) == 0 {
-				metrics.ConsumerPartitionsNoOwner.WithLabelValues(UserOperationRetryTopic, retryGroupId).Set(float64(partitionCount))
-			} else {
-				// 简单启发式：当有实例存在时，认为无主分区为0（更精确的检测需要 Kafka admin/group 查询）
-				metrics.ConsumerPartitionsNoOwner.WithLabelValues(UserOperationRetryTopic, retryGroupId).Set(0)
+			if workersPerInstance < 1 {
+				workersPerInstance = 1
 			}
+		}
 
-			// 根据分区数与实例数计算每个实例需要的 worker 数（上限为 RetryConsumerWorkers）
-			workersPerInstance := 1
-			if partitionCount > 0 && len(instances.retryConsumers) > 0 {
-				workersPerInstance = (partitionCount + len(instances.retryConsumers) - 1) / len(instances.retryConsumers)
-				if workersPerInstance > RetryConsumerWorkers {
-					workersPerInstance = RetryConsumerWorkers
-				}
-				if workersPerInstance < 1 {
-					workersPerInstance = 1
-				}
+		for _, mc := range retryConsumers {
+			if setter, ok := mc.(workerCountSetter); ok {
+				setter.SetWorkerCount(workersPerInstance)
 			}
+			consumerReady.Add(1)
+			go mc.Start(ctx, &consumerReady)
+		}
 
-			for i := 0; i < len(instances.retryConsumers); i++ {
-				if instances.retryConsumers[i] != nil {
-					consumerReady.Add(1)
-					go instances.retryConsumers[i].StartConsuming(ctx, workersPerInstance, &consumerReady)
-				}
-			}
+		if g.options.KafkaOptions.EnableMetricsRefresh {
+			go func() {
+				ticker := time.NewTicker(g.options.KafkaOptions.MetricsRefreshInterval)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-ticker.C:
+						if len(brokers) == 0 {
+							continue
+						}
 
-			// 定期更新 topic/实例/无主分区指标（可配置）
-			if g.options.KafkaOptions.EnableMetricsRefresh {
-				go func() {
-					ticker := time.NewTicker(g.options.KafkaOptions.MetricsRefreshInterval)
-					defer ticker.Stop()
-					for {
-						select {
-						case <-ctx.Done():
-							return
-						case <-ticker.C:
-							if len(brokers) == 0 {
-								continue
-							}
+						isDebug := g.options.ServerRunOptions.Mode == "debug"
 
-							// 更丰富的日志在 Debug 模式下打印
-							isDebug := g.options.ServerRunOptions.Mode == "debug"
-
-							if p, err := getTopicPartitionCount(ctx, brokers, UserOperationRetryTopic); err == nil {
-								metrics.ConsumerTopicPartitions.WithLabelValues(UserOperationRetryTopic).Set(float64(p))
-								metrics.ConsumerGroupInstances.WithLabelValues(retryGroupId).Set(float64(len(instances.retryConsumers)))
-								if len(instances.retryConsumers) == 0 {
-									metrics.ConsumerPartitionsNoOwner.WithLabelValues(UserOperationRetryTopic, retryGroupId).Set(float64(p))
-									if isDebug {
-									}
-								} else {
-									if noOwner, err := getPartitionsWithoutOwner(ctx, brokers, retryGroupId, UserOperationRetryTopic); err == nil {
-										metrics.ConsumerPartitionsNoOwner.WithLabelValues(UserOperationRetryTopic, retryGroupId).Set(float64(noOwner))
-										if isDebug {
-
-										}
-									} else {
-										// 回退到启发式
-										metrics.ConsumerPartitionsNoOwner.WithLabelValues(UserOperationRetryTopic, retryGroupId).Set(0)
-										log.Warnf("周期更新: 无法计算无主分区，使用回退值 0: %v", err)
-									}
+						if p, err := getTopicPartitionCount(ctx, brokers, UserOperationRetryTopic); err == nil {
+							metrics.ConsumerTopicPartitions.WithLabelValues(UserOperationRetryTopic).Set(float64(p))
+							retryCount := len(g.consumers.List(userRetryConsumerKey))
+							metrics.ConsumerGroupInstances.WithLabelValues(retryGroupId).Set(float64(retryCount))
+							if retryCount == 0 {
+								metrics.ConsumerPartitionsNoOwner.WithLabelValues(UserOperationRetryTopic, retryGroupId).Set(float64(p))
+								if isDebug {
 								}
 							} else {
-								if g.options.ServerRunOptions.Mode == "debug" {
+								if noOwner, err := getPartitionsWithoutOwner(ctx, brokers, retryGroupId, UserOperationRetryTopic); err == nil {
+									metrics.ConsumerPartitionsNoOwner.WithLabelValues(UserOperationRetryTopic, retryGroupId).Set(float64(noOwner))
+									if isDebug {
 
+									}
+								} else {
+									metrics.ConsumerPartitionsNoOwner.WithLabelValues(UserOperationRetryTopic, retryGroupId).Set(0)
+									log.Warnf("周期更新: 无法计算无主分区，使用回退值 0: %v", err)
 								}
+							}
+						} else {
+							if g.options.ServerRunOptions.Mode == "debug" {
+
 							}
 						}
 					}
-				}()
-			}
+				}
+			}()
 		}
-		log.Infof("已启动 %d 个操作通道消费者实例", len(instances.operationConsumers))
 	}
 
 	consumerReady.Wait()
@@ -794,11 +839,26 @@ func (g *GenericAPIServer) initKafkaComponents(db *gorm.DB) error {
 			retryConsumers[i].SetPoolStatsProvider(g.datastore.PoolStats)
 		}
 	}
-	// 3. 赋值到服务器实例
-	g.producer = userProducer
+	// 3. 注册用户消息生产者，便于后续扩展其他业务对象
+	g.registerUserProducer(userProducer)
 
-	// 5. 存储所有消费者实例（新增字段）
-	g.setConsumerInstances(operationConsumers, retryConsumers)
+	// 注册消费者实例，供统一生命周期管理
+	for _, c := range operationConsumers {
+		if c == nil {
+			continue
+		}
+		if err := g.consumers.Register(userOperationConsumerKey, c); err != nil {
+			return fmt.Errorf("register operation consumer: %w", err)
+		}
+	}
+	for _, c := range retryConsumers {
+		if c == nil {
+			continue
+		}
+		if err := g.consumers.Register(userRetryConsumerKey, c); err != nil {
+			return fmt.Errorf("register retry consumer: %w", err)
+		}
+	}
 
 	return nil
 }
@@ -807,7 +867,8 @@ func (g *GenericAPIServer) initUserService(factory interfaces.Factory) {
 	if g == nil || factory == nil {
 		return
 	}
-	g.userService = user.NewUserService(factory, g.redis, g.options, g.producer, g.audit)
+	userProducer := g.ensureUserProducer()
+	g.userService = user.NewUserService(factory, g.redis, g.options, userProducer, g.audit)
 }
 
 func (g *GenericAPIServer) initCredentialCache() {
@@ -947,6 +1008,328 @@ func (g *GenericAPIServer) monitorRedisConnection(ctx context.Context) {
 
 		}
 	}
+}
+
+func (g *GenericAPIServer) startMySQLMonitor(db *gorm.DB) {
+	if g == nil || db == nil {
+		return
+	}
+	if g.mysqlCancel != nil {
+		g.mysqlCancel()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	g.mysqlCancel = cancel
+	go g.monitorMySQLConnection(ctx, db)
+}
+
+func (g *GenericAPIServer) mysqlHeartbeatInterval() time.Duration {
+	if g == nil || g.options == nil || g.options.MysqlOptions == nil {
+		return mysqlHeartbeatDefaultInterval
+	}
+	interval := g.options.MysqlOptions.MonitorInterval
+	if interval <= 0 {
+		interval = g.options.MysqlOptions.HealthCheckInterval
+	}
+	if interval <= 0 {
+		interval = mysqlHeartbeatDefaultInterval
+	}
+	if g.fastDebugStartupEnabled() && interval > fastDebugHeartbeatInterval {
+		return fastDebugHeartbeatInterval
+	}
+	return interval
+}
+
+func (g *GenericAPIServer) mysqlReadDB() *gorm.DB {
+	if g == nil {
+		return nil
+	}
+	if g.datastore != nil {
+		if read := g.datastore.ReadDB(); read != nil {
+			return read
+		}
+	}
+	return g.mysqlDB
+}
+
+func (g *GenericAPIServer) monitorMySQLConnection(ctx context.Context, primary *gorm.DB) {
+	interval := g.mysqlHeartbeatInterval()
+	if interval <= 0 {
+		interval = mysqlHeartbeatDefaultInterval
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	lastPrimaryHealthy := false
+	lastReadHealthy := false
+	firstRun := true
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Warn("MySQL心跳监控退出")
+			return
+		case <-ticker.C:
+			primaryLatency, primaryErr := g.mysqlHeartbeatProbe(ctx, primary)
+			primaryHealthy := primaryErr == nil
+			metrics.DatabaseHeartbeatLatency.WithLabelValues("mysql", "primary").Observe(primaryLatency.Seconds())
+			metrics.DatabaseHeartbeatStatus.WithLabelValues("mysql", "primary").Set(boolToFloat(primaryHealthy))
+			if firstRun || primaryHealthy != lastPrimaryHealthy {
+				if primaryHealthy {
+					log.Infof("✅ MySQL主库心跳正常，耗时 %.3f 秒", primaryLatency.Seconds())
+				} else {
+					log.Errorf("🚨 MySQL主库心跳失败: %v", primaryErr)
+				}
+			}
+			lastPrimaryHealthy = primaryHealthy
+
+			readDB := g.mysqlReadDB()
+			var readLatency time.Duration
+			var readErr error
+			readHealthy := false
+			if readDB != nil {
+				readLatency, readErr = g.mysqlHeartbeatProbe(ctx, readDB)
+				readHealthy = readErr == nil
+				metrics.DatabaseHeartbeatLatency.WithLabelValues("mysql", "read").Observe(readLatency.Seconds())
+				metrics.DatabaseHeartbeatStatus.WithLabelValues("mysql", "read").Set(boolToFloat(readHealthy))
+				if firstRun || readHealthy != lastReadHealthy {
+					if readHealthy {
+						log.Infof("✅ MySQL读库心跳正常，耗时 %.3f 秒", readLatency.Seconds())
+					} else {
+						log.Warnf("⚠️ MySQL读库心跳失败: %v", readErr)
+					}
+				}
+			} else {
+				metrics.DatabaseHeartbeatStatus.WithLabelValues("mysql", "read").Set(0)
+				if firstRun || lastReadHealthy {
+					log.Warn("⚠️ MySQL读库心跳跳过：未找到可用的读连接")
+				}
+			}
+			lastReadHealthy = readHealthy
+
+			if g.datastore != nil {
+				status := g.datastore.ClusterStatus()
+				metrics.DatabaseReplicaStatus.WithLabelValues("mysql", "replica_total").Set(float64(status.ReplicaCount))
+				metrics.DatabaseReplicaStatus.WithLabelValues("mysql", "replica_healthy").Set(float64(status.HealthyReplicas))
+				if firstRun {
+					log.Infof("MySQL集群状态：主库健康=%v，副本总数=%d，健康副本=%d", status.PrimaryHealthy, status.ReplicaCount, status.HealthyReplicas)
+				}
+			}
+
+			firstRun = false
+		}
+	}
+}
+
+func (g *GenericAPIServer) mysqlHeartbeatProbe(ctx context.Context, db *gorm.DB) (time.Duration, error) {
+	if db == nil {
+		return 0, fmt.Errorf("nil database handle")
+	}
+	pingCtx, cancel := context.WithTimeout(ctx, mysqlHeartbeatTimeout)
+	defer cancel()
+	start := time.Now()
+	err := db.WithContext(pingCtx).Exec("SELECT 1").Error
+	return time.Since(start), err
+}
+
+func (g *GenericAPIServer) startKafkaMonitor() {
+	if g == nil || g.options == nil || g.options.KafkaOptions == nil {
+		return
+	}
+	if len(g.options.KafkaOptions.Brokers) == 0 {
+		return
+	}
+	if g.kafkaCancel != nil {
+		g.kafkaCancel()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	g.kafkaCancel = cancel
+	go g.monitorKafkaCluster(ctx)
+}
+
+func (g *GenericAPIServer) kafkaHeartbeatInterval() time.Duration {
+	if g == nil || g.options == nil || g.options.KafkaOptions == nil {
+		return kafkaHeartbeatDefaultInterval
+	}
+	interval := g.options.KafkaOptions.MetricsRefreshInterval
+	if interval <= 0 {
+		interval = g.options.KafkaOptions.LagCheckInterval
+	}
+	if interval <= 0 {
+		interval = kafkaHeartbeatDefaultInterval
+	}
+	if g.fastDebugStartupEnabled() && interval > fastDebugHeartbeatInterval {
+		return fastDebugHeartbeatInterval
+	}
+	return interval
+}
+
+func (g *GenericAPIServer) kafkaClusterName() string {
+	if g == nil || g.options == nil || g.options.KafkaOptions == nil {
+		return "kafka"
+	}
+	if group := strings.TrimSpace(g.options.KafkaOptions.ConsumerGroup); group != "" {
+		return group
+	}
+	if len(g.options.KafkaOptions.Brokers) > 0 {
+		return g.options.KafkaOptions.Brokers[0]
+	}
+	return "kafka"
+}
+
+func (g *GenericAPIServer) kafkaHeartbeatTopics() []string {
+	if g == nil || g.options == nil || g.options.KafkaOptions == nil {
+		return nil
+	}
+	topics := make(map[string]struct{})
+	if mainTopic := strings.TrimSpace(g.options.KafkaOptions.Topic); mainTopic != "" {
+		topics[mainTopic] = struct{}{}
+	}
+	for _, t := range []string{UserOperationTopic, UserOperationRetryTopic, UserOperationCompTopic, UserDeadLetterTopic} {
+		if strings.TrimSpace(t) != "" {
+			topics[t] = struct{}{}
+		}
+	}
+	result := make([]string, 0, len(topics))
+	for topic := range topics {
+		result = append(result, topic)
+	}
+	return result
+}
+
+func (g *GenericAPIServer) monitorKafkaCluster(ctx context.Context) {
+	interval := g.kafkaHeartbeatInterval()
+	if interval <= 0 {
+		interval = kafkaHeartbeatDefaultInterval
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	cluster := g.kafkaClusterName()
+	brokerState := make(map[string]bool)
+	lastClusterHealthy := false
+	firstRun := true
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Warn("Kafka心跳监控退出")
+			return
+		case <-ticker.C:
+			g.probeKafkaBrokers(ctx, cluster, brokerState, firstRun)
+			clusterHealthy := g.probeKafkaMetadata(ctx, cluster)
+			if firstRun || clusterHealthy != lastClusterHealthy {
+				if clusterHealthy {
+					log.Infof("✅ Kafka集群[%s]元数据检查通过", cluster)
+				} else {
+					log.Errorf("🚨 Kafka集群[%s]元数据检查失败", cluster)
+				}
+			}
+			lastClusterHealthy = clusterHealthy
+			firstRun = false
+		}
+	}
+}
+
+func (g *GenericAPIServer) probeKafkaBrokers(ctx context.Context, cluster string, state map[string]bool, firstRun bool) {
+	if g == nil || g.options == nil || g.options.KafkaOptions == nil {
+		return
+	}
+	for _, broker := range g.options.KafkaOptions.Brokers {
+		dialCtx, cancel := context.WithTimeout(ctx, kafkaBrokerDialTimeout)
+		start := time.Now()
+		conn, err := (&net.Dialer{Timeout: kafkaBrokerDialTimeout}).DialContext(dialCtx, "tcp", broker)
+		cancel()
+		latency := time.Since(start)
+		metrics.KafkaBrokerLatency.WithLabelValues(cluster, broker).Observe(latency.Seconds())
+		healthy := err == nil
+		metrics.KafkaBrokerHealth.WithLabelValues(cluster, broker).Set(boolToFloat(healthy))
+		if !healthy {
+			metrics.KafkaHeartbeatFailures.WithLabelValues(cluster, "broker_dial").Inc()
+		}
+		if prev, ok := state[broker]; !ok || prev != healthy || firstRun {
+			if healthy {
+				log.Infof("✅ Kafka Broker[%s] 心跳正常，耗时 %.3f 秒", broker, latency.Seconds())
+			} else {
+				log.Errorf("🚨 Kafka Broker[%s] 心跳失败: %v", broker, err)
+			}
+		}
+		state[broker] = healthy
+		if conn != nil {
+			_ = conn.Close()
+		}
+	}
+}
+
+func (g *GenericAPIServer) probeKafkaMetadata(ctx context.Context, cluster string) bool {
+	if g == nil || g.options == nil || g.options.KafkaOptions == nil {
+		return false
+	}
+	if len(g.options.KafkaOptions.Brokers) == 0 {
+		return false
+	}
+	topicList := g.kafkaHeartbeatTopics()
+	topicLookup := make(map[string]struct{}, len(topicList))
+	for _, t := range topicList {
+		topicLookup[t] = struct{}{}
+	}
+	metaCtx, cancel := context.WithTimeout(ctx, kafkaMetadataTimeout)
+	defer cancel()
+	client := &kafka.Client{Addr: kafka.TCP(g.options.KafkaOptions.Brokers...)}
+	request := &kafka.MetadataRequest{}
+	if len(topicList) > 0 {
+		request.Topics = topicList
+	}
+	metadata, err := client.Metadata(metaCtx, request)
+	if err != nil {
+		metrics.KafkaClusterHealth.WithLabelValues(cluster).Set(0)
+		metrics.KafkaClusterBrokers.WithLabelValues(cluster).Set(0)
+		metrics.KafkaHeartbeatFailures.WithLabelValues(cluster, "metadata").Inc()
+		for _, topic := range topicList {
+			metrics.KafkaTopicStatus.WithLabelValues(cluster, topic).Set(0)
+			metrics.ConsumerTopicPartitions.WithLabelValues(topic).Set(0)
+		}
+		return false
+	}
+
+	metrics.KafkaClusterHealth.WithLabelValues(cluster).Set(1)
+	metrics.KafkaClusterBrokers.WithLabelValues(cluster).Set(float64(len(metadata.Brokers)))
+
+	topicFound := make(map[string]bool, len(topicLookup))
+	for _, topic := range metadata.Topics {
+		if len(topicLookup) > 0 {
+			if _, ok := topicLookup[topic.Name]; !ok {
+				continue
+			}
+		}
+		topicFound[topic.Name] = topic.Error == nil
+		if topic.Error != nil {
+			metrics.KafkaTopicStatus.WithLabelValues(cluster, topic.Name).Set(0)
+			metrics.ConsumerTopicPartitions.WithLabelValues(topic.Name).Set(0)
+			metrics.KafkaHeartbeatFailures.WithLabelValues(cluster, "topic_error").Inc()
+			log.Warnf("⚠️ Kafka主题 %s 元数据错误: %v", topic.Name, topic.Error)
+			continue
+		}
+		metrics.KafkaTopicStatus.WithLabelValues(cluster, topic.Name).Set(1)
+		metrics.ConsumerTopicPartitions.WithLabelValues(topic.Name).Set(float64(len(topic.Partitions)))
+	}
+
+	for topic := range topicLookup {
+		if ok := topicFound[topic]; !ok {
+			metrics.KafkaTopicStatus.WithLabelValues(cluster, topic).Set(0)
+			metrics.ConsumerTopicPartitions.WithLabelValues(topic).Set(0)
+			metrics.KafkaHeartbeatFailures.WithLabelValues(cluster, "topic_missing").Inc()
+			log.Warnf("⚠️ Kafka主题 %s 未在元数据中找到", topic)
+		}
+	}
+
+	return true
+}
+
+func boolToFloat(b bool) float64 {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func (g *GenericAPIServer) ping(ctx context.Context, address string) error {
@@ -1284,12 +1667,14 @@ func (g *GenericAPIServer) pingRedis(ctx context.Context, client redis.Universal
 // 打印Kafka配置信息
 func (g *GenericAPIServer) printKafkaConfigInfo() {
 	kafkaOpts := g.options.KafkaOptions
-	instances := g.getConsumerInstances()
-	operationCount := 1
+	operationCount := 0
 	retryCount := 0
-	if instances != nil {
-		operationCount = len(instances.operationConsumers)
-		retryCount = len(instances.retryConsumers)
+	if g.consumers != nil {
+		operationCount = len(g.consumers.List(userOperationConsumerKey))
+		retryCount = len(g.consumers.List(userRetryConsumerKey))
+	}
+	if operationCount == 0 {
+		operationCount = 1
 	}
 
 	log.Debugf("📊 Kafka配置信息:")
@@ -1306,23 +1691,6 @@ func (g *GenericAPIServer) printKafkaConfigInfo() {
 	log.Debugf("    - 批量超时: %v", kafkaOpts.BatchTimeout)
 	log.Debugf("    - Flush Frequency: %v", kafkaOpts.FlushFrequency)
 	log.Debugf("    - Flush Max Messages: %d", kafkaOpts.FlushMaxMessages)
-}
-
-// 新增：存储所有消费者实例
-type consumerInstances struct {
-	operationConsumers []*UserConsumer
-	retryConsumers     []*RetryConsumer
-}
-
-var consumerInstancesStore = &consumerInstances{}
-
-func (g *GenericAPIServer) setConsumerInstances(operations []*UserConsumer, retry []*RetryConsumer) {
-	consumerInstancesStore.operationConsumers = operations
-	consumerInstancesStore.retryConsumers = retry
-}
-
-func (g *GenericAPIServer) getConsumerInstances() *consumerInstances {
-	return consumerInstancesStore
 }
 
 func waitForMySQLReady(db *gorm.DB, timeout time.Duration) error {

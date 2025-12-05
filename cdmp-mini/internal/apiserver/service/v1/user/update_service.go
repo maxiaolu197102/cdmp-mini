@@ -174,7 +174,7 @@ func (u *UserService) processUserUpdate(ctx context.Context, user *v1.User) (err
 
 	sendCtx, sendSpan := trace.StartSpan(updateCtx, "user-service", "producer_send_update")
 	trace.AddRequestTag(sendCtx, "username", user.Name)
-	errKafka := u.Producer.SendUserUpdateMessage(sendCtx, user)
+	errKafka := u.Producer.SendUpdateMessage(sendCtx, user)
 	sendStatus := "success"
 	sendCode := strconv.Itoa(code.ErrSuccess)
 	if errKafka != nil {

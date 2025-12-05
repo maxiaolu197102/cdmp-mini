@@ -9,19 +9,19 @@ import (
 
 type noopProducer struct{}
 
-func newNoopProducer() producer.MessageProducer {
+func newNoopProducer() producer.MessageProducer[*v1.User, string] {
 	return &noopProducer{}
 }
 
-func (n *noopProducer) SendUserCreateMessage(ctx context.Context, user *v1.User) error {
+func (n *noopProducer) SendCreateMessage(ctx context.Context, user *v1.User) error {
 	return nil
 }
 
-func (n *noopProducer) SendUserUpdateMessage(ctx context.Context, user *v1.User) error {
+func (n *noopProducer) SendUpdateMessage(ctx context.Context, user *v1.User) error {
 	return nil
 }
 
-func (n *noopProducer) SendUserDeleteMessage(ctx context.Context, username string) error {
+func (n *noopProducer) SendDeleteMessage(ctx context.Context, username string) error {
 	return nil
 }
 

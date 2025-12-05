@@ -7,6 +7,7 @@
 ## 1. 架构图（Architecture Diagram）
 
 ```mermaid
+%%{init: {'themeVariables': {'lineColor': '#1E63B5', 'flowchartLinkColor': '#1E63B5', 'lineWidth': 3}}}%%
 graph LR
     subgraph Client Layer
         UI[前端/调用方]
@@ -62,6 +63,8 @@ graph LR
     Config --> PendingSvc
     Config --> RateLimiter
     Config --> Producer
+
+    linkStyle default stroke:#1E63B5,stroke-width:3px
 ```
 
 - **客户端层**：外部请求经统一 SDK 或网关进入。
@@ -74,6 +77,7 @@ graph LR
 ## 2. 主流程图（Flow Chart）
 
 ```mermaid
+%%{init: {'themeVariables': {'lineColor': '#1E63B5', 'flowchartLinkColor': '#1E63B5', 'lineWidth': 3}}}%%
 flowchart TD
     Start([开始])
     Mode["decideOperationMode 选择执行模式"]
@@ -94,7 +98,7 @@ flowchart TD
     AcquireOk{"占位成功?"}
     LeaseError["返回占位/背压错误"]
     AfterPending["afterUserPending 标记 trace"]
-    Produce["sendUserCreateMessage 发布 Kafka"]
+    Produce["SendCreateMessage 发布 Kafka"]
     Broker["Kafka 集群"]
     Consume["用户创建 Consumer"]
     ConsumerPersist["消费侧持久化/回写"]
@@ -102,6 +106,8 @@ flowchart TD
     Retry["Kafka 重试/补偿"]
     Respond([返回成功])
     Fail([返回错误])
+
+    linkStyle default stroke:#1E63B5,stroke-width:3px
 
     Start --> Mode --> ModeSync
     ModeSync -- 否 --> Queue --> Respond
@@ -121,7 +127,6 @@ flowchart TD
     ConsumerFail -- 是 --> Retry --> Consume
     ConsumerFail -- 否 --> ConsumerPersist
 
-    linkStyle default stroke:#5B8FF9,stroke-width:2px
     classDef decision fill:#fff3cd,stroke:#f0ad4e,stroke-width:1px
     class ModeSync,Existing,AcquireErr,Degradeable,SkipDegrade,AcquireOk,ConsumerFail decision
 ```
@@ -132,11 +137,73 @@ flowchart TD
 - `prepareUserForCreate` 完成密码加密及联系方式缓存预热，为唯一性检查提前构建热路径。
 - `ensureUserUnique` 与 `PendingCoordinator` 串联：先进行全量预检与限流，再按租约背压策略决定是否进入写入阶段，过程中可能触发降级。
 - `markUserPendingForCreate` 在 Redis 正常时写入租约；当 `shouldDegradeForError` 或全局 Redis 降级触发时，直接走降级分支并记录 `PendingLeaseEvents` 指标。
-- `sendUserCreateMessage` 将用户实体推送至 Kafka，消费者异步完成持久化与下游派发，是创建 API 得以快速返回的关键。*** End Patch
+- `SendCreateMessage` 将用户实体推送至 Kafka，消费者异步完成持久化与下游派发，是创建 API 得以快速返回的关键。
 
 ---
 
-## 2.1 Create Service Pipeline
+### decideOperationMode 决策流程
+
+`decideOperationMode` 负责在 `UserService.Create/Update/Delete` 入口决定当前请求走同步管道还是进入异步队列，核心基于控制器快照、操作类型、名单规则与灰度百分比做出选择：
+
+- **控制器缺失默认排队**：未初始化或运行时故障时直接退回 `OperationModeQueue`，保障服务可用。
+- **操作类型白名单**：`QueueKinds` 定义允许进入异步管道的操作，未命中的操作强制走同步。
+- **用户名单优先级**：阻止名单 (`BlockUsers`) 优先级最高，命中后立即同步；允许名单 (`AllowUsers`) 命中后直接队列。
+- **Mode 决策顺序**：`sync → queue → rollout`，逐项匹配；灰度模式下再结合 `RolloutPercent`、`StickyHeader` 和 subject 进行一致性采样。
+
+```mermaid
+%%{init: {'themeVariables': {'lineColor': '#1E63B5', 'flowchartLinkColor': '#1E63B5', 'lineWidth': 3}}}%%
+flowchart TD
+    Start([开始])
+    HasCtrl{"operationModeController 存在?"}
+    Fallback([返回 Queue])
+    LoadState["读取配置快照"]
+    KindAllowed{"当前操作在 queueKinds?"}
+    SubjectBlocked{"subject 命中 BlockList?"}
+    SubjectAllowed{"subject 命中 AllowList?"}
+    ModeDecision{"配置 Mode"}
+    RolloutPercent{"RolloutPercent 范围判定"}
+    ResolveKey["StickyHeader → subject → 序号"]
+    Sample{"withinRolloutSample?"}
+    ReturnQueue([返回 Queue])
+    ReturnSync([返回 Sync])
+
+    linkStyle default stroke:#1E63B5,stroke-width:3px
+
+    Start --> HasCtrl
+    HasCtrl -- 否 --> Fallback
+    HasCtrl -- 是 --> LoadState --> KindAllowed
+    KindAllowed -- 否 --> ReturnSync
+    KindAllowed -- 是 --> SubjectBlocked
+    SubjectBlocked -- 是 --> ReturnSync
+    SubjectBlocked -- 否 --> SubjectAllowed
+    SubjectAllowed -- 是 --> ReturnQueue
+    SubjectAllowed -- 否 --> ModeDecision
+    ModeDecision -- sync --> ReturnSync
+    ModeDecision -- queue --> ReturnQueue
+    ModeDecision -- rollout --> RolloutPercent
+    RolloutPercent -- <=0 --> ReturnSync
+    RolloutPercent -- >=100 --> ReturnQueue
+    RolloutPercent -- 0-100 --> ResolveKey --> Sample
+    Sample -- 是 --> ReturnQueue
+    Sample -- 否 --> ReturnSync
+```
+
+决策完成后，`decideOperationMode` 会返回枚举值驱动后续逻辑：同步模式进入 `createPipeline`，异步模式写入 `operationPipeline`，灰度模式按照采样决定。
+
+| 判定阶段 | 条件 | 结果 |
+| --- | --- | --- |
+| 控制器初始化 | `ensureOperationModeController` 返回 `nil` | 默认 `queue`，避免阻塞创建能力 |
+| 操作类型 | 不在 `QueueKinds` 中 | 强制同步，保障特殊操作实时性 |
+| 用户名单 | 命中 `BlockUsers` / `AllowUsers` | Block → Sync；Allow → Queue |
+| Mode=Sync | 固定同步 | 返回 `sync` |
+| Mode=Queue | 固定排队 | 返回 `queue` |
+| Mode=Rollout | `RolloutPercent <=0` | 降级同步 |
+| Mode=Rollout | `RolloutPercent >=100` | 全量排队 |
+| Mode=Rollout | 0~100 之间 | 使用 Sticky Header/subject/自增序号生成 key，`withinRolloutSample` 决定 `queue` 或 `sync` |
+
+---
+
+## 2.2 Create Service Pipeline
 
 在进入流水线之前，`UserService.Create` 会通过 `decideOperationMode` 判定执行模式：若为 `OperationModeQueue` 则直接入队异步执行；仅当判定为 `OperationModeSync` 时才会落入同步 `createpipeline.Pipeline`。`UserService.Create` 通过 `createpipeline.Pipeline` 串联一组幂等钩子，每个阶段都记录 trace / metrics，并在失败时返回携带业务码的错误。流水线的关键步骤如下：
 
@@ -150,7 +217,7 @@ flowchart TD
 | 6 | `handleUserExisting` | 若已存在冲突实体，按照业务码返回 `ErrUserAlreadyExist`。 |
 | 7 | `markUserPendingForCreate` | 与 `PendingCoordinator` 互动写入租约；若 Redis 降级激活或 `shouldDegradeForError` 判定可降级错误，则跳过 SetNX，调用 `markCreateDegraded` 并上报 `PendingLeaseEvents`（`acquire_skip_degraded` / `acquire_degraded`）。 |
 | 8 | `afterUserPending` | 为 trace 增加租约相关标签，便于串联后续链路。 |
-| 9 | `sendUserCreateMessage` | 发送 Kafka 事件，失败时打点并返回 `ErrKafkaFailed`。 |
+| 9 | `SendCreateMessage` | 发送 Kafka 事件，失败时打点并返回 `ErrKafkaFailed`。 |
 
 ### EnsureUnique 阶段细节
 
@@ -173,6 +240,7 @@ flowchart TD
 #### EnsureUnique 主流程图
 
 ```mermaid
+%%{init: {'themeVariables': {'lineColor': '#1E63B5', 'flowchartLinkColor': '#1E63B5', 'lineWidth': 3}}}%%
 flowchart TD
     Start([开始])
     AcquireLimiter["preflightLimiter Acquire"]
@@ -197,7 +265,7 @@ flowchart TD
     PreflightErr -- 否 --> BuildConflicts
     BuildConflicts --> EmailCheck --> PhoneCheck --> Done
 
-    linkStyle default stroke:#5B8FF9,stroke-width:2px
+    linkStyle default stroke:#1E63B5,stroke-width:3px
     classDef decision fill:#fff3cd,stroke:#f0ad4e,stroke-width:1px
     class LimiterFail,ShouldPreflight,PreflightErr decision
 ```
@@ -205,6 +273,7 @@ flowchart TD
 #### EnsureUnique 数据流程图
 
 ```mermaid
+%%{init: {'themeVariables': {'lineColor': '#1E63B5', 'flowchartLinkColor': '#1E63B5', 'lineWidth': 3}}}%%
 graph LR
     Ctx[请求上下文] --> Limiter[preflightLimiter]
     Limiter --> WarmupStep[ensureContactCacheReady]
@@ -235,11 +304,14 @@ graph LR
     DegradeFlag --> LocalCache
     DegradeFlag --> Placeholder[Redis 占位符]
     Conflicts --> Result[PreflightResult+UsernameChecked]
+
+    linkStyle default stroke:#1E63B5,stroke-width:3px
 ```
 
 #### EnsureUnique 状态机
 
 ```mermaid
+%%{init: {'themeVariables': {'lineColor': '#1E63B5', 'lineWidth': 3}}}%%
 stateDiagram-v2
     [*] --> Normal
     Normal --> PreflightDegraded: 预检超时/失败且可降级
@@ -256,14 +328,14 @@ stateDiagram-v2
 
 ### Kafka 生产与消费链路
 
-- `sendUserCreateMessage` 通过 `producer.MessageProducer` 将创建事件转换为标准化的 Kafka 消息。调用会记录 trace、metrics，并在失败时立即返回 `ErrKafkaFailed` 以便调用方执行幂等重试。
+- `SendCreateMessage` 通过 `producer.MessageProducer` 将创建事件转换为标准化的 Kafka 消息。调用会记录 trace、metrics，并在失败时立即返回 `ErrKafkaFailed` 以便调用方执行幂等重试。
 - Kafka 集群承担解耦与缓冲职责：API 层保证同步流程在消息成功投递后即可返回，后续延伸逻辑通过 Topic 进行松耦合扩展。
 - `Kafka Consumer`（后台服务）订阅同一 Topic，负责将用户实体落库、刷新缓存以及触发后续自动化流程；消费失败时依赖 Kafka 重试与业务补偿机制确保最终一致性。
 - 生产端与消费端的指标、日志统一打点，方便通过 Prometheus 与集中日志快速定位消息积压或处理异常。
 
 ---
 
-## 2.2 联系方式缓存预热机制
+## 2.3 联系方式缓存预热机制
 
 `ensureContactCacheReady` 不在进程启动时常驻运行，而是在请求路径上按需触发：每次进入创建流程都会先调用该函数，由它判断是否需要异步预热邮箱/手机号唯一性缓存。
 
@@ -276,7 +348,7 @@ stateDiagram-v2
 
 该机制保证在高并发场景下仍能以最少的后台任务完成缓存预热，同时对失败场景提供退避与状态复位能力。
 
-## 2.3 Redis 降级策略（2025-12 更新）
+## 2.4 Redis 降级策略（2025-12 更新）
 
 - **触发条件**：`shouldDegradeForError` 会识别 Redis/数据库超时、上下文取消以及包含超时关键词的错误；另外在联系方式唯一性检测中发生哨兵占位失败时也会调用 `markCreateDegraded`。
 - **请求级降级**：`markCreateDegraded` 将降级标记写入请求上下文（`userctx.MarkCreateDegraded`），首次触发会输出告警日志与 trace 标签 `create_degraded=true`，确保同一链路后续步骤知晓降级状态。
@@ -290,6 +362,7 @@ stateDiagram-v2
 ## 3. 时序图（Sequence Diagram）
 
 ```mermaid
+%%{init: {'themeVariables': {'lineColor': '#1E63B5', 'actorLineColor': '#1E63B5', 'sequenceNumberColor': '#1E63B5', 'lineWidth': 3}}}%%
 sequenceDiagram
     participant Client
     participant API as UserService
@@ -333,6 +406,7 @@ sequenceDiagram
 ## 4. 状态图（State Diagram）
 
 ```mermaid
+%%{init: {'themeVariables': {'lineColor': '#1E63B5', 'lineWidth': 3}}}%%
 stateDiagram-v2
     [*] --> PendingStateUnknown
     PendingStateUnknown --> PendingStateLease: Acquire 成功
@@ -365,6 +439,7 @@ stateDiagram-v2
 ## 5. 数据流程图（Data Flow Diagram）
 
 ```mermaid
+%%{init: {'themeVariables': {'lineColor': '#1E63B5', 'flowchartLinkColor': '#1E63B5', 'lineWidth': 3}}}%%
 graph TD
     Client[客户端请求] --> Req[HTTP 请求
 (CreateRequest)]
@@ -380,6 +455,8 @@ graph TD
     API -->|返回| Client
     PC --> Metrics[(Prometheus)]
     PC --> Log[结构化日志]
+
+    linkStyle default stroke:#1E63B5,stroke-width:3px
 ```
 
 - 数据源：客户端输入、Redis 中的租约快照、业务数据库。
@@ -391,6 +468,7 @@ graph TD
 ## 6. 依赖关系图（Dependency Graph）
 
 ```mermaid
+%%{init: {'themeVariables': {'lineColor': '#1E63B5', 'flowchartLinkColor': '#1E63B5', 'lineWidth': 3}}}%%
 graph LR
     PC[PendingCoordinator]
     ACQ[Acquire]
@@ -420,6 +498,8 @@ graph LR
 
     OBS --> REDIS
     OBS --> METR
+
+    linkStyle default stroke:#1E63B5,stroke-width:3px
 ```
 
 - **强依赖**：Redis、metrics、日志模块异常都会影响租约一致性（建议降级策略）。
@@ -430,6 +510,7 @@ graph LR
 ## 7. 可选图示（高并发泳道）
 
 ```mermaid
+%%{init: {'themeVariables': {'lineColor': '#1E63B5', 'flowchartLinkColor': '#1E63B5', 'lineWidth': 3}}}%%
 flowchart LR
     subgraph Client Lane
         C1[请求 1]
@@ -448,6 +529,8 @@ flowchart LR
     C1 --> P1 --> R1
     C2 --> P2 --> R1
     P1 --> R2 --> P3
+
+    linkStyle default stroke:#1E63B5,stroke-width:3px
 ```
 
 - 展示不同请求在协调器与 Redis 间的并行执行，突出延迟与争抢窗口。

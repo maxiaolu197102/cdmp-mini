@@ -147,9 +147,10 @@ func (g *GenericAPIServer) installApiRoutes() error {
 
 	})
 	storeIns, _, _ := store.GetMySQLFactoryOr(nil)
+	userProducer := g.ensureUserProducer()
 	userController, err := user.NewUserController(storeIns,
 		g.redis, g.options,
-		g.producer)
+		userProducer)
 	if err != nil {
 		log.Error("NewUserController初始化失败")
 		return err

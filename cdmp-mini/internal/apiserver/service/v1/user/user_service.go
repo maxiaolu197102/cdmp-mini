@@ -177,10 +177,10 @@ type UserService struct {
 	// 生效范围: 依赖配置的所有功能
 	Options *options.Options
 	// Producer 消息生产者
-	// 数据类型: producer.MessageProducer 接口
+	// 数据类型: producer.MessageProducer[*v1.User, string] 泛型接口
 	// 用途: 对外投递用户事件或异步任务
 	// 生效范围: 用户创建、更新等事件通知
-	Producer producer.MessageProducer
+	Producer producer.MessageProducer[*v1.User, string]
 	// Audit 审计管理器
 	// 数据类型: *audit.Manager 指针
 	// 用途: 记录用户操作日志与审计事件
@@ -423,7 +423,7 @@ func verifyUserGoneFromContext(ctx context.Context) bool {
 }
 
 // NewUserService 创建用户服务实例
-func NewUserService(store interfaces.Factory, redis *storage.RedisCluster, opts *options.Options, producer producer.MessageProducer, auditMgr *audit.Manager) *UserService {
+func NewUserService(store interfaces.Factory, redis *storage.RedisCluster, opts *options.Options, producer producer.MessageProducer[*v1.User, string], auditMgr *audit.Manager) *UserService {
 	svc := &UserService{
 		Store:            store,
 		Redis:            redis,

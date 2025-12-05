@@ -226,7 +226,7 @@ func (u *UserService) processUserDelete(ctx context.Context, payload *userDelete
 		}
 		sendCtx, sendSpan := trace.StartSpan(deleteCtx, "user-service", "producer_send_delete")
 		trace.AddRequestTag(sendCtx, "username", username)
-		sendErr := u.Producer.SendUserDeleteMessage(sendCtx, username)
+		sendErr := u.Producer.SendDeleteMessage(sendCtx, username)
 		sendStatus := "success"
 		sendCode := strconv.Itoa(code.ErrSuccess)
 		if sendErr != nil {
@@ -264,7 +264,7 @@ func (u *UserService) processUserDelete(ctx context.Context, payload *userDelete
 
 	sendCtx, sendSpan := trace.StartSpan(deleteCtx, "user-service", "producer_send_delete")
 	trace.AddRequestTag(sendCtx, "username", username)
-	sendErr := u.Producer.SendUserDeleteMessage(sendCtx, username)
+	sendErr := u.Producer.SendDeleteMessage(sendCtx, username)
 	sendStatus := "success"
 	sendCode := strconv.Itoa(code.ErrSuccess)
 	if sendErr != nil {

@@ -82,6 +82,13 @@ var (
 	ConsumerPartitionsNoOwner *prometheus.GaugeVec
 	ConsumerMessageAgeSeconds *prometheus.HistogramVec
 
+	KafkaBrokerHealth      *prometheus.GaugeVec
+	KafkaBrokerLatency     *prometheus.HistogramVec
+	KafkaClusterHealth     *prometheus.GaugeVec
+	KafkaClusterBrokers    *prometheus.GaugeVec
+	KafkaTopicStatus       *prometheus.GaugeVec
+	KafkaHeartbeatFailures *prometheus.CounterVec
+
 	// 数据库操作指标
 	DatabaseQueryDuration *prometheus.HistogramVec
 	DatabaseQueryErrors   *prometheus.CounterVec
@@ -93,6 +100,9 @@ var (
 	DatabasePoolWaitCount           *prometheus.GaugeVec
 	DatabasePoolWaitDurationSeconds *prometheus.GaugeVec
 	DatabasePoolMaxOpenConnections  *prometheus.GaugeVec
+	DatabaseHeartbeatStatus         *prometheus.GaugeVec
+	DatabaseHeartbeatLatency        *prometheus.HistogramVec
+	DatabaseReplicaStatus           *prometheus.GaugeVec
 )
 
 var (
@@ -586,6 +596,55 @@ func init() {
 		[]string{"component", "topic", "group"},
 	)
 
+	KafkaBrokerHealth = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "kafka_broker_health_status",
+			Help: "Kafka broker heartbeat status (1=healthy, 0=unhealthy)",
+		},
+		[]string{"cluster", "broker"},
+	)
+
+	KafkaBrokerLatency = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "kafka_broker_heartbeat_latency_seconds",
+			Help:    "Latency of Kafka broker heartbeat probes",
+			Buckets: []float64{0.001, 0.003, 0.005, 0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1, 2, 5},
+		},
+		[]string{"cluster", "broker"},
+	)
+
+	KafkaClusterHealth = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "kafka_cluster_health_status",
+			Help: "Kafka cluster metadata heartbeat status (1=healthy, 0=unhealthy)",
+		},
+		[]string{"cluster"},
+	)
+
+	KafkaClusterBrokers = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "kafka_cluster_broker_count",
+			Help: "Number of brokers discovered via Kafka metadata",
+		},
+		[]string{"cluster"},
+	)
+
+	KafkaTopicStatus = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "kafka_topic_health_status",
+			Help: "Kafka topic availability observed during heartbeat checks",
+		},
+		[]string{"cluster", "topic"},
+	)
+
+	KafkaHeartbeatFailures = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "kafka_heartbeat_failures_total",
+			Help: "Total number of Kafka heartbeat probe failures grouped by reason",
+		},
+		[]string{"cluster", "reason"},
+	)
+
 	PendingLeaseActiveGauge = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "pending_lease_active_total",
@@ -873,6 +932,31 @@ func init() {
 			Help: "Maximum number of open connections allowed in the pool",
 		},
 		[]string{"component", "role", "index"},
+	)
+
+	DatabaseHeartbeatStatus = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "database_heartbeat_status",
+			Help: "Database heartbeat status (1=healthy, 0=unhealthy)",
+		},
+		[]string{"component", "role"},
+	)
+
+	DatabaseHeartbeatLatency = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "database_heartbeat_latency_seconds",
+			Help:    "Latency of database heartbeat probes",
+			Buckets: []float64{0.001, 0.003, 0.005, 0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1, 2, 5},
+		},
+		[]string{"component", "role"},
+	)
+
+	DatabaseReplicaStatus = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "database_replica_status",
+			Help: "Database replica statistics (state=replica_total|replica_healthy)",
+		},
+		[]string{"component", "state"},
 	)
 
 	// -------------------------- 初始化：Redis操作指标 --------------------------
@@ -1410,6 +1494,12 @@ func init() {
 		ConsumerGroupInstances,
 		ConsumerPartitionsNoOwner,
 		ConsumerMessageAgeSeconds,
+		KafkaBrokerHealth,
+		KafkaBrokerLatency,
+		KafkaClusterHealth,
+		KafkaClusterBrokers,
+		KafkaTopicStatus,
+		KafkaHeartbeatFailures,
 
 		PendingLeaseActiveGauge,
 		PendingLeaseQueueDepth,
@@ -1448,6 +1538,9 @@ func init() {
 		DatabasePoolWaitCount,
 		DatabasePoolWaitDurationSeconds,
 		DatabasePoolMaxOpenConnections,
+		DatabaseHeartbeatStatus,
+		DatabaseHeartbeatLatency,
+		DatabaseReplicaStatus,
 
 		// Redis指标
 		RedisOperations,

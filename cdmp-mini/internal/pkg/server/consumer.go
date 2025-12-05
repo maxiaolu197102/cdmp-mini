@@ -55,6 +55,7 @@ type UserConsumer struct {
 	poolReporter  poolStatsReporter
 	poolComponent string
 	fetcherCount  int
+	workerCount   int
 }
 
 type deleteMessage struct {
@@ -433,6 +434,7 @@ func NewUserConsumer(opts *options.KafkaOptions, topic, groupID string, instance
 		// 新增：实例ID赋值
 		instanceID:   instanceIndex,
 		fetcherCount: fetcherCount,
+		workerCount:  1,
 		markerCache:  newPendingMarkerCache(),
 	}
 	if sqlCore, err := db.DB(); err != nil {
@@ -4430,12 +4432,36 @@ func (c *UserConsumer) SetInstanceID(id int) {
 	c.instanceID = id
 }
 
+func (c *UserConsumer) SetWorkerCount(count int) {
+	if c == nil {
+		return
+	}
+	if count < 1 {
+		count = 1
+	}
+	c.workerCount = count
+}
+
 func (c *UserConsumer) SetPoolStatsProvider(provider func() []db.PoolStats) {
 	c.poolReporter.provider = provider
 }
 
 func (c *UserConsumer) SetProducer(producer *UserProducer) {
 	c.producer = producer
+}
+
+func (c *UserConsumer) Start(ctx context.Context, ready *sync.WaitGroup) {
+	if c == nil {
+		if ready != nil {
+			ready.Done()
+		}
+		return
+	}
+	workers := c.workerCount
+	if workers < 1 {
+		workers = 1
+	}
+	c.StartConsuming(ctx, workers, ready)
 }
 
 func (c *UserConsumer) Close() error {

@@ -4,6 +4,7 @@ import (
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/options"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/store/interfaces"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/server/producer"
+	v1 "github.com/maxiaolu1981/cretem/nexuscore/api/apiserver/v1"
 
 	policy "github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/service/v1/policy"
 	secret "github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/service/v1/secret"
@@ -16,7 +17,7 @@ type ServiceSrv struct {
 	Store    interfaces.Factory
 	Redis    *storage.RedisCluster
 	Options  *options.Options
-	producer producer.MessageProducer
+	producer producer.MessageProducer[*v1.User, string]
 }
 
 type ServiceManager interface {
@@ -59,7 +60,7 @@ func NewPolicies(s *ServiceSrv) *policy.PolicService {
 func NewService(store interfaces.Factory,
 	redis *storage.RedisCluster,
 	options *options.Options,
-	producer producer.MessageProducer) (ServiceManager, error) {
+	producer producer.MessageProducer[*v1.User, string]) (ServiceManager, error) {
 
 	s := &ServiceSrv{
 		Store:    store,
