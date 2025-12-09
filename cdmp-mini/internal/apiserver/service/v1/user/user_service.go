@@ -525,6 +525,7 @@ func (u *UserService) ensureOperationModeController() *operationModeController {
 	return u.operationModeCtrl
 }
 
+// decideOperationMode 决定指定用户在当前请求下的操作模式。
 func (u *UserService) decideOperationMode(ctx context.Context, kind operation.OperationKind, subject string) OperationMode {
 	ctrl := u.ensureOperationModeController()
 	if ctrl == nil {
@@ -565,7 +566,10 @@ func (u *UserService) userStoreReadOnly() interfaces.UserStore {
 	return store
 }
 
+// 记录createStepSlowThreshold 用户创建步骤慢日志阈值
 func (u *UserService) recordUserCreateStep(ctx context.Context, step, field, username string, duration time.Duration, stepErr error) {
+	metrics.RecordUserCreateStep(step, field, userctx.AccountType(ctx), duration, stepErr)
+
 	if duration <= createStepSlowThreshold {
 		return
 	}
@@ -1820,6 +1824,8 @@ func (u *UserService) startContactDegradeMonitor() {
 }
 
 func (u *UserService) markCreateDegraded(ctx context.Context, reason string, kv ...interface{}) {
+	metrics.RecordUserCreateDegrade(reason, userctx.AccountType(ctx))
+
 	//MarkCreateDegraded 切换降级标记；当从“非降级”转为“降级”时返回 true
 	if userctx.MarkCreateDegraded(ctx) {
 		//首次进入降级模式：记录追踪标记和警告日志
@@ -1892,6 +1898,7 @@ func (u *UserService) ensureContactPlaceholder(ctx context.Context, cacheKey, ow
 	ok, err := u.Redis.SetNX(setCtx, cacheKey, placeholder, contactPlaceholderTTL)
 	setDuration := time.Since(setStart)
 	setCancel()
+	metrics.ObserveUserContactPlaceholderSet("redis_placeholder_setnx", fieldKey, setDuration, err)
 	u.recordUserCreateStep(ctx, "redis_placeholder_setnx", fieldKey, owner, setDuration, err)
 	if err != nil {
 		log.Warnw("唯一性灰度占位失败", "key", cacheKey, "error", err)
@@ -2337,6 +2344,14 @@ func (u *UserService) ensureContactUniqueDegraded(
 	return errors.WithCode(code.ErrValidation, "%s已被占用: %s", fieldLabel, fieldValue)
 }
 
+// warmContactCache 预热联系方式唯一性缓存
+//
+// 批量扫描用户存储中的所有用户记录，并将其邮箱与手机号写入 Redis 缓存，提升后续唯一性检查的命中率。
+// 适用于系统启动后或大规模数据变更后执行，以加速后续的用户创建与更新操作。
+//
+// 返回值：
+//
+//	error: 预热过程中发生的错误，nil 表示预热成功
 func (u *UserService) warmContactCache() error {
 	ctx, cancel := context.WithTimeout(context.Background(), contactWarmupTimeout)
 	defer cancel()
@@ -2381,7 +2396,7 @@ func (u *UserService) warmContactCache() error {
 		if list == nil || len(list.Items) == 0 {
 			break
 		}
-
+		//以分页为单位的串行预热—— 取回一页、处理一页（写入 Redis）、再取下一页，直到遍历完所有数据或触发终止条件（超时 / 无数据 / 查询失败）
 		for _, entry := range list.Items {
 			if entry == nil {
 				continue

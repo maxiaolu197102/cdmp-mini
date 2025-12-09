@@ -58,6 +58,40 @@
 - 服务层：`internal/apiserver/service/v1/user/create_service.go::Create` 顺序执行邮箱/手机号归一化、密码哈希、`ensureContactUniqueness`（读取 Redis 缓存 + 数据库预检）、`checkUserExist`、`markUserPendingCreate`。依赖 Redis（pending 标记）、Kafka 生产者、用户缓存组件以及 `auth.EncryptWithConfig`。
 - 存储层：`internal/apiserver/store/user/create_store.go::Create` 当前为空实现，实际落库逻辑在 Kafka 消费者路径（需在后续异步链路测试关注），MySQL 唯一索引用于兜底幂等。
 - 关联依赖：Redis 用于 pending 标记和联系人缓存，Kafka 用于异步创建消息，MySQL 负责用户实体，`usercache`/`userctx` 提供缓存与上下文标记，trace/audit 模块贯穿全链路。
+
+## 监控指标补充（2025-02-13）
+
+- `user_create_requests_total{mode,outcome}`：覆盖同步/异步模式及业务错误类型（`success`、`validation_error`、`timeout` 等），方便 SRE 按模式拆分失败率并驱动自动扩缩容或切换执行模式。
+- `user_create_step_total{step,field,outcome}`：在原有耗时直方图基础上新增成功/失败计数，定位具体阶段（如 `redis_placeholder_setnx`、`mark_pending_create`）的错误占比，可与慢步骤计数联动告警。
+- `user_create_degrade_total{reason}`：统计触发降级的原因（缓存缺失、占位失败、预检超时等），支持自动化脚本按原因执行缓存刷新或预热动作。
+- `UserContactPlaceholderSetDuration{step,field,status}`：新增 `redis_placeholder_setnx` 埋点，`status` 区分 `success` / `slow` / `error`，帮助排查 Redis SetNX 尾延迟。
+- 所有指标已注册至 `internal/pkg/metrics/metrics.go`，Prometheus 抓取后可结合现有 Grafana 仪表盘：请求层 SLA→链路步骤健康度→Redis 占位退化链路，实现“告警→定位→恢复”闭环。
+
+### 流程节点指标映射
+
+- `Begin / Normalize`（`createBeginHook`、`normalizeUserForCreate`）：统一写入 Trace 标签 `operation_mode`、`account_type`，`user_create_requests_total{mode,account_type,outcome}` 统计入口流量。
+- `BeforeUnique`（`prepareUserForCreate`）：`user_create_step_duration_seconds{step="encrypt_password",account_type}` 与 `user_create_step_total` 同步记录密码加密耗时/结果。
+- `EnsureUnique` → `ResolveExistence`：分别对应 `user_create_step_total{step="ensure_contacts_unique"}`、`{step="check_user_exist"}`；异常时 outcome = `validation_error` / `duplicate`。
+- `MarkPending`（`markUserPendingForCreate`）：`user_create_step_total{step="mark_pending_create"}` 联动 `UserContactPlaceholderSetDuration`、`UserContactPlaceholderEvents`，降级时 `user_create_degrade_total{reason,account_type}` 递增。
+- `AfterPending`（`afterUserPending`）：补充 trace header，不额外记指标。
+- `SendCreateMessage`（`sendUserCreateMessage`）：`user_create_step_total{step="kafka_send_create_user"}` + `user_create_message_total{account_type,result}`；Kafka 底层指标继续提供入队/ACK 延迟 (`ProducerDeliveryLatency` 等)。
+- Redis 占位内部步骤（`ensureContactPlaceholder`）：`user_create_step_total` 的 `redis_placeholder_setnx/get/refresh` 标签与 `UserContactPlaceholderSetDuration` 共同呈现占位性能。
+
+### 业务指标对照表
+
+| 业务节点 | 英文指标名称 | 中文名称 | 业务含义（SRE关注点） |
+| --- | --- | --- | --- |
+| 链路入口（Begin/Normalize） | `user_create_requests_total{mode,account_type,outcome}` | 用户创建请求总数 | 区分同步/异步模式与账号类型的成功/失败比；SRE 依据 outcome=error 比例判断是否需要切换执行模式或扩容前端。 |
+| 密码加密（BeforeUnique） | `user_create_step_total{step="encrypt_password"}`<br/>`user_create_step_duration_seconds{step="encrypt_password"}` | 密码加密结果计数 / 耗时 | 观察加密失败(`outcome=error`)和耗时尾部，确保加密配置及硬件正常；异常时落回默认 Hash 配置。 |
+| 唯一性校验（EnsureUnique） | `user_create_step_total{step="ensure_contacts_unique"}` | 联系方式唯一性校验计数 | outcome=validation_error/duplicate 表示触发限流或命中重复；高峰期增长提示 SRE 检查缓存命中率、数据库慢查。 |
+| 用户存在兜底（ResolveExistence） | `user_create_step_total{step="check_user_exist"}` | 用户存在性兜底计数 | outcome=database_error/timeout 暗示 MySQL 压力或读实例异常；SRE 可启用降级缓存或扩容从库。 |
+| Pending 标记（MarkPending） | `user_create_step_total{step="mark_pending_create"}` | Pending 占位写入结果 | outcome=error 代表 Redis 写入失败；需结合 `user_create_degrade_total` 判断是否进入降级队列。 |
+| Pending 降级 | `user_create_degrade_total{reason,account_type}` | 创建降级事件总数 | 依据 reason（placeholder/cache/preflight 等）识别触发原因，指导 SRE 执行缓存重建、数据库兜底等自动化动作。 |
+| 联系方式占位 | `user_contact_placeholder_set_duration_seconds{step="redis_placeholder_setnx"}`<br/>`user_contact_placeholder_events_total` | 联系方式占位耗时 / 事件 | `status=slow/error` 暗示 Redis 延迟或热点；事件计数区分 set/get/refresh 成功率，为 Redis 运维提供依据。 |
+| Kafka 发送（SendCreateMessage） | `user_create_step_total{step="kafka_send_create_user"}`<br/>`user_create_message_total{account_type,result}` | Kafka 发送结果计数 | result=error / outcome!=success 指示生产者失败，需结合 `ProducerDeliveryLatency`、`ProducerFailures` 判断是否限流、重启或降级文件落盘。 |
+| 全链路慢步骤 | `user_create_slow_steps_total{step,field,account_type}` | 慢步骤计数 | 任一步骤耗时 > 200ms 即计入，帮助 SRE 快速发现具体瓶颈（加密、Redis、Kafka 等），指导扩容和旁路优化。 |
+
+> 提示：所有表格指标均带 `account_type` 标签，可在 Grafana 中拆分普通用户、管理员、特定渠道账号的 SLA；建议配合告警策略（如 outcome=error 比例 >5% 或 slow_steps 累计速率突增）驱动自动化恢复脚本。
 一、幂等机制：避免重复请求 / 消息导致的重复创建
 
 1. 问题场景

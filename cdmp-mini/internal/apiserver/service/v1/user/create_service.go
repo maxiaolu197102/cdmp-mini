@@ -3,12 +3,14 @@ package user
 import (
 	"context"
 	"strconv"
+	"strings"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 	createpipeline "github.com/maxiaolu1981/cretem/cdmp-mini/internal/common/service/create"
 	operation "github.com/maxiaolu1981/cretem/cdmp-mini/internal/common/service/operation"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/code"
+	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/errors/category"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/metrics"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/trace"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/usercache"
@@ -35,20 +37,47 @@ const operationInlineProcessBudget = 150 * time.Millisecond
 // param opt: 服务运行期配置选项，目前未使用，保留兼容性。
 //
 // returns: 若创建成功返回 nil；任一步骤失败则返回携带业务码的错误。
-func (u *UserService) Create(ctx context.Context, user *v1.User, opts metav1.CreateOptions, opt *options.Options) error {
+func (u *UserService) Create(ctx context.Context, user *v1.User, opts metav1.CreateOptions, opt *options.Options) (err error) {
+	modeLabel := "unknown"
+	accountTypeLabel := "unknown"
+
+	recordOutcome := func(e error) {
+		outcome := "success"
+		if e != nil {
+			outcome = category.CategoryFromError(e)
+			if outcome == "" {
+				outcome = "error"
+			}
+		}
+		metrics.RecordUserCreateRequest(modeLabel, outcome, accountTypeLabel)
+	}
+
 	if u == nil {
-		return errors.WithCode(code.ErrServerBusy, "用户服务未初始化")
+		err = errors.WithCode(code.ErrServerBusy, "用户服务未初始化")
+		recordOutcome(err)
+		return err
 	}
 	if user == nil {
-		return errors.WithCode(code.ErrInvalidParameter, "用户信息为空")
+		err = errors.WithCode(code.ErrInvalidParameter, "用户信息为空")
+		recordOutcome(err)
+		return err
 	}
+
+	accountTypeLabel = deriveUserAccountType(user)
+	ctx = userctx.WithAccountType(ctx, accountTypeLabel)
+	trace.AddRequestTag(ctx, "account_type", accountTypeLabel)
 
 	// 保留参数以兼容接口签名
 	_ = opts
 	_ = opt
-
+	// 决定创建操作的执行模式（同步或异步）
 	mode := u.decideOperationMode(ctx, operation.OperationCreate, user.Name)
-	trace.AddRequestTag(ctx, "operation_mode", mode.String())
+	modeLabel = mode.String()
+	trace.AddRequestTag(ctx, "operation_mode", modeLabel)
+
+	defer func() {
+		recordOutcome(err)
+	}()
 
 	if mode == OperationModeSync {
 		if u.createPipeline == nil {
@@ -58,24 +87,25 @@ func (u *UserService) Create(ctx context.Context, user *v1.User, opts metav1.Cre
 			log.Errorw("create pipeline missing in sync mode", "component", "user_service")
 			return errors.WithCode(code.ErrServerBusy, "同步创建流程不可用")
 		}
-		if err := u.createPipeline.Execute(ctx, user); err != nil {
-			return err
+		if execErr := u.createPipeline.Execute(ctx, user); execErr != nil {
+			return execErr
 		}
 		return nil
 	}
-
-	if err := u.ensureOperationPipeline(); err != nil {
+	// 异步创建模式
+	if err = u.ensureOperationPipeline(); err != nil {
 		log.Errorw("初始化创建操作管道失败", "error", err)
 		return errors.WithCode(code.ErrServerBusy, "异步管道不可用")
 	}
 
-	env, err := u.buildUserOperationEnvelope(ctx, operation.OperationCreate, user.Name, user)
+	var env *operation.OperationEnvelope
+	env, err = u.buildUserOperationEnvelope(ctx, operation.OperationCreate, user.Name, user)
 	if err != nil {
 		log.Errorw("构建操作包失败", "error", err)
 		return errors.WithCode(code.ErrInvalidParameter, "构建请求失败: %v", err)
 	}
 
-	if _, err := u.operationPipeline.Submit(ctx, env); err != nil {
+	if _, err = u.operationPipeline.Submit(ctx, env); err != nil {
 		log.Errorw("提交用户创建操作失败", "operation", env.ID, "error", err)
 		return errors.WithCode(code.ErrServerBusy, "提交创建请求失败")
 	}
@@ -89,7 +119,6 @@ func (u *UserService) Create(ctx context.Context, user *v1.User, opts metav1.Cre
 }
 
 // initCreatePipeline 根据用户表规则初始化通用创建管道。
-//
 // note: 该函数幂等，重复调用不会重新分配管道实例。
 func (u *UserService) initCreatePipeline() {
 	if u == nil || u.createPipeline != nil {
@@ -113,7 +142,7 @@ func (u *UserService) initCreatePipeline() {
 }
 
 // createBeginHook 创建顶层链路追踪并返回收尾函数。
-//
+// 建立根 Span，向上下文写入创建态标识，准备结束回调以统一收敛状态码。
 // param ctx: 调用方上下文。
 // param user: 当前待创建的用户。
 //
@@ -145,7 +174,7 @@ func (u *UserService) createBeginHook(ctx context.Context, user *v1.User) (conte
 }
 
 // normalizeUserForCreate 统一规整联系方式字段。
-//
+// 归一化邮箱、手机号，确保后续缓存键一致
 // param user: 当前待创建的用户。
 func (u *UserService) normalizeUserForCreate(user *v1.User) {
 	if user == nil {
@@ -407,6 +436,15 @@ func (u *UserService) sendUserCreateMessage(ctx context.Context, user *v1.User) 
 	errKafka := u.Producer.SendCreateMessage(sendCtx, user)
 	u.recordUserCreateStep(ctx, "kafka_send_create_user", "kafka", user.Name, time.Since(sendStart), errKafka)
 
+	messageResult := "success"
+	if errKafka != nil {
+		messageResult = category.CategoryFromError(errKafka)
+		if messageResult == "" {
+			messageResult = "error"
+		}
+	}
+	metrics.RecordUserCreateMessage(userctx.AccountType(ctx), messageResult)
+
 	status := "success"
 	codeStr := strconv.Itoa(code.ErrSuccess)
 	if errKafka != nil {
@@ -428,4 +466,31 @@ func (u *UserService) sendUserCreateMessage(ctx context.Context, user *v1.User) 
 	}
 
 	return nil
+}
+
+// deriveUserAccountType 从用户实体中推导账户类型标签。
+//
+// param user: 用户实体指针。
+//
+// returns: 推导出的账户类型标签字符串。
+func deriveUserAccountType(user *v1.User) string {
+	if user == nil {
+		return "unknown"
+	}
+	if user.Extend != nil {
+		if raw, ok := user.Extend["accountType"]; ok {
+			if str, ok := raw.(string); ok {
+				if v := strings.TrimSpace(str); v != "" {
+					return strings.ToLower(v)
+				}
+			}
+		}
+	}
+	if user.IsAdmin == 1 {
+		return "admin"
+	}
+	if user.Status <= 0 {
+		return "inactive"
+	}
+	return "standard"
 }

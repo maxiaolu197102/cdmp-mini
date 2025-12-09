@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/code"
+	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/errors/category"
 	"github.com/maxiaolu1981/cretem/nexuscore/errors"
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -57,6 +58,10 @@ var (
 
 	UserCreateStepDuration            *prometheus.HistogramVec
 	UserCreateSlowStepsTotal          *prometheus.CounterVec
+	UserCreateStepTotal               *prometheus.CounterVec
+	UserCreateRequestsTotal           *prometheus.CounterVec
+	UserCreateDegradeTotal            *prometheus.CounterVec
+	UserCreateMessageTotal            *prometheus.CounterVec
 	UserContactPlaceholderSetDuration *prometheus.HistogramVec
 
 	AuditEventsTotal   *prometheus.CounterVec // 审计事件计数
@@ -401,7 +406,7 @@ func init() {
 			Help:    "Duration of individual steps in user creation flow",
 			Buckets: []float64{0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2},
 		},
-		[]string{"step", "field"},
+		[]string{"step", "field", "account_type"},
 	)
 
 	UserCreateSlowStepsTotal = prometheus.NewCounterVec(
@@ -409,7 +414,39 @@ func init() {
 			Name: "user_create_slow_steps_total",
 			Help: "Total number of user create sub-steps exceeding the slow threshold",
 		},
-		[]string{"step", "field"},
+		[]string{"step", "field", "account_type"},
+	)
+
+	UserCreateStepTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "user_create_step_total",
+			Help: "Total number of user create steps grouped by outcome",
+		},
+		[]string{"step", "field", "account_type", "outcome"},
+	)
+
+	UserCreateRequestsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "user_create_requests_total",
+			Help: "Total number of user create requests grouped by execution mode and outcome",
+		},
+		[]string{"mode", "account_type", "outcome"},
+	)
+
+	UserCreateDegradeTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "user_create_degrade_total",
+			Help: "Total number of user create degrade events grouped by reason",
+		},
+		[]string{"reason", "account_type"},
+	)
+
+	UserCreateMessageTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "user_create_message_total",
+			Help: "Total number of user create message dispatch attempts grouped by account type and result",
+		},
+		[]string{"account_type", "result"},
 	)
 
 	UserContactPlaceholderSetDuration = prometheus.NewHistogramVec(
@@ -1474,6 +1511,10 @@ func init() {
 		TraceOperationDuration,
 		UserCreateStepDuration,
 		UserCreateSlowStepsTotal,
+		UserCreateStepTotal,
+		UserCreateRequestsTotal,
+		UserCreateDegradeTotal,
+		UserCreateMessageTotal,
 		UserContactPlaceholderSetDuration,
 		UserContactPlaceholderEvents,
 		AuditEventsTotal,
@@ -2264,37 +2305,7 @@ func GetKafkaErrorType(err error) string {
 
 // GetBusinessErrorType 业务错误分类
 func GetBusinessErrorType(err error) string {
-	if err == nil {
-		return "success"
-	}
-
-	// 使用现有的错误分类逻辑
-	coder := errors.ParseCoderByErr(err)
-	if coder != nil {
-		return "business_error"
-	}
-
-	errMsg := strings.ToLower(err.Error())
-	switch {
-	case strings.Contains(errMsg, "validation"), strings.Contains(errMsg, "validate"):
-		return "validation_error"
-	case strings.Contains(errMsg, "timeout"):
-		return "timeout"
-	case strings.Contains(errMsg, "database"):
-		return "database_error"
-	case strings.Contains(errMsg, "network"):
-		return "network_error"
-	case strings.Contains(errMsg, "permission"), strings.Contains(errMsg, "unauthorized"):
-		return "permission_error"
-	case strings.Contains(errMsg, "marshal"), strings.Contains(errMsg, "unmarshal"):
-		return "serialization_error"
-	case strings.Contains(errMsg, "not found"), strings.Contains(errMsg, "不存在"):
-		return "not_found"
-	case strings.Contains(errMsg, "already exists"), strings.Contains(errMsg, "已存在"):
-		return "duplicate"
-	default:
-		return "unknown_error"
-	}
+	return category.CategoryFromError(err)
 }
 
 // -------------------------- 新增业务监控辅助函数 --------------------------
@@ -2320,7 +2331,7 @@ func MonitorBusinessOperation(service, operation, source string, fn func() error
 
 	// 记录成功/失败
 	if err != nil {
-		errorType := GetBusinessErrorType(err)
+		errorType := category.CategoryFromError(err)
 		BusinessFailures.WithLabelValues(service, operation, errorType).Inc()
 	} else {
 		BusinessSuccess.WithLabelValues(service, operation, "success").Inc()
@@ -2332,11 +2343,47 @@ func MonitorBusinessOperation(service, operation, source string, fn func() error
 const userCreateSlowThresholdSeconds = 0.2
 
 // RecordUserCreateStep 记录用户创建链路中某个步骤的耗时，并在超过阈值时累计慢步骤计数。
-func RecordUserCreateStep(step, field string, duration time.Duration) {
-	UserCreateStepDuration.WithLabelValues(step, field).Observe(duration.Seconds())
-	if duration.Seconds() > userCreateSlowThresholdSeconds {
-		UserCreateSlowStepsTotal.WithLabelValues(step, field).Inc()
+func RecordUserCreateStep(step, field, accountType string, duration time.Duration, err error) {
+	stepLabel := normalizeLabelValue(step, "unknown")
+	fieldLabel := normalizeLabelValue(field, "unknown")
+	accountLabel := normalizeLabelValue(accountType, "unknown")
+
+	UserCreateStepDuration.WithLabelValues(stepLabel, fieldLabel, accountLabel).Observe(duration.Seconds())
+
+	outcome := "success"
+	if err != nil {
+		outcome = GetBusinessErrorType(err)
+		if outcome == "" {
+			outcome = "error"
+		}
 	}
+	UserCreateStepTotal.WithLabelValues(stepLabel, fieldLabel, accountLabel, outcome).Inc()
+
+	if duration.Seconds() > userCreateSlowThresholdSeconds {
+		UserCreateSlowStepsTotal.WithLabelValues(stepLabel, fieldLabel, accountLabel).Inc()
+	}
+}
+
+// RecordUserCreateRequest 记录创建请求整体的执行模式与结果。
+func RecordUserCreateRequest(mode, outcome, accountType string) {
+	modeLabel := normalizeLabelValue(mode, "unknown")
+	outcomeLabel := normalizeLabelValue(outcome, "unknown")
+	accountLabel := normalizeLabelValue(accountType, "unknown")
+	UserCreateRequestsTotal.WithLabelValues(modeLabel, accountLabel, outcomeLabel).Inc()
+}
+
+// RecordUserCreateDegrade 记录降级触发的原因统计。
+func RecordUserCreateDegrade(reason, accountType string) {
+	reasonLabel := normalizeLabelValue(reason, "unknown")
+	accountLabel := normalizeLabelValue(accountType, "unknown")
+	UserCreateDegradeTotal.WithLabelValues(reasonLabel, accountLabel).Inc()
+}
+
+// RecordUserCreateMessage 记录 Kafka 发送阶段的业务视角结果。
+func RecordUserCreateMessage(accountType, result string) {
+	accountLabel := normalizeLabelValue(accountType, "unknown")
+	resultLabel := normalizeLabelValue(result, "unknown")
+	UserCreateMessageTotal.WithLabelValues(accountLabel, resultLabel).Inc()
 }
 
 // ObserveUserContactPlaceholderSet 记录联系人占位命令的耗时，用于定位 SetNX 阶段的尾延迟。

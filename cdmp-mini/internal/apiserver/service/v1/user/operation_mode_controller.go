@@ -30,22 +30,27 @@ var defaultOperationQueueKindNames = []string{
 
 // OperationModeConfig 对外暴露的运行时配置快照。
 type OperationModeConfig struct {
-	Mode           OperationMode `json:"mode"`
-	RolloutPercent int           `json:"rolloutPercent"`
-	StickyHeader   string        `json:"stickyHeader,omitempty"`
-	QueueKinds     []string      `json:"queueKinds,omitempty"`
-	AllowUsers     []string      `json:"allowUsers,omitempty"`
-	BlockUsers     []string      `json:"blockUsers,omitempty"`
+	Mode               OperationMode `json:"mode"`
+	RolloutPercent     int           `json:"rolloutPercent"`
+	StickyHeader       string        `json:"stickyHeader,omitempty"`
+	QueueKinds         []string      `json:"queueKinds,omitempty"`
+	AllowUsers         []string      `json:"allowUsers,omitempty"`
+	BlockUsers         []string      `json:"blockUsers,omitempty"`
+	PreferSubjectKinds []string      `json:"preferSubjectKinds,omitempty"`
+	PreferSubjectUsers []string      `json:"preferSubjectUsers,omitempty"`
 }
 
+// operationModeState 内部使用的运行时状态快照。
 type operationModeState struct {
-	config         OperationModeConfig
-	mode           OperationMode
-	rolloutPercent int
-	stickyHeader   string
-	queueKindSet   map[operationpkg.OperationKind]struct{}
-	allowUserSet   map[string]struct{}
-	blockUserSet   map[string]struct{}
+	config               OperationModeConfig
+	mode                 OperationMode
+	rolloutPercent       int
+	stickyHeader         string
+	queueKindSet         map[operationpkg.OperationKind]struct{}
+	allowUserSet         map[string]struct{}
+	blockUserSet         map[string]struct{}
+	preferSubjectKindSet map[operationpkg.OperationKind]struct{}
+	preferSubjectUserSet map[string]struct{}
 }
 
 type operationModeController struct {
@@ -59,6 +64,7 @@ func newOperationModeController(cfg OperationModeConfig) *operationModeControlle
 	return &operationModeController{state: state}
 }
 
+// Decide 根据当前配置和请求信息决定使用的操作模式。
 func (c *operationModeController) Decide(ctx context.Context, kind operationpkg.OperationKind, subject string) OperationMode {
 	if c == nil {
 		return OperationModeQueue
@@ -67,8 +73,9 @@ func (c *operationModeController) Decide(ctx context.Context, kind operationpkg.
 	c.mu.RLock()
 	state := c.state
 	c.mu.RUnlock()
-
+	//白名单查询,如果未命中则走同步
 	if len(state.queueKindSet) > 0 {
+		//未命中种类则走同步
 		if _, ok := state.queueKindSet[kind]; !ok {
 			return OperationModeSync
 		}
@@ -76,14 +83,16 @@ func (c *operationModeController) Decide(ctx context.Context, kind operationpkg.
 
 	normalizedSubject := strings.ToLower(strings.TrimSpace(subject))
 	if normalizedSubject != "" {
+		//用户黑名单优先走同步
 		if _, blocked := state.blockUserSet[normalizedSubject]; blocked {
 			return OperationModeSync
 		}
+		//用户白名单优先走队列
 		if _, allowed := state.allowUserSet[normalizedSubject]; allowed {
 			return OperationModeQueue
 		}
 	}
-
+	//判断当前模式
 	switch state.mode {
 	case OperationModeSync:
 		return OperationModeSync
@@ -98,10 +107,22 @@ func (c *operationModeController) Decide(ctx context.Context, kind operationpkg.
 			return OperationModeQueue
 		}
 
+		preferSubject := false
+		if _, ok := state.preferSubjectKindSet[kind]; ok {
+			preferSubject = true
+		}
+		if normalizedSubject != "" {
+			if _, ok := state.preferSubjectUserSet[normalizedSubject]; ok {
+				preferSubject = true
+			}
+		}
+
 		key := normalizedSubject
 		if state.stickyHeader != "" {
 			if headerValue := rolloutHeaderFromContext(ctx, state.stickyHeader); headerValue != "" {
-				key = headerValue
+				if !(preferSubject && key != "") {
+					key = headerValue
+				}
 			}
 		}
 		if key == "" {
@@ -144,11 +165,14 @@ func (m OperationMode) String() string {
 	}
 }
 
+// sanitizeOperationModeConfig 清理并规范化传入的配置。
 func sanitizeOperationModeConfig(cfg OperationModeConfig) operationModeState {
 	normalized := OperationModeConfig{
-		Mode:           OperationMode(strings.ToLower(strings.TrimSpace(string(cfg.Mode)))),
-		RolloutPercent: cfg.RolloutPercent,
-		StickyHeader:   strings.ToLower(strings.TrimSpace(cfg.StickyHeader)),
+		Mode:               OperationMode(strings.ToLower(strings.TrimSpace(string(cfg.Mode)))),
+		RolloutPercent:     cfg.RolloutPercent,
+		StickyHeader:       strings.ToLower(strings.TrimSpace(cfg.StickyHeader)),
+		PreferSubjectKinds: append([]string{}, cfg.PreferSubjectKinds...),
+		PreferSubjectUsers: append([]string{}, cfg.PreferSubjectUsers...),
 	}
 
 	if normalized.Mode == "" {
@@ -176,21 +200,30 @@ func sanitizeOperationModeConfig(cfg OperationModeConfig) operationModeState {
 
 	allowList, allowSet := dedupeToLower(cfg.AllowUsers)
 	blockList, blockSet := dedupeToLower(cfg.BlockUsers)
+	preferSubjectKinds, preferKindSet := dedupeToLower(cfg.PreferSubjectKinds)
+	preferSubjectUsers, preferUserSet := dedupeToLower(cfg.PreferSubjectUsers)
 	normalized.AllowUsers = allowList
 	normalized.BlockUsers = blockList
+	normalized.PreferSubjectKinds = preferSubjectKinds
+	normalized.PreferSubjectUsers = preferSubjectUsers
 
 	state := operationModeState{
-		config:         normalized,
-		mode:           normalized.Mode,
-		rolloutPercent: normalized.RolloutPercent,
-		stickyHeader:   normalized.StickyHeader,
-		queueKindSet:   make(map[operationpkg.OperationKind]struct{}, len(queueSet)),
-		allowUserSet:   allowSet,
-		blockUserSet:   blockSet,
+		config:               normalized,
+		mode:                 normalized.Mode,
+		rolloutPercent:       normalized.RolloutPercent,
+		stickyHeader:         normalized.StickyHeader,
+		queueKindSet:         make(map[operationpkg.OperationKind]struct{}, len(queueSet)),
+		allowUserSet:         allowSet,
+		blockUserSet:         blockSet,
+		preferSubjectKindSet: make(map[operationpkg.OperationKind]struct{}, len(preferKindSet)),
+		preferSubjectUserSet: preferUserSet,
 	}
 
 	for kind := range queueSet {
 		state.queueKindSet[operationpkg.OperationKind(kind)] = struct{}{}
+	}
+	for kind := range preferKindSet {
+		state.preferSubjectKindSet[operationpkg.OperationKind(kind)] = struct{}{}
 	}
 
 	return state
@@ -208,6 +241,7 @@ func withinRolloutSample(key string, percent int) bool {
 	return int(hasher.Sum32()%100) < percent
 }
 
+// 返回去重且小写化的字符串列表及其集合形式
 func dedupeToLower(items []string) ([]string, map[string]struct{}) {
 	if len(items) == 0 {
 		return nil, make(map[string]struct{})
@@ -233,13 +267,15 @@ func cloneOperationModeConfig(cfg OperationModeConfig) OperationModeConfig {
 	clone.QueueKinds = append([]string(nil), cfg.QueueKinds...)
 	clone.AllowUsers = append([]string(nil), cfg.AllowUsers...)
 	clone.BlockUsers = append([]string(nil), cfg.BlockUsers...)
+	clone.PreferSubjectKinds = append([]string(nil), cfg.PreferSubjectKinds...)
+	clone.PreferSubjectUsers = append([]string(nil), cfg.PreferSubjectUsers...)
 	return clone
 }
 
 func defaultOperationModeConfig() OperationModeConfig {
 	return OperationModeConfig{
 		Mode:           OperationModeQueue,
-		RolloutPercent: 100,
+		RolloutPercent: 100, //全部走队列模式
 		QueueKinds:     append([]string{}, defaultOperationQueueKindNames...),
 	}
 }
@@ -249,16 +285,19 @@ func operationModeConfigFromOptions(opts *serveropts.ServerRunOptions) Operation
 		return defaultOperationModeConfig()
 	}
 	cfg := OperationModeConfig{
-		Mode:           OperationMode(opts.OperationMode),
-		RolloutPercent: opts.OperationRolloutPercent,
-		StickyHeader:   opts.OperationRolloutStickyHeader,
-		QueueKinds:     append([]string{}, opts.OperationQueueKinds...),
-		AllowUsers:     append([]string{}, opts.OperationQueueUserAllowlist...),
-		BlockUsers:     append([]string{}, opts.OperationQueueUserBlocklist...),
+		Mode:               OperationMode(opts.OperationMode),
+		RolloutPercent:     opts.OperationRolloutPercent,
+		StickyHeader:       opts.OperationRolloutStickyHeader,
+		QueueKinds:         append([]string{}, opts.OperationQueueKinds...),
+		AllowUsers:         append([]string{}, opts.OperationQueueUserAllowlist...),
+		BlockUsers:         append([]string{}, opts.OperationQueueUserBlocklist...),
+		PreferSubjectKinds: append([]string{}, opts.OperationRolloutPreferSubjectKinds...),
+		PreferSubjectUsers: append([]string{}, opts.OperationRolloutPreferSubjectUsers...),
 	}
 	return cfg
 }
 
+// rolloutHeaderFromContext 从上下文中提取指定的标头值。
 func rolloutHeaderFromContext(ctx context.Context, header string) string {
 	if ctx == nil || header == "" {
 		return ""

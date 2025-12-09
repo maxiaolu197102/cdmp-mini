@@ -26,15 +26,16 @@ const (
 	defaultArgon2SaltLength  = uint32(16)
 )
 
-// HashConfig describes how passwords should be hashed.
+// HashConfig 哈希加密配置结构体
+// 用于配置不同哈希算法（如 bcrypt、argon2id 等）的参数，适配各类密码/数据加密场景
 type HashConfig struct {
-	Algorithm         string //
-	BcryptCost        int
-	Argon2Time        uint32
-	Argon2MemoryKB    uint32
-	Argon2Parallelism uint8
-	Argon2KeyLength   uint32
-	Argon2SaltLength  uint32
+	Algorithm         string // 哈希算法名称，支持的取值："bcrypt"、"argon2id" 等
+	BcryptCost        int    // bcrypt 算法的加密成本因子（取值范围 4~31，值越大加密越慢、安全性越高）
+	Argon2Time        uint32 // Argon2 算法的时间成本（迭代次数），推荐值 3~4
+	Argon2MemoryKB    uint32 // Argon2 算法的内存成本（单位：KB），推荐值 65536（64MB）
+	Argon2Parallelism uint8  // Argon2 算法的并行度（线程数），推荐值 1~4
+	Argon2KeyLength   uint32 // Argon2 算法生成的密钥长度（单位：字节），推荐值 32
+	Argon2SaltLength  uint32 // Argon2 算法使用的盐值长度（单位：字节），推荐值 16
 }
 
 // Encrypt encrypts the plain text with the default configuration (bcrypt).

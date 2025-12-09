@@ -4,7 +4,10 @@ import "context"
 
 type contextKey string
 
-const createStateKey contextKey = "cdmp.create.state"
+const (
+	createStateKey contextKey = "cdmp.create.state"
+	accountTypeKey contextKey = "cdmp.create.accountType"
+)
 
 // createState keeps mutable flags for a single create request.
 type createState struct {
@@ -13,7 +16,6 @@ type createState struct {
 
 // WithCreateState ensures the create request state holder exists on the context chain.
 // return: 新的上下文，包含创建状态结构体。
-
 func WithCreateState(ctx context.Context) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
@@ -22,6 +24,28 @@ func WithCreateState(ctx context.Context) context.Context {
 		return ctx
 	}
 	return context.WithValue(ctx, createStateKey, &createState{})
+}
+
+// WithAccountType 将账号类型标签写入上下文，供监控/日志使用。
+func WithAccountType(ctx context.Context, accountType string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if accountType == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, accountTypeKey, accountType)
+}
+
+// AccountType 从上下文中读取账号类型标签。
+func AccountType(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if value, ok := ctx.Value(accountTypeKey).(string); ok {
+		return value
+	}
+	return ""
 }
 
 // getCreateState returns the state struct if present.
