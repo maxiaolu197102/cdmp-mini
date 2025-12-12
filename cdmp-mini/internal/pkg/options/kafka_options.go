@@ -12,126 +12,85 @@ import (
 
 // KafkaOptions 定义Kafka配置选项
 type KafkaOptions struct {
-	// Broker地址列表
-	Brokers []string `json:"brokers" mapstructure:"brokers" validate:"min=1"`
+	Brokers []string `json:"brokers" mapstructure:"brokers" validate:"min=1"` // Kafka broker 地址列表，至少 1 个 host:port，建议配置多个提升容错。
+	Topic   string   `json:"topic" mapstructure:"topic" validate:"nonzero"`   // Topic 名称，必填，长度建议 <255 字符。
 
-	// Topic名称
-	Topic string `json:"topic" mapstructure:"topic" validate:"nonzero"`
+	ConsumerGroup string `json:"consumerGroup" mapstructure:"consumerGroup" validate:"nonzero"`    // 消费者组 ID，用于隔离消费进度，必填。
+	RequiredAcks  int    `json:"requiredAcks" mapstructure:"requiredAcks" validate:"min=-1,max=1"` // 生产确认等级：-1=全副本，0=无需确认，1=leader，生产环境推荐 1 或 -1。
 
-	// 消费者组ID
-	ConsumerGroup string `json:"consumerGroup" mapstructure:"consumerGroup" validate:"nonzero"`
+	BatchSize    int           `json:"batchSize" mapstructure:"batchSize" validate:"min=1"`         // 单批最大全量条数，>=1，常见 50~500。
+	BatchTimeout time.Duration `json:"batchTimeout" mapstructure:"batchTimeout" validate:"min=1ms"` // 批处理聚合最大等待时长，>=1ms，通常 10~200ms。
+	MaxRetries   int           `json:"maxRetries" mapstructure:"maxRetries" validate:"min=0"`       // 同步发送失败的最大重试次数，>=0，0 表示不重试。
+	MinBytes     int           `json:"minBytes" mapstructure:"minBytes" validate:"min=1"`           // 消费者单次 fetch 的最小字节数，>=1，建议 1KB~1MB。
+	MaxBytes     int           `json:"maxBytes" mapstructure:"maxBytes" validate:"min=1024"`        // 消费者单次 fetch 的最大字节数，>=1KB，建议不超过 50MB。
+	WorkerCount  int           `json:"workerCount" mapstructure:"workerCount" validate:"min=1"`     // 消费 worker 数量，>=1，通常与分区数持平。
+	FetcherCount int           `json:"fetcherCount" mapstructure:"fetcherCount" validate:"min=1"`   // 每实例 Kafka Reader 并发数，>=1 且不应大于 WorkerCount。
 
-	// 消息确认机制 (0:无需确认, 1:leader确认, -1:所有副本确认)
-	RequiredAcks int `json:"requiredAcks" mapstructure:"requiredAcks" validate:"min=-1,max=1"`
+	RetryWorkerCount int `json:"retryWorkerCount" mapstructure:"retryWorkerCount" validate:"min=1"` // 重试队列 worker 数量，>=1，用于后台补偿任务。
 
-	// 批处理大小
-	BatchSize int `json:"batchSize" mapstructure:"batchSize" validate:"min=1"`
+	EnableMetricsRefresh   bool          `json:"enableMetricsRefresh" mapstructure:"enableMetricsRefresh"`     // 是否启用重试/Topic 指标定期刷新，默认 true。
+	MetricsRefreshInterval time.Duration `json:"metricsRefreshInterval" mapstructure:"metricsRefreshInterval"` // 指标刷新周期，>0 时生效，典型 10s~5m。
 
-	// 批处理超时时间
-	BatchTimeout time.Duration `json:"batchTimeout" mapstructure:"batchTimeout" validate:"min=1ms"`
+	EnableSSL   bool   `json:"enableSSL" mapstructure:"enableSSL"`     // 是否启用 TLS 连接 Kafka。
+	SSLCertFile string `json:"sslCertFile" mapstructure:"sslCertFile"` // TLS 证书文件路径，启用 SSL 时需要配置。
 
-	// 最大重试次数
-	MaxRetries int `json:"maxRetries" mapstructure:"maxRetries" validate:"min=0"`
+	BaseRetryDelay       time.Duration `json:"baseretrydelay" mapstructure:"baseretrydelay"`                        // 生产端重试的起始延迟，常用 1s~10s。
+	MaxRetryDelay        time.Duration `json:"maxretrydelay" mapstructure:"maxretrydelay"`                          // 重试退避的最大延迟上限，通常 30s~5m。
+	AutoCreateTopic      bool          `json:"autoCreateTopic" mapstructure:"autoCreateTopic"`                      // Topic 不存在时是否自动创建，需具备对应 ACL。
+	DesiredPartitions    int           `json:"desiredPartitions" mapstructure:"desiredPartitions" validate:"min=1"` // 期望分区数，>=1，常与 WorkerCount 对齐。
+	AutoExpandPartitions bool          `json:"autoExpandPartitions" mapstructure:"autoExpandPartitions"`            // 是否允许在滞后时自动扩容分区。
 
-	// 读取消息最小字节数
-	MinBytes int `json:"minBytes" mapstructure:"minBytes" validate:"min=1"`
+	LagScaleThreshold int64         `json:"lagScaleThreshold" mapstructure:"lagScaleThreshold"` // 滞后触发扩容/保护的阈值（条），>=0。
+	LagCheckInterval  time.Duration `json:"lagCheckInterval" mapstructure:"lagCheckInterval"`   // 滞后检查周期，>0，典型 5s~60s。
 
-	// 读取消息最大字节数
-	MaxBytes int `json:"maxBytes" mapstructure:"maxBytes" validate:"min=1024"`
+	MaxDBBatchSize         int `json:"maxDBBatchSize" mapstructure:"maxDBBatchSize" validate:"min=1"`                 // 单批写 DB 的最大条目，>=1，受数据库事务限制。
+	BatchChannelCapacity   int `json:"batchChannelCapacity" mapstructure:"batchChannelCapacity" validate:"min=1"`     // 消费者批处理缓冲队列容量，>=1，用于控制内存。
+	MinDBBatchSize         int `json:"minDBBatchSize" mapstructure:"minDBBatchSize" validate:"min=1"`                 // 自适应批量写入的下限，>=1，需 <= MaxDBBatchSize。
+	BatchCreateParallelism int `json:"batchCreateParallelism" mapstructure:"batchCreateParallelism" validate:"min=1"` // 批量创建阶段的 DB 并发度，>=1，建议 <= WorkerCount。
 
-	// 消费者worker数量
-	WorkerCount int `json:"workerCount" mapstructure:"workerCount" validate:"min=1"`
+	SkipCacheWrite     bool          `json:"skipCacheWrite" mapstructure:"skipCacheWrite"`         // 是否跳过用户缓存写入，仅用于诊断。
+	CacheWriteTimeout  time.Duration `json:"cacheWriteTimeout" mapstructure:"cacheWriteTimeout"`   // Redis 写缓存超时时长，0 表示不限制，建议 0.5s~2s。
+	CacheWriteFallback bool          `json:"cacheWriteFallback" mapstructure:"cacheWriteFallback"` // 缓存写失败时是否降级为单键写入用户主体。
 
-	// 每个消费者实例启动多少个 fetcher（Kafka Reader）并发拉取消息
-	FetcherCount int `json:"fetcherCount" mapstructure:"fetcherCount" validate:"min=1"`
+	MinBatchTimeout time.Duration `json:"minBatchTimeout" mapstructure:"minBatchTimeout" validate:"min=1ms"` // 批量聚合的最小超时，>=1ms，压力大时用于快速 flush。
+	MaxBatchTimeout time.Duration `json:"maxBatchTimeout" mapstructure:"maxBatchTimeout" validate:"min=1ms"` // 批量聚合的最大超时，>=1ms 且应 >= MinBatchTimeout。
 
-	RetryWorkerCount int `json:"retryWorkerCount" mapstructure:"retryWorkerCount" validate:"min=1"`
+	PendingLeaseTTL           time.Duration `json:"pendingLeaseTTL" mapstructure:"pendingLeaseTTL"`                     // Pending 租约 TTL，必须 >= MinUserPendingCreateTTL，保障创建幂等。
+	PendingMetricsKey         string        `json:"pendingMetricsKey" mapstructure:"pendingMetricsKey"`                 // Pending 活跃度指标使用的 Redis Key，不能为空。
+	PendingBackpressureWindow time.Duration `json:"pendingBackpressureWindow" mapstructure:"pendingBackpressureWindow"` // Pending 深度采样窗口，>0，典型 1s~10s。
+	PendingBackpressureSoft   int           `json:"pendingBackpressureSoft" mapstructure:"pendingBackpressureSoft"`     // Pending 软阈值（条），超过进入 Elevated。
+	PendingBackpressureHard   int           `json:"pendingBackpressureHard" mapstructure:"pendingBackpressureHard"`     // Pending 硬阈值（条），>= Soft，触发 Severe。
+	PendingReleaseRetention   time.Duration `json:"pendingReleaseRetention" mapstructure:"pendingReleaseRetention"`     // Pending 释放快照保留时长，>=0，典型 1s~5s。
+	PendingExpiredRetention   time.Duration `json:"pendingExpiredRetention" mapstructure:"pendingExpiredRetention"`     // Pending 过期快照保留时长，>=0，建议 10s~60s。
+	PendingExpiredGrace       time.Duration `json:"pendingExpiredGrace" mapstructure:"pendingExpiredGrace"`             // Pending 过期后的宽限期，>=0，用于补偿慢任务。
+	PendingDelayElevated      time.Duration `json:"pendingDelayElevated" mapstructure:"pendingDelayElevated"`           // Elevated 背压建议的最小延迟阈值。
+	PendingDelayElevatedMax   time.Duration `json:"pendingDelayElevatedMax" mapstructure:"pendingDelayElevatedMax"`     // Elevated 背压最大延迟，需 >= PendingDelayElevated。
+	PendingDelaySevere        time.Duration `json:"pendingDelaySevere" mapstructure:"pendingDelaySevere"`               // Severe 背压建议的最小延迟阈值。
+	PendingDelaySevereMax     time.Duration `json:"pendingDelaySevereMax" mapstructure:"pendingDelaySevereMax"`         // Severe 背压最大延迟，需 >= PendingDelaySevere。
 
-	// Metrics refresh configuration for retry/topic metrics
-	EnableMetricsRefresh   bool          `json:"enableMetricsRefresh" mapstructure:"enableMetricsRefresh"`
-	MetricsRefreshInterval time.Duration `json:"metricsRefreshInterval" mapstructure:"metricsRefreshInterval"`
+	ProducerMaxInFlight int    `json:"producerMaxInFlight" mapstructure:"producerMaxInFlight" validate:"min=1"` // 允许同时在途的同步请求数，>=1，过大可能挤压内存。
+	LagProtected        bool   `json:"lagProtected" mapstructure:"lagProtected"`                                // 是否处于滞后保护态（true 表示滞后超过阈值）。
+	InstanceID          string `json:"instanceID" mapstructure:"instanceID"`                                    // 实例唯一 ID，建议 hostname/pod/UUID，便于排障。
 
-	// 是否启用SSL
-	EnableSSL bool `json:"enableSSL" mapstructure:"enableSSL"`
+	StartingRate int           `json:"startingRate" mapstructure:"startingRate"` // 自适应限流的初始速率（条/秒），应 >= MinRate。
+	MinRate      int           `json:"minRate" mapstructure:"minRate"`           // 自适应限流最小速率，>=1，防止降至 0。
+	MaxRate      int           `json:"maxRate" mapstructure:"maxRate"`           // 自适应限流最大速率，需 >= MinRate。
+	AdjustPeriod time.Duration `json:"adjustPeriod" mapstructure:"adjustPeriod"` // 限流调节周期，>0，典型 500ms~5s。
 
-	// SSL证书路径
-	SSLCertFile          string        `json:"sslCertFile" mapstructure:"sslCertFile"`
-	BaseRetryDelay       time.Duration `json:"baseretrydelay" mapstructure:"baseretrydelay"`
-	MaxRetryDelay        time.Duration `json:"maxretrydelay" mapstructure:"maxretrydelay"`
-	AutoCreateTopic      bool          `json:"autoCreateTopic" mapstructure:"autoCreateTopic"`
-	DesiredPartitions    int           `json:"desiredPartitions" mapstructure:"desiredPartitions" validate:"min=1"`
-	AutoExpandPartitions bool          `json:"autoExpandPartitions" mapstructure:"autoExpandPartitions"`
-	// 当消费者滞后超过该阈值时触发保护/扩容（单位：消息数）
-	LagScaleThreshold int64 `json:"lagScaleThreshold" mapstructure:"lagScaleThreshold"`
-	// 检查滞后间隔
-	LagCheckInterval time.Duration `json:"lagCheckInterval" mapstructure:"lagCheckInterval"`
-	// 批量写入数据库时每个批次的L最大条数
-	MaxDBBatchSize int `json:"maxDBBatchSize" mapstructure:"maxDBBatchSize" validate:"min=1"`
-	// 批处理聚合通道容量（防止无界增长导致内存放大）
-	BatchChannelCapacity int `json:"batchChannelCapacity" mapstructure:"batchChannelCapacity" validate:"min=1"`
-	// 自适应批量写入的最小条数（压力大时收敛到该值）
-	MinDBBatchSize int `json:"minDBBatchSize" mapstructure:"minDBBatchSize" validate:"min=1"`
-	// 批量创建时的并发度上限
-	BatchCreateParallelism int `json:"batchCreateParallelism" mapstructure:"batchCreateParallelism" validate:"min=1"`
-	// 是否跳过用户缓存写入（诊断用途）
-	SkipCacheWrite bool `json:"skipCacheWrite" mapstructure:"skipCacheWrite"`
-	// Redis 写入缓存的超时时间，0 表示不限制
-	CacheWriteTimeout time.Duration `json:"cacheWriteTimeout" mapstructure:"cacheWriteTimeout"`
-	// 缓存写入失败后，是否尝试降级为单键写入用户主体
-	CacheWriteFallback bool `json:"cacheWriteFallback" mapstructure:"cacheWriteFallback"`
-	// 批量聚合的最小/最大超时时间边界
-	MinBatchTimeout time.Duration `json:"minBatchTimeout" mapstructure:"minBatchTimeout" validate:"min=1ms"`
-	MaxBatchTimeout time.Duration `json:"maxBatchTimeout" mapstructure:"maxBatchTimeout" validate:"min=1ms"`
-	// Pending lease coordination configuration shared between producer (API) and consumers
-	PendingLeaseTTL           time.Duration `json:"pendingLeaseTTL" mapstructure:"pendingLeaseTTL"`
-	PendingMetricsKey         string        `json:"pendingMetricsKey" mapstructure:"pendingMetricsKey"`
-	PendingBackpressureWindow time.Duration `json:"pendingBackpressureWindow" mapstructure:"pendingBackpressureWindow"`
-	PendingBackpressureSoft   int           `json:"pendingBackpressureSoft" mapstructure:"pendingBackpressureSoft"`
-	PendingBackpressureHard   int           `json:"pendingBackpressureHard" mapstructure:"pendingBackpressureHard"`
-	PendingReleaseRetention   time.Duration `json:"pendingReleaseRetention" mapstructure:"pendingReleaseRetention"`
-	PendingExpiredRetention   time.Duration `json:"pendingExpiredRetention" mapstructure:"pendingExpiredRetention"`
-	PendingExpiredGrace       time.Duration `json:"pendingExpiredGrace" mapstructure:"pendingExpiredGrace"`
-	PendingDelayElevated      time.Duration `json:"pendingDelayElevated" mapstructure:"pendingDelayElevated"`
-	PendingDelayElevatedMax   time.Duration `json:"pendingDelayElevatedMax" mapstructure:"pendingDelayElevatedMax"`
-	PendingDelaySevere        time.Duration `json:"pendingDelaySevere" mapstructure:"pendingDelaySevere"`
-	PendingDelaySevereMax     time.Duration `json:"pendingDelaySevereMax" mapstructure:"pendingDelaySevereMax"`
-	// Producer in-flight limit: maximum concurrent synchronous sends allowed
-	ProducerMaxInFlight int `json:"producerMaxInFlight" mapstructure:"producerMaxInFlight" validate:"min=1"`
-	// 当前是否处于滞后保护状态（true 表示滞后超过阈值）
-	LagProtected bool `json:"lagProtected" mapstructure:"lagProtected"`
-	// 实例唯一ID（建议用 hostname、pod name、uuid 等保证全局唯一）
-	InstanceID string `json:"instanceID" mapstructure:"instanceID"`
-	//初始速率
-	StartingRate int `json:"startingRate" mapstructure:"startingRate"`
-	//最小速率
-	MinRate int `json:"minRate" mapstructure:"minRate"`
-	//最大速率
-	MaxRate int `json:"maxRate" mapstructure:"maxRate"`
-	//轮询时间
-	AdjustPeriod time.Duration `json:"adjustPeriod" mapstructure:"adjustPeriod"`
+	FlushFrequency      time.Duration `json:"flushFrequency" mapstructure:"flushFrequency"`           // Sarama Flush 定时器，0 表示禁用，常用 5~50ms。
+	FlushMaxMessages    int           `json:"flushMaxMessages" mapstructure:"flushMaxMessages"`       // 单次 Flush 的最大消息数，>=1。
+	ProducerCompression string        `json:"producerCompression" mapstructure:"producerCompression"` // 生产者压缩算法：none/snappy/gzip/lz4/zstd。
 
-	// Sarama producer flush frequency
-	FlushFrequency time.Duration `json:"flushFrequency" mapstructure:"flushFrequency"`
-	// Sarama producer flush max messages
-	FlushMaxMessages int `json:"flushMaxMessages" mapstructure:"flushMaxMessages"`
-	// Sarama producer compression codec (none,snappy,gzip,lz4,zstd)
-	ProducerCompression string `json:"producerCompression" mapstructure:"producerCompression"`
-	// Whether to return successes on the async channel
-	ProducerReturnSuccesses bool `json:"producerReturnSuccesses" mapstructure:"producerReturnSuccesses"`
-	// Whether to return errors on the async channel
-	ProducerReturnErrors bool `json:"producerReturnErrors" mapstructure:"producerReturnErrors"`
-	// Sarama channel buffer size for async producer
-	ChannelBufferSize int `json:"channelBufferSize" mapstructure:"channelBufferSize"`
-	// Maximum duration to wait while enqueuing a message into the async producer
-	ProducerEnqueueTimeout time.Duration `json:"producerEnqueueTimeout" mapstructure:"producerEnqueueTimeout"`
-	// Enable background fallback compensation job
-	FallbackRetryEnabled bool `json:"fallbackRetryEnabled" mapstructure:"fallbackRetryEnabled"`
-	// Interval between compensation attempts
-	FallbackRetryInterval time.Duration `json:"fallbackRetryInterval" mapstructure:"fallbackRetryInterval"`
-	// Maximum attempts before giving up (0 means unlimited)
-	FallbackRetryMaxAttempts int `json:"fallbackRetryMaxAttempts" mapstructure:"fallbackRetryMaxAttempts"`
-	// Maximum messages to process in a single compensation cycle (0 means no limit)
-	FallbackRetryBatchSize int `json:"fallbackRetryBatchSize" mapstructure:"fallbackRetryBatchSize"`
+	ProducerReturnSuccesses bool `json:"producerReturnSuccesses" mapstructure:"producerReturnSuccesses"` // 异步生产者是否返回 success 事件，开启可做监控但增加通道压力。
+	ProducerReturnErrors    bool `json:"producerReturnErrors" mapstructure:"producerReturnErrors"`       // 异步生产者是否返回 error 事件，用于监控报警。
+
+	ChannelBufferSize      int           `json:"channelBufferSize" mapstructure:"channelBufferSize"`           // Sarama 异步通道缓冲大小，>=0，0 表示采用默认。
+	ProducerEnqueueTimeout time.Duration `json:"producerEnqueueTimeout" mapstructure:"producerEnqueueTimeout"` // 异步生产者入队等待上限，>0，超时触发降级。
+
+	FallbackRetryEnabled     bool          `json:"fallbackRetryEnabled" mapstructure:"fallbackRetryEnabled"`         // 是否启用降级文件的后台补偿任务。
+	FallbackRetryInterval    time.Duration `json:"fallbackRetryInterval" mapstructure:"fallbackRetryInterval"`       // 补偿任务调度间隔，>0，常见 10s~5m。
+	FallbackRetryMaxAttempts int           `json:"fallbackRetryMaxAttempts" mapstructure:"fallbackRetryMaxAttempts"` // 单条消息最大补偿次数，>=0，0 表示无限重试。
+	FallbackRetryBatchSize   int           `json:"fallbackRetryBatchSize" mapstructure:"fallbackRetryBatchSize"`     // 单次补偿处理的最大消息数，>=0，0 表示不限制。
 }
 
 // NewKafkaOptions 创建带有默认值的Kafka配置

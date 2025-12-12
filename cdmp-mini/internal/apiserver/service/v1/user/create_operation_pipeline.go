@@ -631,6 +631,10 @@ func (e *userCreateOperationExecutor) Execute(ctx context.Context, env *operatio
 		return res, err
 	}
 
+	if env != nil {
+		e.service.stopPendingHeartbeatSession(env.ID)
+	}
+
 	return &operation.OperationResult{
 		OperationID: env.ID,
 		State:       operation.StateCompleted,
@@ -675,6 +679,10 @@ func (e *userCreateOperationExecutor) Compensate(ctx context.Context, env *opera
 		fatalErr := fmt.Errorf("user service not initialized")
 		outcome = "fatal"
 		return &operation.OperationResult{OperationID: opID, State: operation.StateFailed, Fatal: true, Error: fatalErr}, fatalErr
+	}
+
+	if env != nil {
+		defer e.service.stopPendingHeartbeatSession(env.ID)
 	}
 	if env == nil {
 		outcome = "noop"

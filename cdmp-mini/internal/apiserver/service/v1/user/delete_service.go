@@ -5,6 +5,7 @@ import (
 	stdErrors "errors"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/options"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/common/service/operation"
@@ -169,6 +170,7 @@ func (u *UserService) processUserDelete(ctx context.Context, payload *userDelete
 	//检查用户是否存在
 	checkCtx, checkSpan := trace.StartSpan(deleteCtx, "user-service", "check_user_exist")
 	checkCtx = WithVerifyUserGone(checkCtx)
+	checkStart := time.Now()
 	ruser, existErr := u.checkUserExist(checkCtx, username, true)
 	spanStatusCheck := "success"
 	spanCodeCheck := strconv.Itoa(code.ErrSuccess)
@@ -205,6 +207,7 @@ func (u *UserService) processUserDelete(ctx context.Context, payload *userDelete
 		"username":  username,
 		"not_found": notFound,
 	})
+	u.recordUserCreateStep(deleteCtx, "delete_check_user_exist", "username", username, time.Since(checkStart), existErr)
 	if err != nil {
 		return err
 	}
@@ -226,6 +229,7 @@ func (u *UserService) processUserDelete(ctx context.Context, payload *userDelete
 		}
 		sendCtx, sendSpan := trace.StartSpan(deleteCtx, "user-service", "producer_send_delete")
 		trace.AddRequestTag(sendCtx, "username", username)
+		sendStart := time.Now()
 		sendErr := u.Producer.SendDeleteMessage(sendCtx, username)
 		sendStatus := "success"
 		sendCode := strconv.Itoa(code.ErrSuccess)
@@ -239,9 +243,11 @@ func (u *UserService) processUserDelete(ctx context.Context, payload *userDelete
 			}
 			err = errors.WithCode(code.ErrKafkaFailed, "kafka生产者消息发送失败")
 		}
+		sendDuration := time.Since(sendStart)
 		trace.EndSpan(sendSpan, sendStatus, sendCode, map[string]interface{}{
 			"username": username,
 		})
+		u.recordUserCreateStep(deleteCtx, "kafka_send_delete_user", "kafka", username, sendDuration, sendErr)
 		if sendErr != nil {
 			return err
 		}
@@ -249,7 +255,9 @@ func (u *UserService) processUserDelete(ctx context.Context, payload *userDelete
 	}
 
 	if existingUser == nil {
+		fetchStart := time.Now()
 		fetched, fetchErr := u.fetchUserSnapshot(deleteCtx, username)
+		u.recordUserCreateStep(deleteCtx, "delete_fetch_snapshot", "database", username, time.Since(fetchStart), fetchErr)
 		if fetchErr != nil {
 			log.Warnw("获取用户快照失败", "username", username, "error", fetchErr)
 		} else if fetched != nil {
@@ -264,6 +272,7 @@ func (u *UserService) processUserDelete(ctx context.Context, payload *userDelete
 
 	sendCtx, sendSpan := trace.StartSpan(deleteCtx, "user-service", "producer_send_delete")
 	trace.AddRequestTag(sendCtx, "username", username)
+	sendStart := time.Now()
 	sendErr := u.Producer.SendDeleteMessage(sendCtx, username)
 	sendStatus := "success"
 	sendCode := strconv.Itoa(code.ErrSuccess)
@@ -277,14 +286,17 @@ func (u *UserService) processUserDelete(ctx context.Context, payload *userDelete
 		}
 		err = errors.WithCode(code.ErrKafkaFailed, "kafka生产者消息发送失败")
 	}
+	sendDuration := time.Since(sendStart)
 	trace.EndSpan(sendSpan, sendStatus, sendCode, map[string]interface{}{
 		"username": username,
 		"force":    false,
 	})
+	u.recordUserCreateStep(deleteCtx, "kafka_send_delete_user", "kafka", username, sendDuration, sendErr)
 	if sendErr != nil {
 		return err
 	}
 
+	cleanupStart := time.Now()
 	cleanupErr := u.cleanupUserStateForDelete(deleteCtx, username, existingUser)
 	if cleanupErr != nil {
 		trace.AddRequestTag(deleteCtx, "delete_cleanup_error", cleanupErr.Error())
@@ -292,6 +304,7 @@ func (u *UserService) processUserDelete(ctx context.Context, payload *userDelete
 	} else {
 		trace.AddRequestTag(deleteCtx, "delete_cleanup_success", true)
 	}
+	u.recordUserCreateStep(deleteCtx, "delete_cleanup_state", "cache", username, time.Since(cleanupStart), cleanupErr)
 
 	return nil
 }

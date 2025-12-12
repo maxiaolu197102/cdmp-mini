@@ -41,6 +41,8 @@ func (e *userDeleteOperationExecutor) Execute(ctx context.Context, env *operatio
 		decodeErr := fmt.Errorf("decode delete payload: %w", err)
 		return &operation.OperationResult{OperationID: env.ID, State: operation.StateFailed, Fatal: true, Error: decodeErr}, decodeErr
 	}
+	stopHeartbeat := e.service.startHeartbeatFromEnvelope(env, payload.Username)
+	defer stopHeartbeat()
 
 	if err := e.service.processUserDelete(ctx, &payload); err != nil {
 		fatal := classifyDeleteError(err)

@@ -220,6 +220,7 @@ func (g *GenericAPIServer) performShutdown(ctx context.Context) {
 		if shutdownCtx == nil {
 			shutdownCtx = context.Background()
 		}
+		g.stopUserService()
 		g.stopLoginUpdater()
 		g.closeWithAudit(shutdownCtx, "kafka", g.shutdownKafka)
 		g.closeWithAudit(shutdownCtx, "redis", g.shutdownRedis)
@@ -403,6 +404,10 @@ func NewGenericAPIServer(opts *options.Options) (*GenericAPIServer, error) {
 	g.startKafkaMonitor()
 
 	g.initUserService(storeIns)
+	if err := g.runContactWarmup(); err != nil {
+		return nil, err
+	}
+	g.startUserServiceLoops()
 	g.initCredentialCache()
 	g.initLoginUpdater()
 
@@ -869,6 +874,43 @@ func (g *GenericAPIServer) initUserService(factory interfaces.Factory) {
 	}
 	userProducer := g.ensureUserProducer()
 	g.userService = user.NewUserService(factory, g.redis, g.options, userProducer, g.audit)
+}
+
+func (g *GenericAPIServer) runContactWarmup() error {
+	if g == nil || g.userService == nil {
+		return nil
+	}
+	if g.options == nil || g.options.ServerRunOptions == nil {
+		return nil
+	}
+	if !g.options.ServerRunOptions.EnableContactWarmup {
+		return nil
+	}
+	if g.fastDebugStartupEnabled() {
+		log.Warn("调试快速启动: 跳过阻塞联系人缓存预热，将在后台执行")
+		go g.userService.WarmupContactCacheBlocking(context.Background())
+		return nil
+	}
+	log.Info("执行联系人唯一性缓存预热...")
+	if err := g.userService.WarmupContactCacheBlocking(context.Background()); err != nil {
+		return fmt.Errorf("contact cache warmup failed: %w", err)
+	}
+	log.Info("联系人唯一性缓存预热完成")
+	return nil
+}
+
+func (g *GenericAPIServer) startUserServiceLoops() {
+	if g == nil || g.userService == nil {
+		return
+	}
+	g.userService.StartContactWarmupLoop()
+}
+
+func (g *GenericAPIServer) stopUserService() {
+	if g == nil || g.userService == nil {
+		return
+	}
+	g.userService.StopContactWarmupLoop()
 }
 
 func (g *GenericAPIServer) initCredentialCache() {

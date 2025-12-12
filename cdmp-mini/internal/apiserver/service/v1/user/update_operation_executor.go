@@ -42,6 +42,8 @@ func (e *userUpdateOperationExecutor) Execute(ctx context.Context, env *operatio
 		decodeErr := fmt.Errorf("decode update payload: %w", err)
 		return &operation.OperationResult{OperationID: env.ID, State: operation.StateFailed, Fatal: true, Error: decodeErr}, decodeErr
 	}
+	stopHeartbeat := e.service.startHeartbeatFromEnvelope(env, user.Name)
+	defer stopHeartbeat()
 
 	if err := e.service.processUserUpdate(ctx, &user); err != nil {
 		fatal := classifyUpdateError(err)

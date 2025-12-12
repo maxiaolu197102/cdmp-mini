@@ -6,6 +6,51 @@
 ## 0. 名词解释
 1. 背压
 在数据流处理过程，，当下游消费者处理速度跟不上上游生产者的速度时，为了防止系统过载或崩溃，上游会主动减缓数据发送速率，称为背压（Backpressure）。在 *cdmp-mini* 中，背压主要通过 `PendingCoordinator` 实现。
+2. 降级
+降级（Degradation）是指在系统负载过高或部分组件不可用时，主动降低服务质量或功能，以保证核心功能的可用性。在 *cdmp-mini* 中，降级主要体现在 Redis 不可用时跳过租约写入。
+核心是先明确降级的本质定义，再区分「重试」「错误处理」「降级」的边界，最后结合你的场景判断是否属于降级。
+一、先明确：什么是降级？
+降级（Service Degradation）的核心目标是：当系统 / 依赖资源出现异常（如超时、报错、过载）时，为了保证核心功能可用、避免雪崩，主动放弃部分非核心功能，或用「低成本、低质量但可用」的方式替代原逻辑。
+降级的关键特征：
+「主动妥协」：不是被动报错，而是提前设计的兜底方案；
+「核心可用」：牺牲非核心，保核心；
+「替代逻辑」：用更简单的逻辑（如默认值、缓存占位符、空结果）替代原复杂逻辑。
+二、先区分：重试 ≠ 降级
+你提到的「出现超时等错误→重试」，不算降级，原因：
+重试的目标是「恢复原逻辑的正常执行」，本质是「尽力让原功能正常工作」，而非「放弃原功能、用兜底方案替代」；
+重试是「纠错手段」，降级是「容错手段」—— 只有重试失败后，不再执着于原逻辑，才会进入降级环节。
+举个例子：
+调用用户唯一性校验接口超时→重试 3 次（重试，试图恢复原逻辑）；
+重试 3 次仍超时→不再调用接口，直接用 Redis 占位符判断（降级，放弃原接口，用兜底逻辑）。
+三、你的场景：Redis 写入占位符是否算降级？
+结论：如果这个占位符是「替代原唯一性校验逻辑的兜底方案」，则属于降级；如果只是「记录错误状态」，则不算。
+分两种情况拆解：
+情况 1：算降级（符合降级核心特征）
+比如你的核心逻辑是：
+校验用户手机号唯一性 → 调用数据库 / 第三方接口 → 返回「唯一 / 不唯一」
+异常场景：调用数据库超时→重试 3 次无效→不再查库，而是读取 Redis 中的占位符（比如「暂定为唯一」/「暂定为不唯一」）作为校验结果，同时在 Redis 写入这个占位符标记此时符合降级：
+放弃了「精准查库校验唯一性」的原逻辑（非核心？或为了保系统稳定性暂时妥协）；
+用「Redis 占位符」这个低成本方案替代，保证「校验功能不报错、核心流程能走通」；
+是主动设计的兜底，而非被动报错。
+情况 2：不算降级（仅为错误记录）
+如果重试失败后，在 Redis 写入占位符（比如「校验失败 - 超时」），但后续流程直接抛出错误、终止校验，没有用这个占位符替代原校验逻辑 —— 此时 Redis 占位符只是「错误状态记录」，不算降级（因为没有兜底的替代逻辑，核心功能仍不可用）。
+四、「错误处理机制」≠ 降级，但降级是错误处理的一种高级形式
+错误处理是一个「大范畴」，降级是错误处理中「面向稳定性的兜底策略」，二者是包含关系：
+类型	目标	例子	是否算降级？
+基础错误处理	捕获错误、避免崩溃	try-catch 捕获超时异常，打印日志	❌
+重试	恢复原逻辑执行	超时后重试 3 次	❌
+降级（兜底处理）	放弃原逻辑，保核心可用	重试失败后用 Redis 占位符替代校验结果	✅
+熔断	防止过载，暂时切断依赖	短时间内校验失败率超 50%，5 分钟内不调用	✅（熔断是降））
+五、总结你的场景
+「超时→重试」：不算降级，是错误处理的「重试策略」；
+「重试无效→Redis 写占位符 + 用占位符替代原校验逻辑」：算降级（兜底策略）；
+「重试无效→Redis 写占位符但直接报错」：不算降级，只是错误处理的「状态记录」；
+错误处理是大概念，降级是错误处理中「为了系统稳定性的主动兜底方案」。
+补充：常见的降级场景参考（帮你更易判断）
+商品详情页：库存服务挂了→降级为「显示默认库存（如有货）」，而非页面崩溃；
+支付接口：第三方支付超时→降级为「提示 “稍后重试”」，而非卡死；
+你的唯一性校验：查库失败→降级为「基于 Redis 占位符暂判（如 10 分钟内重复则拒绝）」，保证注册流程能走通。
+核心判断标准：是否为了 “核心功能可用”，主动用 “低成本方案” 替代 “原异常逻辑” —— 是，则算降级；否，则只是普通错误处理。
 
 ## 1. 架构图（Architecture Diagram）
 
@@ -88,12 +133,12 @@ graph LR
 
 - **架构分层说明**
 
-| 层级 | 组件 | 职责 |
-| --- | --- | --- |
-| Client Layer | `UI`、`SDK` | 外部调用方通过前端页面或 OpenAPI SDK 进入，统一处理鉴权、重试与幂等头部。 |
-| Service Layer | `UserService.create`、`createPipeline`、`unique.Checker`、`RateLimiter`、`PendingCoordinator`、`Audit Manager`、`Kafka Producer`、`Kafka Consumer`、`Operation Queue Coordinator`、`OperationPipeline Workers`、`Compensation Worker` | 接口入口承担限流、模式判定与 trace 建立；流水线执行业务校验、租约占位、审计与 Kafka 投递；异步模式下请求写入操作队列，由后台 Worker 拉起同一流水线，失败场景交由补偿线程恢复。 |
-| Observability Layer | `Logger`、`Prometheus Metrics`、`Tracing System` | 统一采集结构化日志、指标与分布式追踪，为 SLO 监控、链路定位和容量分析提供数据。 |
-| Infra Layer | `Redis Cluster`、`Kafka Cluster`、`MySQL/下游服务`、`ServerRunOptions`、`RequestStateStore`、`Fallback Dir` | Redis 提供租约、缓存与去重；Kafka 承载异步消息链路；MySQL/下游服务用于最终持久化；配置中心提供动态限流与降级参数；状态存储与 Fallback 目录支撑异步任务恢复与失败持久化。 |
+| 层级                | 组件                                                                                                                                                                                                                                  | 职责                                                                                                                                                                           |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Client Layer        | `UI`、`SDK`                                                                                                                                                                                                                           | 外部调用方通过前端页面或 OpenAPI SDK 进入，统一处理鉴权、重试与幂等头部。                                                                                                      |
+| Service Layer       | `UserService.create`、`createPipeline`、`unique.Checker`、`RateLimiter`、`PendingCoordinator`、`Audit Manager`、`Kafka Producer`、`Kafka Consumer`、`Operation Queue Coordinator`、`OperationPipeline Workers`、`Compensation Worker` | 接口入口承担限流、模式判定与 trace 建立；流水线执行业务校验、租约占位、审计与 Kafka 投递；异步模式下请求写入操作队列，由后台 Worker 拉起同一流水线，失败场景交由补偿线程恢复。 |
+| Observability Layer | `Logger`、`Prometheus Metrics`、`Tracing System`                                                                                                                                                                                      | 统一采集结构化日志、指标与分布式追踪，为 SLO 监控、链路定位和容量分析提供数据。                                                                                                |
+| Infra Layer         | `Redis Cluster`、`Kafka Cluster`、`MySQL/下游服务`、`ServerRunOptions`、`RequestStateStore`、`Fallback Dir`                                                                                                                           | Redis 提供租约、缓存与去重；Kafka 承载异步消息链路；MySQL/下游服务用于最终持久化；配置中心提供动态限流与降级参数；状态存储与 Fallback 目录支撑异步任务恢复与失败持久化。       |
 
 - `UI → SDK → UserService.create`：外部请求先经 SDK 规范化参数和鉴权，再进入 API 层完成模式决策与全局限流。
 - `UserService.create → createPipeline`：同步模式直接进入流水线，依次执行 `unique.Checker` 校验、`PendingCoordinator` 背压占位、`Audit Manager` 记录审计，并在 `Kafka Producer` 处发出创建消息。
@@ -321,16 +366,16 @@ flowchart TD
    → 否 → 返回同步模式。
 决策完成后，`decideOperationMode` 会返回枚举值驱动后续逻辑：同步模式进入 `createPipeline`，异步模式写入 `operationPipeline`，灰度模式按照采样决定。
 
-| 判定阶段 | 条件 | 结果 |
-| --- | --- | --- |
-| 控制器初始化 | `ensureOperationModeController` 返回 `nil` | 默认 `queue`，避免阻塞创建能力 |
-| 操作类型 | 不在 `QueueKinds` 中 | 强制同步，保障特殊操作实时性 |
-| 用户名单 | 命中 `BlockUsers` / `AllowUsers` | Block → Sync；Allow → Queue |
-| Mode=Sync | 固定同步 | 返回 `sync` |
-| Mode=Queue | 固定排队 | 返回 `queue` |
-| Mode=Rollout | `RolloutPercent <=0` | 降级同步 |
-| Mode=Rollout | `RolloutPercent >=100` | 全量排队 |
-| Mode=Rollout | 0~100 之间 | 使用 Sticky Header/subject/自增序号生成 key，`withinRolloutSample` 决定 `queue` 或 `sync` |
+| 判定阶段     | 条件                                       | 结果                                                                                      |
+| ------------ | ------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| 控制器初始化 | `ensureOperationModeController` 返回 `nil` | 默认 `queue`，避免阻塞创建能力                                                            |
+| 操作类型     | 不在 `QueueKinds` 中                       | 强制同步，保障特殊操作实时性                                                              |
+| 用户名单     | 命中 `BlockUsers` / `AllowUsers`           | Block → Sync；Allow → Queue                                                               |
+| Mode=Sync    | 固定同步                                   | 返回 `sync`                                                                               |
+| Mode=Queue   | 固定排队                                   | 返回 `queue`                                                                              |
+| Mode=Rollout | `RolloutPercent <=0`                       | 降级同步                                                                                  |
+| Mode=Rollout | `RolloutPercent >=100`                     | 全量排队                                                                                  |
+| Mode=Rollout | 0~100 之间                                 | 使用 Sticky Header/subject/自增序号生成 key，`withinRolloutSample` 决定 `queue` 或 `sync` |
 
 ---
 
@@ -338,30 +383,38 @@ flowchart TD
 
 在进入流水线之前，`UserService.Create` 会通过 `decideOperationMode` 判定执行模式：若为 `OperationModeQueue` 则直接入队异步执行；仅当判定为 `OperationModeSync` 时才会落入同步 `createpipeline.Pipeline`。`UserService.Create` 通过 `createpipeline.Pipeline` 串联一组幂等钩子，每个阶段都记录 trace / metrics，并在失败时返回携带业务码的错误。流水线的关键步骤如下：
 
-| 顺序 | 钩子 | 说明 |
-| --- | --- | --- |
-| 1 | `createBeginHook` | 建立根 Span，向上下文写入创建态标识，准备结束回调以统一收敛状态码。 |
-| 2 | `normalizeUserForCreate` | 归一化邮箱、手机号，确保后续缓存键一致。 |
-| 3 | `prepareUserForCreate` | 加密密码、预热联系方式缓存，记录耗时指标。 |
-| 4 | `ensureUserUnique` | 统一执行用户名/联系方式唯一性校验，详见下节。 |
-| 5 | `resolveUserExistence` | 当预检未覆盖用户名时补充库查，并将结果写入 trace tag。 |
-| 6 | `handleUserExisting` | 若已存在冲突实体，按照业务码返回 `ErrUserAlreadyExist`。 |
-| 7 | `markUserPendingForCreate` | 与 `PendingCoordinator` 互动写入租约；若 Redis 降级激活或 `shouldDegradeForError` 判定可降级错误，则跳过 SetNX，调用 `markCreateDegraded` 并上报 `PendingLeaseEvents`（`acquire_skip_degraded` / `acquire_degraded`）。 |
-| 8 | `afterUserPending` | 为 trace 增加租约相关标签，便于串联后续链路。 |
-| 9 | `SendCreateMessage` | 发送 Kafka 事件，失败时打点并返回 `ErrKafkaFailed`。 |
+| 顺序 | 钩子                       | 说明                                                                                                                                                                                                                    |
+| ---- | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1    | `createBeginHook`          | 建立根 Span，向上下文写入创建态标识，准备结束回调以统一收敛状态码。                                                                                                                                                     |
+| 2    | `normalizeUserForCreate`   | 归一化邮箱、手机号，确保后续缓存键一致。                                                                                                                                                                                |
+| 3    | `prepareUserForCreate`     | 加密密码、预热联系方式缓存，记录耗时指标。                                                                                                                                                                              |
+| 4    | `ensureUserUnique`         | 统一执行用户名/联系方式唯一性校验，详见下节。                                                                                                                                                                           |
+| 5    | `resolveUserExistence`     | 当预检未覆盖用户名时补充库查，并将结果写入 trace tag。                                                                                                                                                                  |
+| 6    | `handleUserExisting`       | 若已存在冲突实体，按照业务码返回 `ErrUserAlreadyExist`。                                                                                                                                                                |
+| 7    | `markUserPendingForCreate` | 与 `PendingCoordinator` 互动写入租约；若 Redis 降级激活或 `shouldDegradeForError` 判定可降级错误，则跳过 SetNX，调用 `markCreateDegraded` 并上报 `PendingLeaseEvents`（`acquire_skip_degraded` / `acquire_degraded`）。 |
+| 8    | `afterUserPending`         | 为 trace 增加租约相关标签，便于串联后续链路。                                                                                                                                                                           |
+| 9    | `SendCreateMessage`        | 发送 Kafka 事件，失败时打点并返回 `ErrKafkaFailed`。                                                                                                                                                                    |
 
 ### 2.2.1 业务指标总览（SRE 指南）
 
-| 业务点 | 指标英文名 | 指标中文名 | 业务含义 / SRE 使用指南 |
-| --- | --- | --- | --- |
-| 请求入口 `Create` | `user_create_requests_total{mode,account_type,outcome}` | 用户创建请求总数 | 统计同步 / 异步（mode）及账号类型的成功 / 失败次数；SRE 用于区分模式故障（队列 vs 同步）与特定账号类型异常，建议结合 `outcome` 中的业务错误类型设置分组告警。 |
-| 全链路步骤 | `user_create_step_duration_seconds{step,field,account_type}` | 用户创建步骤耗时分布 | 各子步骤耗时直方图，默认阈值 200 ms；监控 p95/p99 变化识别慢查询、Redis、Kafka 尾延迟，按 `account_type` 精细化分析特俗用户。 |
-| 全链路步骤 | `user_create_step_total{step,field,account_type,outcome}` | 用户创建步骤执行次数 | 记录每个步骤的成功 / 失败次数，定位是哪一步骤抛出 `validation_error`、`duplicate` 等业务错误；SRE 可按 outcome 建立 TopN 面板。 |
-| 慢步骤 | `user_create_slow_steps_total{step,field,account_type}` | 用户创建慢步骤计数 | 步骤耗时超过 200 ms 时自增，适合做告警基线；当该计数快速增长时优先排查对应步骤的耗时直方图。 |
-| 占位 & 降级 | `user_contact_placeholder_set_duration_seconds{step,field,status}` | 联系方式占位耗时分布 | 记录 Redis SetNX / 刷新耗时，`status=slow` 表示超过 20 ms；与 Redis 慢查询告警联动，定位缓存热点或网络问题。 |
-| 占位 & 降级 | `user_contact_placeholder_events_total{step,field,result}` | 联系方式占位事件计数 | 标记占位命中 / 降级 / miss 等路径；SRE 可观察 `result=degraded`、`result=refresh` 等标签判断是否频繁退化。 |
-| 降级管理 | `user_create_degrade_total{reason,account_type}` | 用户创建降级次数 | 聚合记录降级原因（Redis 占位失败、预检超时等）；当某个 reason 持续升高时，可触发自动脚本拉起降级保护或通知人工干预。 |
-| Kafka 出口 | `user_create_message_total{account_type,result}` | 用户创建消息发送结果 | 统计 Kafka 发送成功 / 失败；SRE 用于区分账号类型的消息发送质量，`result` 与 `GetBusinessErrorType` 一致，可快速定位网络、超时、认证等异常。 |
+| 业务点            | 指标英文名                                                         | 指标中文名           | 业务含义 / SRE 使用指南                                                                                                                                       |
+| ----------------- | ------------------------------------------------------------------ | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 请求入口 `Create` | `user_create_requests_total{mode,account_type,outcome}`            | 用户创建请求总数     | 统计同步 / 异步（mode）及账号类型的成功 / 失败次数；SRE 用于区分模式故障（队列 vs 同步）与特定账号类型异常，建议结合 `outcome` 中的业务错误类型设置分组告警。 |
+| 全链路步骤        | `user_create_step_duration_seconds{step,field,account_type}`       | 用户创建步骤耗时分布 | 各子步骤耗时直方图，默认阈值 200 ms；监控 p95/p99 变化识别慢查询、Redis、Kafka 尾延迟，按 `account_type` 精细化分析特俗用户。                                 |
+| 全链路步骤        | `user_create_step_total{step,field,account_type,outcome}`          | 用户创建步骤执行次数 | 记录每个步骤的成功 / 失败次数，定位是哪一步骤抛出 `validation_error`、`duplicate` 等业务错误；SRE 可按 outcome 建立 TopN 面板。                               |
+| 慢步骤            | `user_create_slow_steps_total{step,field,account_type}`            | 用户创建慢步骤计数   | 步骤耗时超过 200 ms 时自增，适合做告警基线；当该计数快速增长时优先排查对应步骤的耗时直方图。                                                                  |
+| 占位 & 降级       | `user_contact_placeholder_set_duration_seconds{step,field,status}` | 联系方式占位耗时分布 | 记录 Redis SetNX / 刷新耗时，`status=slow` 表示超过 20 ms；与 Redis 慢查询告警联动，定位缓存热点或网络问题。                                                  |
+| 占位 & 降级       | `user_contact_placeholder_events_total{step,field,result}`         | 联系方式占位事件计数 | 标记占位命中 / 降级 / miss 等路径；SRE 可观察 `result=degraded`、`result=refresh` 等标签判断是否频繁退化。                                                    |
+| 降级管理          | `user_create_degrade_total{reason,account_type}`                   | 用户创建降级次数     | 聚合记录降级原因（Redis 占位失败、预检超时等）；当某个 reason 持续升高时，可触发自动脚本拉起降级保护或通知人工干预。                                          |
+| Kafka 出口        | `user_create_message_total{account_type,result}`                   | 用户创建消息发送结果 | 统计 Kafka 发送成功 / 失败；SRE 用于区分账号类型的消息发送质量，`result` 与 `GetBusinessErrorType` 一致，可快速定位网络、超时、认证等异常。                   |
+
+**关键 SRE 指标公式与阈值建议**
+
+- **预检执行率**：`preflight_query / (preflight_query + preflight_query_skip)`。建议配置 >80% 持续 5 分钟告警，通常意味着缓存预热失效、强一致性流量暴涨或新节点尚未预热。
+- **预检超时率**：`rate(user_create_step_total{step="preflight_query",outcome="timeout"}[5m]) / rate(user_create_step_total{step="preflight_query"}[5m])`。若超过 5%，需同步检查 `database_query_duration_seconds` 与数据库慢日志。
+- **占位慢操作率**：`rate(user_contact_placeholder_set_duration_seconds_count{status="slow"}[5m]) / rate(user_contact_placeholder_set_duration_seconds_count[5m])`。当超过 2% 时重点排查 Redis 网络、热点分片和 CPU 利用率。
+- **降级触发率**：`rate(user_create_degrade_total[5m]) / rate(user_create_requests_total[5m])`。超过 1% 即提醒关注。结合 `reason` 标签判断是否集中于 `redis_cache_error`、`preflight_timeout`、`placeholder_error` 等异常路径。
+- **Kafka 失败率**：`rate(user_create_message_total{result!="success"}[5m]) / rate(user_create_message_total[5m])`。若高于 0.5%，建议触发自动降级或启用 WAL 重放，并排查网络链路。
 
 > 标签说明：新增指标统一携带 `account_type`（来源于用户 Extend / 管理员标识），请在 Grafana 透视表中保留该维度，以便区分管理员 / 普通用户、租户等业务线；`outcome`、`result` 使用 `metrics.GetBusinessErrorType` 的枚举值，便于与其他业务指标对齐。
 
@@ -386,9 +439,15 @@ flowchart TD
 - `reason`（`user_create_degrade_total`）：当前实现会写入 `redis_cache_error`、`redis_placeholder_error`、`preflight_timeout` 等原因字符串，新增原因可直接扩展。
 - `status`（`user_contact_placeholder_set_duration_seconds`）：`success` / `slow` / `error`，其中 `slow` 表示 SetNX/刷新耗时超过 20 ms。
 
+### 联系方式缓存预热策略
+
+- **启动前置**：`GenericAPIServer.NewGenericAPIServer` 在初始化 `UserService` 后会调用 `runContactWarmup()`，内部通过 `WarmupContactCacheBlocking` 阻塞式拉齐 Redis 中的邮箱 / 手机号唯一性缓存。正常环境下预热失败会直接阻断启动；仅在 `FastDebugStartup` 模式下才会记录告警并异步预热，保证本地调试的启动速度。
+- **长期一致性**：同一个入口在预热完毕后还会调用 `StartContactWarmupLoop()`，默认每 6 小时（`server.contact-warmup-refresh-interval` 可调，设为 0 可关闭）执行一次全量扫描，复用相同的写入逻辑，保证缓存与数据库长期保持一致。
+- **运行时兜底**：`ensureContactCacheReady` 仍会作为安全网存在，处理启动预热被跳过、后台刷新失败或实例在运行中扩容的新节点，并借助 `contactWarmupNextRetry` 防止雪崩式重试。
+
 ### ensureContactCacheReady 阶段细节
 
-该钩子在 `ensureUserUnique` 之前执行，用于确认联系方式唯一性缓存已经处于热状态，避免后续校验大量访问冷缓存或触发重复加热。完整流程如下：
+该钩子在 `ensureUserUnique` 之前执行，用于确认联系方式唯一性缓存已经处于热状态。启动阶段的 `WarmupContactCacheBlocking` 会优先完成预热，但该钩子仍负责在运行期兜底、降级和记录状态。完整流程如下：
 
 1. **就绪快速路径**：读取 `contactCacheReady` 原子标记；若已为真立即返回，整个阶段耗时接近 0。
 2. **配置与依赖校验**：当关闭 `EnableContactWarmup`、缺少 Store/Redis 或检测到降级标记时，直接跳过预热但记录日志，避免无意义的重试。
@@ -400,8 +459,8 @@ flowchart TD
 下游降级策略的意义
 退避窗口的核心是「延迟重试」，而非「终止业务」，因此下游必须有兜底逻辑；
 唯一性校验的降级需平衡可用性与准确性：核心场景（如支付联系人校验）：降级为「查数据库」（保证准确性，牺牲性能）；非核心场景（如普通消息联系人校验）：降级为「放行 / 返回默认值」（保证可用性，牺牲部分准确性）。
-4. **互斥启动预热**：通过 `contactWarmupMu` 与 `contactWarming` 双重检查，只允许一个 goroutine 真正进入 `warmContactCache()` 执行批量扫描、缓存填充。
-5. **结果写回**：预热成功则设置 `contactCacheReady=true` 并清除重试时间；失败时写入下一次重试时间、保持降级标记，并将原因记录在结构化日志与指标中。
+4. **互斥启动预热**：通过 `contactWarmupMu`、`contactWarming` 和新增的 `contactWarmupWaitCh` 双重检查，只允许一个 goroutine 真正进入 `warmContactCache()` 执行批量扫描，其余阻塞调用会等待通道关闭后复用结果。
+5. **结果写回**：预热成功则设置 `contactCacheReady=true` 并清除重试时间；失败时写入下一次重试时间、保持降级标记，并将原因记录在结构化日志与指标中（`completeContactWarmup` 统一处理）。
 
 预热阶段的状态会被后续的 `ensureUserUnique` 消费：若缓存仍未就绪或处于降级窗口，该阶段会自动走存储兜底分支，同时把降级原因透出到 trace 与 metrics 中，便于结合运维监控快速定位问题。
 
@@ -456,7 +515,7 @@ flowchart TD
     class LimiterFail,ShouldPreflight,PreflightErr decision
 ```
 [ 注释 ]：
-预检不会对每一次请求都打库。shouldRunPreflight（    user_service.go 1537 行起）在以下场景才返回 true：Redis 已降级、调用方要求强一致、用户字段全空之外、或者缓存还没预热。生产长跑情况下 ① Redis 正常 ② contactCacheReady 已为 true 时，   runPreflight 是 false，代码会走 preflight_query_skip，所以不会触发    store.PreflightConflicts。 • “命中率 5%~10%”通常发生在两类场景：服务刚升起/缓存还未热好（预热前必须跑预检防止脏写），或最近 Redis 发生故障被标记降级。这时才会走限流 + 预检，限流只是在保护数据库并发，属于短期兜底。 • 真正的唯一性校验在 ensureContactUnique（1968 行起）里，通过    unique.NewChecker 先与 Redis 交互： ◦ 读取/写入缓存占位符（SetNX）确保同一联系方式只有一个请求持有； ◦ 缓存命中直接返回，跳过查库； ◦ 仅在缓存缺失、强一致请求或需要兜底时才调用 GetByEmail、GetByPhone。
+预检不会对每一次请求都打库。`shouldRunPreflight`（`user_service.go` 1537 行起）只有在**强一致性标记命中**、**用户字段不全空**且**缓存尚未预热/Redis 客户端不可用**时才会返回 true。生产长跑情况下 ① Redis 正常 ② `contactCacheReady` 已为 true 时，`runPreflight` 是 false，代码走 `preflight_query_skip`，不会触发 `store.PreflightConflicts`。当实例进入 Redis 降级模式（`isRedisDegradeActive=true`）时会显式跳过预检，直接依赖后续的降级路径，避免在 Redis 异常期间用大量数据库预检把主库压垮。 • “命中率 5%~10%”通常发生在两类场景：服务刚升起/缓存还未热好（预热前必须跑预检防止脏写），或强一致性请求持续注入（如强制刷新、删除场景）。 • 真正的唯一性校验逻辑在 `ensureContactUnique`（1968 行起）中，通过 `unique.NewChecker` 先与 Redis 交互： ◦ 读取/写入缓存占位符（SetNX）确保同一联系方式只有一个请求持有； ◦ 缓存命中直接返回，跳过查库； ◦ 在缓存缺失、降级模式或强一致请求下才调用 `GetByEmail`、`GetByPhone`，确保最终一致性。
 这就是“先查 Redis，必要时再查库”的落地实现。   • Redis 的意义在于： 1. 高并发下为每个邮箱/手机号提供租约，占住后续请求避免并发写冲突； 2. 作为热点缓存，大多数查询在 Redis 命中，无需访问数据库； 3. 在降级或缓存未就绪时，再退回数据库 + 本地缓存，保证一致性。   • 如果实际监控看到预检占比一直偏高，建议排查 contactCacheReady 是否为 true、是否处于降级（user_create_degrade_total、ensure_contact_*_degraded_* 指标）、或是否频繁触发强一致调用；根因在这些条件，而不是流程本身必须查库。
 #### EnsureUnique 数据流程图
 
@@ -466,7 +525,6 @@ graph LR
     Ctx[请求上下文] --> Limiter[preflightLimiter]
     Limiter --> WarmupStep[ensureContactCacheReady]
     WarmupStep --> Redis[(Redis Cluster)]
-    WarmupStep --> LocalCache[降级本地缓存]
     WarmupStep -->|预热状态| StateFlag[contactCacheReady]
     WarmupStep --> NormalizeStep[normalizeUserContacts]
     NormalizeStep --> PreflightDecision[shouldRunPreflight]
@@ -477,8 +535,8 @@ graph LR
     PreflightDecision -->|否| SkipPreflight[跳过预检]
     Preflight --> Conflicts[冲突映射]
     SkipPreflight --> Conflicts
-    Conflicts --> EmailUnique[ensureContactUnique(email)]
-    Conflicts --> PhoneUnique[ensureContactUnique(phone)]
+    Conflicts --> EmailUnique["ensureContactUnique(email)"]
+    Conflicts --> PhoneUnique["ensureContactUnique(phone)"]
     EmailUnique --> Redis
     PhoneUnique --> Redis
     EmailUnique --> UserStore
@@ -489,9 +547,9 @@ graph LR
     PhoneUnique --> Trace
     EmailUnique --> DegradeFlag[降级标记]
     PhoneUnique --> DegradeFlag
-    DegradeFlag --> LocalCache
+    DegradeFlag --> LocalCache[降级本地缓存]
     DegradeFlag --> Placeholder[Redis 占位符]
-    Conflicts --> Result[PreflightResult+UsernameChecked]
+    Conflicts --> Result["PreflightResult + UsernameChecked"]
 
     linkStyle default stroke:#1E63B5,stroke-width:3px
 ```
@@ -729,9 +787,14 @@ flowchart LR
 
 1. **Redis 依赖较重**：已补充 `pending_lease_*` Redis 操作指标（GET/SETNX/TTL/计数器），结合哨兵或 Proxy 监控可快速锁定热点命令的延迟与失败率。
 2. **计数器漂移观测**：新增 `pending_lease_calibration_duration_seconds` 直方图与取消事件，配合 `calibration_*` 计数可量化后台校准的耗时、失败与恢复情况。
-3. **背压策略调优**：`PendingCoordinator.UpdateBackpressureProfile` 支持热更新延迟曲线，可通过聚合配置中心或运维指令动态调整桶阈值与延迟梯度。
+3. **背压策略调优**：`PendingCoordinator.UpdateBackpressureProfile` 现已统一作用于 Redis 与内存实现，所有采样/Acquire/延迟注入都读取相同的 `BackpressureDelayProfile`。装载阶段依赖 `validateDelayBuckets` 做强校验：
+    - 桶列表必须与 `ElevatedBucketCount`/`SevereBucketCount` 完全一致，且首桶深度对齐软/硬阈值，后续桶严格单调递增（等价于“区间连续且无重叠”）。
+    - 指定 `ElevatedMaxDepth`/`SevereMaxDepth` 时，最后一个桶的深度必须与之匹配；若未显式配置则自动回填为末桶深度，避免出现“深度 250 匹配，深度 320 无桶”的空洞。
+    - 自动生成分支会在 `buildDelayBuckets` 内预留剩余空间并强制最后一个桶落在 MaxDepth，上述校验未通过会在启动期 panic 提示 `invalid ... backpressure profile`，请在配置中心修正后再发版。
+    - 运维侧仍可以通过远程调用 `UpdateBackpressureProfile` 热更新桶阈值与延迟梯度，校验成功后会同步刷新内存 fallback。
 4. **日志/指标一致性**：统一使用 `PendingLeaseEvents` 记录背压曲线变更、校准重试等关键事件，与 Trace Tag 共享相同枚举，辅助排障。
 5. **配置热更新**：保留 `UpdateCalibration` + `Stop()` 优雅退出流程，结合新的背压曲线热更新接口，实现租约与背压配置的在线调整。
+6. **内存兜底并发能力**：`memoryPendingCoordinator` 已切换为 32 分片的 RWMutex 结构（可按 power-of-two 调整），并以 `activeCount` 原子计数与分片级清理取代全局大锁。`SampleQueueDepth`、`Observe`、`ListExpired` 全部走分片锁定，可在 Redis 降级场景下承受更高并发，但也要求应用尽快回切 Redis 以避免长时间运行在内存兜底模式。
 
 ---
 

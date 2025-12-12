@@ -66,6 +66,8 @@ const (
 	minDelayQuantum                   = time.Millisecond
 	pendingCommandTimeoutDefault      = 600 * time.Millisecond
 	scriptReloadMinSlack              = 100 * time.Millisecond
+	scopedLimiterIdleTTL              = 10 * time.Minute
+	scopedLimiterMaxEntries           = 2048
 )
 
 var (
@@ -177,14 +179,59 @@ type BackpressureDelayBucket struct {
 	Delay time.Duration
 }
 
-// BackpressureDelayProfile groups delay buckets for each backpressure level so that producers and consumers respond consistently.
+// BackpressureDelayProfile 是背压延迟配置结构体，核心作用是：为不同背压等级（Elevated 轻度 / Severe 严重）定义 “队列深度→延迟时间” 的映射规则，让生产端（产生任务）和消费端（处理任务）基于统一的延迟策略响应背压，避免两端策略不一致导致的系统震荡。
+// 设计理念：
+/*
+BackpressureDelayProfile 是背压延迟策略的 “配置中心”：
+按背压等级（轻度 / 严重）划分延迟规则，实现梯度化延迟；
+统一生产 / 消费端的响应策略，避免系统震荡；
+所有字段围绕 “队列深度→延迟时间” 的映射展开，兼顾灵活性（可配置）和规范性（有校验）；
+核心目的：在系统出现背压时，通过 “可控的延迟” 平缓降低负载，而非直接拒绝任务，平衡系统稳定性和业务可用性。
+1. 阶梯式延迟：通过定义多个深度区间和对应的延迟时间，实现随着队列深度增加而逐步加大的延迟效果，平滑系统负载。
+2. 灵活配置：允许用户自定义延迟桶，支持不同的业务场景和性能需求。
+3. 自动生成：提供默认的延迟桶生成逻辑，简化配置过程，确保在缺省配置下也能获得合理的背压响应。
+4. 最大深度限制：通过最大深度参数，防止配置过度，确保延迟策略在合理范围内运行。
+1.延迟桶的区间要连续且无重叠：
+比如轻度背压的桶不能出现 “0-100” 和 “90-200” 重叠，否则匹配逻辑会混乱；正确的区间是 “0-100、100-200、200-300”。
+2.BucketCount 要和桶列表长度一致：
+比如 ElevatedBucketCount=3，则 Elevated 列表必须有 3 个桶，否则需在初始化时校验，避免配置错误：
+3.BucketCount 要和桶列表长度一致：
+比如 ElevatedBucketCount=3，则 Elevated 列表必须有 3 个桶，否则需在初始化时校验，避免配置错误
+4.MaxDepth 要和桶的最大深度匹配：
+比如 ElevatedMaxDepth=300，则轻度背压最后一个桶的 MaxDepth 必须是 300，否则会出现 “深度 250 属于轻度，但深度 350 未匹配到严重桶” 的漏洞。
+
+delayProfile := BackpressureDelayProfile{
+    // 轻度背压配置
+    ElevatedBucketCount: 3,
+    ElevatedMaxDepth:    300,
+    Elevated: []BackpressureDelayBucket{
+        {MinDepth: 0,  MaxDepth: 100, Delay: 5 * time.Millisecond},  // 深度0-100 → 延迟5ms
+        {MinDepth: 100, MaxDepth: 200, Delay: 10 * time.Millisecond}, // 深度100-200 → 延迟10ms
+        {MinDepth: 200, MaxDepth: 300, Delay: 20 * time.Millisecond}, // 深度200-300 → 延迟20ms
+    },
+    // 严重背压配置
+    SevereBucketCount: 3,
+    SevereMaxDepth:    1000,
+    Severe: []BackpressureDelayBucket{
+        {MinDepth: 300, MaxDepth: 500, Delay: 50 * time.Millisecond},  // 深度300-500 → 延迟50ms
+        {MinDepth: 500, MaxDepth: 800, Delay: 100 * time.Millisecond}, // 深度500-800 → 延迟100ms
+        {MinDepth: 800, MaxDepth: 1000, Delay: 200 * time.Millisecond}, // 深度800-1000 → 延迟200ms
+    },
+}
+*/
 type BackpressureDelayProfile struct {
-	Elevated            []BackpressureDelayBucket
-	Severe              []BackpressureDelayBucket
+	//轻度背压（Elevated）下的延迟桶列表（每个桶包含 “队列深度区间 + 对应延迟时间”）（比如深度 100→延迟 10ms，深度 200→延迟 20ms）
+	Elevated []BackpressureDelayBucket
+	//严重背压（Severe）下的延迟桶列表（每个桶包含 “队列深度区间 + 对应延迟时间”）（比如深度 100→延迟 50ms，深度 200→延迟 200ms）
+	Severe []BackpressureDelayBucket
+	//桶数量，用于自动生成延迟桶时的参考
 	ElevatedBucketCount int
-	SevereBucketCount   int
-	ElevatedMaxDepth    int
-	SevereMaxDepth      int
+	//桶数量，用于自动生成延迟桶时的参考
+	SevereBucketCount int
+	//轻度背压最大队列深度，用于规范延迟桶的最大深度
+	ElevatedMaxDepth int
+	//严重背压最大队列深度，用于规范延迟桶的最大深度
+	SevereMaxDepth int
 }
 
 func (p *BackpressureDelayProfile) ensureDefaults(soft, hard int, elevatedBase, elevatedMax, severeBase, severeMax time.Duration) {
@@ -243,10 +290,28 @@ func (p *BackpressureDelayProfile) ensureDefaults(soft, hard int, elevatedBase, 
 	} else {
 		p.Elevated = normalizeDelayBuckets(p.Elevated, elevatedMaxDepth)
 	}
+	if err := validateDelayBuckets("elevated", p.Elevated, soft, p.ElevatedBucketCount, p.ElevatedMaxDepth); err != nil {
+		panic(fmt.Sprintf("invalid elevated backpressure profile: %v", err))
+	}
+	if p.ElevatedBucketCount <= 0 {
+		p.ElevatedBucketCount = len(p.Elevated)
+	}
+	if p.ElevatedMaxDepth <= 0 && len(p.Elevated) > 0 {
+		p.ElevatedMaxDepth = p.Elevated[len(p.Elevated)-1].Depth
+	}
 	if len(p.Severe) == 0 {
 		p.Severe = buildDelayBuckets(hard, severeBuckets, severeBase, severeMax, severeMaxDepth)
 	} else {
 		p.Severe = normalizeDelayBuckets(p.Severe, severeMaxDepth)
+	}
+	if err := validateDelayBuckets("severe", p.Severe, hard, p.SevereBucketCount, p.SevereMaxDepth); err != nil {
+		panic(fmt.Sprintf("invalid severe backpressure profile: %v", err))
+	}
+	if p.SevereBucketCount <= 0 {
+		p.SevereBucketCount = len(p.Severe)
+	}
+	if p.SevereMaxDepth <= 0 && len(p.Severe) > 0 {
+		p.SevereMaxDepth = p.Severe[len(p.Severe)-1].Depth
 	}
 }
 
@@ -431,12 +496,26 @@ func buildDelayBuckets(baseDepth, count int, baseDelay, maxDelay time.Duration, 
 			if next <= depth {
 				next = depth + 1
 			}
+			remaining := count - i - 1
+			if cappedMax > 0 {
+				maxAllowed := cappedMax
+				if remaining > 0 {
+					maxAllowed -= remaining
+				}
+				if next > maxAllowed {
+					next = maxAllowed
+				}
+			}
+			if next > maxBackpressureDepthCap {
+				next = maxBackpressureDepthCap
+			}
+			if next <= depth {
+				next = depth + 1
+			}
 			depth = next
 		}
-		if cappedMax > 0 && depth > cappedMax {
+		if cappedMax > 0 && i == count-1 {
 			depth = cappedMax
-		} else if depth > maxBackpressureDepthCap {
-			depth = maxBackpressureDepthCap
 		}
 		var delay time.Duration
 		if count == 1 {
@@ -450,54 +529,87 @@ func buildDelayBuckets(baseDepth, count int, baseDelay, maxDelay time.Duration, 
 			delay = minDelayQuantum
 		}
 		buckets = append(buckets, BackpressureDelayBucket{Depth: depth, Delay: delay})
-		if (cappedMax > 0 && depth >= cappedMax) || depth >= maxBackpressureDepthCap {
-			break
-		}
 	}
 	return normalizeDelayBuckets(buckets, cappedMax)
 }
 
+func validateDelayBuckets(name string, buckets []BackpressureDelayBucket, baseDepth, expectedCount, configuredMax int) error {
+	if len(buckets) == 0 {
+		return fmt.Errorf("%s buckets must not be empty", name)
+	}
+	if expectedCount > 0 && len(buckets) != expectedCount {
+		return fmt.Errorf("%s bucket count mismatch: expect %d, got %d", name, expectedCount, len(buckets))
+	}
+	boundary := baseDepth
+	for idx, bucket := range buckets {
+		if bucket.Delay <= 0 {
+			return fmt.Errorf("%s bucket[%d] delay must be > 0", name, idx)
+		}
+		if idx == 0 {
+			if baseDepth > 0 && bucket.Depth != baseDepth {
+				return fmt.Errorf("%s bucket[%d] depth %d must equal base depth %d", name, idx, bucket.Depth, baseDepth)
+			}
+		} else if bucket.Depth <= boundary {
+			return fmt.Errorf("%s bucket[%d] depth %d must be greater than previous boundary %d", name, idx, bucket.Depth, boundary)
+		}
+		if bucket.Depth <= 0 {
+			return fmt.Errorf("%s bucket[%d] depth must be > 0", name, idx)
+		}
+		boundary = bucket.Depth
+	}
+	if configuredMax > 0 && boundary != configuredMax {
+		return fmt.Errorf("%s max depth mismatch: expect %d, got %d", name, configuredMax, boundary)
+	}
+	return nil
+}
+
 type LeaseMetadata struct {
-	Username        string
-	RequestID       string
-	Operator        string
-	ClientIP        string
-	LegacyRequestID string
-	Backend         string
+	Username        string //必填，标识所属用户
+	RequestID       string //必填，唯一请求 ID
+	Operator        string //可选，发起请求的操作者标识
+	ClientIP        string //可选，发起请求的客户端 IP 地址
+	LegacyRequestID string //可选，兼容旧请求 ID 字段
+	Backend         string //可选，标识请求来源的后端服务
 }
 
 //背压配置
 
 type PendingCoordinatorConfig struct {
-	LeaseTTL                      time.Duration              //租约有效期（控制单个操作的最大处理时间）
-	ObserveTimeout                time.Duration              //观察超时时间（控制读取当前状态的最大等待时间）
-	CommandTimeout                time.Duration              //单次Redis命令的最大执行时间
-	DegradeActive                 func(context.Context) bool //全局降级检测，返回 true 时直接走内存兜底
-	BackpressureWindow            time.Duration              //背压评估窗口
-	BackpressureSoftLimit         int                        //软限制（达到该值开始应用背压）
-	BackpressureHardLimit         int                        //硬限制（达到该值触发严重背压429）
-	MetricsKey                    string                     //指标键
-	Component                     string                     //组件标识（用于区分不同服务）
-	LogLeaseEvents                bool                       //是否记录租约事件日志
-	ReleaseRetention              time.Duration              //正常释放租约状态保留时间
-	ExpiredRetention              time.Duration              //过期租约状态保留时间
-	ExpiredGracePeriod            time.Duration              //过期宽限期
-	ElevatedDelayBase             time.Duration              //基础延迟（背压升高时）
-	ElevatedDelayMax              time.Duration              //最大延迟（背压升高时）
-	SevereDelayBase               time.Duration              //基础延迟（严重背压时）
-	SevereDelayMax                time.Duration              //最大延迟（严重背压时）
-	BackpressureDelayProfile      BackpressureDelayProfile   //延迟曲线配置
-	TokenBucketRate               float64                    //令牌桶速率（req/s），0 表示关闭
-	TokenBucketBurst              int                        //令牌桶突发容量
-	UserMetricsPrefix             string                     //用户局部深度指标前缀
-	UserBackpressureWindow        time.Duration              //用户级队列采样窗口
-	UserBackpressureSoftLimit     int                        //用户级软阈值
-	UserBackpressureHardLimit     int                        //用户级硬阈值
-	InstanceBackpressureSoftLimit int                        //实例级软阈值
-	InstanceBackpressureHardLimit int                        //实例级硬阈值
-	FallbackDelay                 time.Duration              //采样失败时的保守延迟
-	CalibrationInterval           time.Duration              //全量校准执行间隔
-	CalibrationTimeout            time.Duration              //单次全量校准超时
+	LeaseTTL              time.Duration              //租约有效期（控制单个操作的最大处理时间）
+	ReleaseRetention      time.Duration              //正常释放租约状态保留时间
+	ExpiredRetention      time.Duration              //过期租约状态保留时间
+	ExpiredGracePeriod    time.Duration              //过期宽限期
+	HeartbeatTimeout      time.Duration              //心跳超时时间（0 表示禁用，>0 时若超出即触发提前过期）
+	ElevatedDelayBase     time.Duration              //基础延迟（背压升高时）
+	ObserveTimeout        time.Duration              //观察超时时间（控制读取当前状态的最大等待时间）
+	CommandTimeout        time.Duration              //单次Redis命令的最大执行时间
+	DegradeActive         func(context.Context) bool //全局降级检测，返回 true 时直接走内存兜底
+	BackpressureWindow    time.Duration              //背压评估窗口
+	BackpressureSoftLimit int                        //软限制（达到该值开始应用背压）
+	BackpressureHardLimit int                        //硬限制（达到该值触发严重背压429）
+	MetricsKey            string                     //指标键
+	Component             string                     //组件标识（用于区分不同服务）
+	LogLeaseEvents        bool                       //是否记录租约事件日志
+
+	ElevatedDelayMax              time.Duration            //最大延迟（背压升高时）
+	SevereDelayBase               time.Duration            //基础延迟（严重背压时）
+	SevereDelayMax                time.Duration            //最大延迟（严重背压时）
+	BackpressureDelayProfile      BackpressureDelayProfile //延迟曲线配置
+	TokenBucketRate               float64                  //令牌桶速率（req/s），0 表示关闭
+	TokenBucketBurst              int                      //令牌桶突发容量
+	UserTokenBucketRate           float64                  //用户级令牌桶速率（req/s），0 表示关闭
+	UserTokenBucketBurst          int                      //用户级令牌桶突发容量
+	InstanceTokenBucketRate       float64                  //实例级令牌桶速率（req/s），0 表示关闭
+	InstanceTokenBucketBurst      int                      //实例级令牌桶突发容量
+	UserMetricsPrefix             string                   //用户局部深度指标前缀
+	UserBackpressureWindow        time.Duration            //用户级队列采样窗口
+	UserBackpressureSoftLimit     int                      //用户级软阈值
+	UserBackpressureHardLimit     int                      //用户级硬阈值
+	InstanceBackpressureSoftLimit int                      //实例级软阈值
+	InstanceBackpressureHardLimit int                      //实例级硬阈值
+	FallbackDelay                 time.Duration            //采样失败时的保守延迟
+	CalibrationInterval           time.Duration            //全量校准执行间隔
+	CalibrationTimeout            time.Duration            //单次全量校准超时
 }
 
 /*
@@ -513,32 +625,136 @@ type PendingCoordinatorConfig struct {
 便于测试和模拟
 */
 type PendingCoordinator struct {
-	redis                     *storage.RedisCluster    // Redis 集群客户端，用于读写 pending 租约和队列指标
-	cfg                       PendingCoordinatorConfig // 背压与租约相关的完整配置快照
-	component                 string                   // 组件名称标签，便于日志和指标区分来源，例如 "user_service"/"iam-apiserver"
-	mode                      string
-	queueDepthReconcileActive atomic.Bool   // 对账协程运行标记：true 表示 sampler 正在执行，false 表示空闲
-	tokenLimiter              *rate.Limiter // 可选的全局令牌桶限速器，用于额外平滑突发流量（nil 表示未启用）
-	instanceActive            atomic.Int64  // 当前实例自身统计的活跃租约数，取值 >=0，辅助实例级背压
-	randomMu                  sync.Mutex    // 保护随机数发生器，避免并发竞争
-	random                    *rand.Rand    // 用于生成抖动等随机值的本地 RNG（种子来自时间/熵源）
-	fallbackDelay             time.Duration // 当采样失败时采用的保守等待时长，默认几十毫秒以内
-	fallbackOnce              sync.Once
-	calibrationOnce           sync.Once     // 确保校准调度器只初始化一次
-	calibrationStop           chan struct{} // 向校准协程发送停止信号的通道
-	calibrationStopOnce       sync.Once     // 保证停止信号仅关闭一次
-	calibrationUpdateCh       chan struct{} // 用于触发立即校准的通知通道（非缓冲，发送空结构体）
-	calibrationIntervalNS     atomic.Int64  // 以纳秒缓存的校准周期，支持动态热更新
-	calibrationTimeoutNS      atomic.Int64  // 以纳秒缓存的单次校准超时时间
-	backpressureProfile       atomic.Value  // 当前生效的背压延迟曲线配置（支持热更新）
-	fallback                  *memoryPendingCoordinator
-	pendingAcquireScriptSHA   atomic.Value
-	globalSampleCache         atomic.Value
-	userSampleCache           sync.Map
-	sampleCacheTTL            time.Duration
-	scriptLoader              func(ctx context.Context, script string) (string, error)
-	luaExecutor               func(ctx context.Context, sha string, keys []string, args []interface{}) (interface{}, error)
-	scriptReloadGroup         singleflight.Group
+	redis                     *storage.RedisCluster                                                                         // Redis 集群客户端；必须指向可用连接，nil 表示强制回落至内存实现
+	cfg                       PendingCoordinatorConfig                                                                      // 背压配置快照；构造时固定，热更新通过 Update* 接口写入其中的 atomic 字段
+	component                 string                                                                                        // 组件名称标签，取值范围为任意非空字符串，例如 "iam"、"order"，用于区分指标来源
+	mode                      string                                                                                        // 运行模式标识，典型值如 "redis"/"memory"；空字符串表示默认 Redis 路径
+	queueDepthReconcileActive atomic.Bool                                                                                   // 对账协程运行标记，仅取 true/false，true 表示校准协程正在运行
+	tokenLimiter              *rate.Limiter                                                                                 // 全局令牌桶限速器，nil 表示不启用；非 nil 时限制速率在 (0,+inf)
+	instanceLimiter           *rate.Limiter                                                                                 // 实例级令牌桶限速器，nil 表示不启用
+	userTokenBuckets          *scopedLimiterPool                                                                            // 用户级令牌桶缓存池，nil 表示不启用
+	instanceActive            atomic.Int64                                                                                  // 当前实例活跃租约计数，范围 [0,+inf)，用于实例级背压及指标
+	randomMu                  sync.Mutex                                                                                    // 互斥锁，仅在生成随机抖动时短暂加锁，保证 RNG 线程安全
+	random                    *rand.Rand                                                                                    // 本地随机数发生器，可见度 scoped 到协调器；nil 时不会注入抖动
+	fallbackDelay             time.Duration                                                                                 // 采样失败时采用的保守等待时间，>=0，常见取值 10~100ms
+	fallbackOnce              sync.Once                                                                                     // 保证 fallback 初始化逻辑只执行一次，无额外取值语义
+	calibrationOnce           sync.Once                                                                                     // 校准调度器单次初始化保护：只允许注册一次后台任务
+	calibrationStop           chan struct{}                                                                                 // 通知后台校准协程退出的通道，非 nil 时表示可发送关闭信号
+	calibrationStopOnce       sync.Once                                                                                     // 控制 calibrationStop 只关闭一次，避免 panic
+	calibrationUpdateCh       chan struct{}                                                                                 // 触发即时校准的信号通道，通常为无缓冲；nil 表示未开启热校准
+	calibrationIntervalNS     atomic.Int64                                                                                  // 校准周期缓存，单位纳秒，取值 >=0（0 表示禁用定时校准）
+	calibrationTimeoutNS      atomic.Int64                                                                                  // 单次校准超时时间缓存，单位纳秒，取值 >0 才会生效
+	backpressureProfile       atomic.Value                                                                                  // 存放 BackpressureDelayProfile 对象的原子容器，供 Acquire/Observe 读取
+	fallback                  *memoryPendingCoordinator                                                                     // 内存兜底协调器实例，nil 表示未配置
+	pendingAcquireScriptSHA   atomic.Value                                                                                  // 缓存 Lua 脚本 SHA1，类型 string；空值表示需要重新加载
+	globalSampleCache         atomic.Value                                                                                  // 缓存最近一次全局采样 queueSampleCache，用于 sampleCacheTTL 内复用
+	userSampleCache           sync.Map                                                                                      // 用户级采样缓存，key=用户名(string)，value=*queueSampleCache
+	sampleCacheTTL            time.Duration                                                                                 // 采样缓存生存时间，>=0；0 表示禁用缓存
+	scriptLoader              func(ctx context.Context, script string) (string, error)                                      // Lua 脚本加载回调，需返回 SHA；为 nil 时使用默认加载器
+	luaExecutor               func(ctx context.Context, sha string, keys []string, args []interface{}) (interface{}, error) // 执行 Redis Lua 的回调，nil 使用默认客户端执行
+	scriptReloadGroup         singleflight.Group                                                                            // 控制脚本加载的单航班组，确保并发只加载一次
+}
+
+// 用户令牌桶条目，包含令牌桶和最后使用时间
+type scopedLimiterEntry struct {
+	//用户令牌桶
+	limiter *rate.Limiter
+	//当前时间 - 令牌桶lastUsed时间 > 清理阈值（比如5分钟）判定为“长期未使用” → 从字典中删除这个令牌桶
+	lastUsed time.Time
+}
+
+type scopedLimiterPool struct {
+	mu sync.Mutex
+	//用户令牌桶的存储字典（key = 用户名，value = 令牌桶 + 最后使用时间）
+	limiters map[string]*scopedLimiterEntry
+	//令牌桶速率（请求数/秒）
+	rate float64
+	//令牌桶突发容量
+	burst int
+}
+
+func newScopedLimiterPool(rateValue float64, burst int) *scopedLimiterPool {
+	resolvedBurst := resolveTokenBucketBurst(rateValue, burst)
+	if resolvedBurst <= 0 {
+		return nil
+	}
+	return &scopedLimiterPool{
+		limiters: make(map[string]*scopedLimiterEntry),
+		rate:     rateValue,
+		burst:    resolvedBurst,
+	}
+}
+
+// 获取指定 key 的令牌桶，若不存在则创建一个新的
+func (p *scopedLimiterPool) getLimiter(key string) *rate.Limiter {
+	if p == nil || key == "" {
+		return nil
+	}
+	now := time.Now()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.limiters == nil {
+		p.limiters = make(map[string]*scopedLimiterEntry)
+	}
+	if entry, ok := p.limiters[key]; ok {
+		entry.lastUsed = now
+		return entry.limiter
+	}
+	limiter := rate.NewLimiter(rate.Limit(p.rate), p.burst)
+	p.limiters[key] = &scopedLimiterEntry{limiter: limiter, lastUsed: now}
+	if len(p.limiters) > scopedLimiterMaxEntries {
+		p.compactLocked(now)
+	}
+	return limiter
+}
+
+func (p *scopedLimiterPool) compactLocked(now time.Time) {
+	cutoff := now.Add(-scopedLimiterIdleTTL)
+	for key, entry := range p.limiters {
+		if entry.lastUsed.Before(cutoff) {
+			delete(p.limiters, key)
+		}
+		if len(p.limiters) <= scopedLimiterMaxEntries {
+			return
+		}
+	}
+	if len(p.limiters) <= scopedLimiterMaxEntries {
+		return
+	}
+	excess := len(p.limiters) - scopedLimiterMaxEntries
+	for key := range p.limiters {
+		delete(p.limiters, key)
+		excess--
+		if excess <= 0 {
+			break
+		}
+	}
+}
+
+func resolveTokenBucketBurst(rateValue float64, requested int) int {
+	if rateValue <= 0 {
+		return 0
+	}
+	resolved := requested
+	if resolved <= 0 {
+		base := int(rateValue)
+		if base <= 0 {
+			base = 1
+		}
+		resolved = base * defaultTokenBucketBurstMultiplier
+	}
+	if resolved < 1 {
+		resolved = 1
+	}
+	return resolved
+}
+
+func newRateLimiter(rateValue float64, burst int) *rate.Limiter {
+	resolvedBurst := resolveTokenBucketBurst(rateValue, burst)
+	if resolvedBurst <= 0 {
+		return nil
+	}
+	return rate.NewLimiter(rate.Limit(rateValue), resolvedBurst)
 }
 
 type queueSampleCache struct {
@@ -571,6 +787,7 @@ type pendingLeaseSnapshot struct {
 	Version              int64  `json:"version"`                         // 快照版本号，使用时间戳保证单调
 	LeaseExpiresAt       string `json:"lease_expires_at"`                // 租约到期时间（RFC3339Nano）
 	AcquireAt            string `json:"acquire_at"`                      // 租约获取时间（RFC3339Nano）
+	HeartbeatAt          string `json:"heartbeat_at,omitempty"`          // 最近一次心跳上报时间（RFC3339Nano）
 	UpdatedAt            string `json:"updated_at"`                      // 快照最后更新时间（RFC3339Nano）
 	QueueDepth           int64  `json:"queue_depth,omitempty"`           // 全局排队深度（所有实例活跃租约数）
 	Backpressure         string `json:"backpressure,omitempty"`          // 全局背压等级：none/elevated/severe
@@ -595,6 +812,7 @@ type PendingLease struct {
 	Version        int64
 	AcquireAt      time.Time
 	LeaseExpiresAt time.Time
+	HeartbeatAt    time.Time
 	QueueDepth     int64
 	Backpressure   BackpressureLevel
 	Metadata       LeaseMetadata
@@ -630,6 +848,9 @@ type PendingState struct {
 	// 时区: 统一使用UTC
 	// 用途: 与当前时间对比触发租约续租或清理
 	LeaseExpiresAt time.Time
+	// HeartbeatAt 最近一次心跳时间
+	// 用途: 判断租约是否失联，从而提前触发过期
+	HeartbeatAt time.Time
 	// ReleasedAt 租约释放时间
 	// 为空表示尚未释放
 	// 用途: 辅助释放保护期与审计日志
@@ -853,9 +1074,6 @@ func NewPendingCoordinator(redis *storage.RedisCluster, cfg PendingCoordinatorCo
 	if cfg.UserBackpressureHardLimit < cfg.UserBackpressureSoftLimit {
 		cfg.UserBackpressureHardLimit = cfg.UserBackpressureSoftLimit
 	}
-	if cfg.InstanceBackpressureSoftLimit <= 0 {
-		cfg.InstanceBackpressureSoftLimit = defaultInstanceBackpressureSoft
-	}
 	if cfg.InstanceBackpressureHardLimit <= 0 {
 		cfg.InstanceBackpressureHardLimit = defaultInstanceBackpressureHard
 	}
@@ -884,17 +1102,9 @@ func NewPendingCoordinator(redis *storage.RedisCluster, cfg PendingCoordinatorCo
 		cacheTTL = 150 * time.Millisecond
 	}
 
-	var tokenLimiter *rate.Limiter
-	if cfg.TokenBucketRate > 0 {
-		burst := cfg.TokenBucketBurst
-		if burst <= 0 {
-			burst = int(cfg.TokenBucketRate) * defaultTokenBucketBurstMultiplier
-			if burst < 1 {
-				burst = 1
-			}
-		}
-		tokenLimiter = rate.NewLimiter(rate.Limit(cfg.TokenBucketRate), burst)
-	}
+	tokenLimiter := newRateLimiter(cfg.TokenBucketRate, cfg.TokenBucketBurst)
+	instanceLimiter := newRateLimiter(cfg.InstanceTokenBucketRate, cfg.InstanceTokenBucketBurst)
+	userTokenBuckets := newScopedLimiterPool(cfg.UserTokenBucketRate, cfg.UserTokenBucketBurst)
 
 	random := rand.New(rand.NewSource(time.Now().UnixNano()))
 
@@ -904,6 +1114,8 @@ func NewPendingCoordinator(redis *storage.RedisCluster, cfg PendingCoordinatorCo
 		component:           component,
 		mode:                mode,
 		tokenLimiter:        tokenLimiter,
+		instanceLimiter:     instanceLimiter,
+		userTokenBuckets:    userTokenBuckets,
 		random:              random,
 		fallbackDelay:       cfg.FallbackDelay,
 		calibrationStop:     make(chan struct{}),
@@ -940,6 +1152,14 @@ func (c *PendingCoordinator) Component() string {
 		return "pending_coordinator"
 	}
 	return name
+}
+
+// ExpiredGracePeriod returns the configured grace interval applied after lease expiration.
+func (c *PendingCoordinator) ExpiredGracePeriod() time.Duration {
+	if c == nil {
+		return 0
+	}
+	return c.cfg.ExpiredGracePeriod
 }
 
 func (c *PendingCoordinator) ensureFallback() *memoryPendingCoordinator {
@@ -1074,6 +1294,11 @@ func applyCoordinatorEnvOverrides(cfg *PendingCoordinatorConfig) {
 	if raw := strings.TrimSpace(os.Getenv("IAM_PENDING_EXPIRED_GRACE")); raw != "" {
 		if parsed, err := time.ParseDuration(raw); err == nil && parsed >= 0 {
 			cfg.ExpiredGracePeriod = parsed
+		}
+	}
+	if raw := strings.TrimSpace(os.Getenv("IAM_PENDING_HEARTBEAT_TIMEOUT")); raw != "" {
+		if parsed, err := time.ParseDuration(raw); err == nil && parsed >= 0 {
+			cfg.HeartbeatTimeout = parsed
 		}
 	}
 	if raw := strings.TrimSpace(os.Getenv("IAM_PENDING_DELAY_ELEVATED")); raw != "" {
@@ -1517,22 +1742,28 @@ func (c *PendingCoordinator) Acquire(ctx context.Context, username string, meta 
 	if c == nil {
 		return nil, nil
 	}
+	trimmed := strings.TrimSpace(username)
+	if trimmed == "" {
+		return nil, errors.New("username required")
+	}
+	if err := c.guardTokenBucket(ctx, trimmed); err != nil {
+		if metrics.PendingLeaseEvents != nil {
+			metrics.PendingLeaseEvents.WithLabelValues(c.component, "token_bucket_block").Inc()
+		}
+		return nil, &AcquireError{Reason: AcquireFailureBackpressure, QueueDepth: 0}
+	}
 	if c.degradeActive(ctx) {
-		c.recordDegradeFallback("acquire", username)
+		c.recordDegradeFallback("acquire", trimmed)
 		if fallback := c.ensureFallback(); fallback != nil {
-			return fallback.Acquire(ctx, username, meta)
+			return fallback.Acquire(ctx, trimmed, meta)
 		}
 		return nil, nil
 	}
 	if c.redis == nil {
 		if c.fallback != nil {
-			return c.fallback.Acquire(ctx, username, meta)
+			return c.fallback.Acquire(ctx, trimmed, meta)
 		}
 		return nil, nil
-	}
-	trimmed := strings.TrimSpace(username)
-	if trimmed == "" {
-		return nil, errors.New("username required")
 	}
 	// 格式:user:pending:{username}
 	key := PendingCreateKey(trimmed)
@@ -1544,13 +1775,6 @@ func (c *PendingCoordinator) Acquire(ctx context.Context, username string, meta 
 	// 目标：确保 Released 状态被正确清理，避免冲突
 	//比如前一个请求刚释放租约，Redis 里的快照还没过期（5 秒 TTL），此时新请求来了，可能误判为 “仍被占用”。重试几次能等快照过期 / 被清理，提高抢占成功率。
 	for attempt := 0; attempt < releasedStateRetryLimit+1; attempt++ {
-		//令牌桶背压检查
-		if err := c.guardTokenBucket(ctx, trimmed); err != nil {
-			if metrics.PendingLeaseEvents != nil {
-				metrics.PendingLeaseEvents.WithLabelValues(c.component, "token_bucket_block").Inc()
-			}
-			return nil, &AcquireError{Reason: AcquireFailureBackpressure, QueueDepth: 0}
-		}
 		//全局队列深度背压检查
 		globalDepth, globalLevel, globalErr := c.SampleQueueDepth(ctx)
 		if globalErr != nil {
@@ -1593,14 +1817,16 @@ func (c *PendingCoordinator) Acquire(ctx context.Context, username string, meta 
 		now := time.Now().UTC()
 		ownerID := uuid.New().String()
 		expiresAt := now.Add(c.cfg.LeaseTTL)
+		heartbeatStamp := now.Format(time.RFC3339Nano)
 		snapshot := pendingLeaseSnapshot{
 			Status:          "pending",
 			State:           string(PendingStateLease),
 			OwnerID:         ownerID,
 			Version:         now.UnixNano(),
 			LeaseExpiresAt:  expiresAt.Format(time.RFC3339Nano),
-			AcquireAt:       now.Format(time.RFC3339Nano),
-			UpdatedAt:       now.Format(time.RFC3339Nano),
+			AcquireAt:       heartbeatStamp,
+			HeartbeatAt:     heartbeatStamp,
+			UpdatedAt:       heartbeatStamp,
 			Username:        trimmed,
 			RequestID:       strings.TrimSpace(meta.RequestID),
 			Operator:        strings.TrimSpace(meta.Operator),
@@ -1760,6 +1986,7 @@ func (c *PendingCoordinator) Acquire(ctx context.Context, username string, meta 
 			Version:        snapshot.Version,
 			AcquireAt:      now,
 			LeaseExpiresAt: expiresAt,
+			HeartbeatAt:    now,
 			QueueDepth:     queueDepth,
 			Backpressure:   aggregateLevel,
 			Metadata:       meta,
@@ -1907,6 +2134,98 @@ func (c *PendingCoordinator) Release(ctx context.Context, username string, owner
 	return deleteDuration, nil
 }
 
+func (c *PendingCoordinator) Heartbeat(ctx context.Context, username string, ownerID string) error {
+	if c == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(username)
+	trimmedOwner := strings.TrimSpace(ownerID)
+	if trimmed == "" || trimmedOwner == "" {
+		return nil
+	}
+	if c.degradeActive(ctx) {
+		c.recordDegradeFallback("heartbeat", trimmed)
+		if fallback := c.ensureFallback(); fallback != nil {
+			return fallback.Heartbeat(ctx, trimmed, trimmedOwner)
+		}
+		return nil
+	}
+	if c.redis == nil {
+		if c.fallback != nil {
+			return c.fallback.Heartbeat(ctx, trimmed, trimmedOwner)
+		}
+		return nil
+	}
+	key := PendingCreateKey(trimmed)
+	if key == "" {
+		return nil
+	}
+	getCtx, cancel := c.newOpContext(ctx)
+	getStart := time.Now()
+	raw, err := c.redis.GetKeyWithCommandTimeout(getCtx, key, c.cfg.CommandTimeout)
+	cancel()
+	getDuration := time.Since(getStart)
+	metricErr := err
+	if errors.Is(err, redis.Nil) {
+		metricErr = nil
+	}
+	metrics.RecordRedisOperation("pending_lease_heartbeat_get", getDuration.Seconds(), metricErr)
+	if errors.Is(err, redis.Nil) {
+		if metrics.PendingLeaseEvents != nil {
+			metrics.PendingLeaseEvents.WithLabelValues(c.component, "heartbeat_miss").Inc()
+		}
+		return ErrPendingLeaseConflict
+	}
+	if err != nil {
+		return err
+	}
+	var snapshot pendingLeaseSnapshot
+	if decodeErr := json.Unmarshal([]byte(raw), &snapshot); decodeErr != nil {
+		if metrics.PendingLeaseEvents != nil {
+			metrics.PendingLeaseEvents.WithLabelValues(c.component, "heartbeat_decode_error").Inc()
+		}
+		return decodeErr
+	}
+	if strings.TrimSpace(snapshot.State) != string(PendingStateLease) {
+		if metrics.PendingLeaseEvents != nil {
+			metrics.PendingLeaseEvents.WithLabelValues(c.component, "heartbeat_invalid_state").Inc()
+		}
+		return ErrPendingLeaseConflict
+	}
+	existingOwner := strings.TrimSpace(snapshot.OwnerID)
+	if existingOwner != "" && existingOwner != trimmedOwner {
+		if metrics.PendingLeaseEvents != nil {
+			metrics.PendingLeaseEvents.WithLabelValues(c.component, "heartbeat_owner_mismatch").Inc()
+		}
+		return ErrPendingLeaseOwnerMismatch
+	}
+	now := time.Now().UTC()
+	stamp := now.Format(time.RFC3339Nano)
+	snapshot.OwnerID = trimmedOwner
+	snapshot.HeartbeatAt = stamp
+	snapshot.UpdatedAt = stamp
+	if c.cfg.LeaseTTL > 0 {
+		snapshot.LeaseExpiresAt = now.Add(c.cfg.LeaseTTL).Format(time.RFC3339Nano)
+	}
+	payload, marshalErr := json.Marshal(&snapshot)
+	if marshalErr != nil {
+		return marshalErr
+	}
+	setCtx, setCancel := c.newOpContext(ctx)
+	setStart := time.Now()
+	setErr := c.redis.SetKeyWithCommandTimeout(setCtx, key, string(payload), c.cfg.LeaseTTL, c.cfg.CommandTimeout)
+	setCancel()
+	metrics.RecordRedisOperation("pending_lease_heartbeat_set", time.Since(setStart).Seconds(), setErr)
+	if setErr != nil {
+		return setErr
+	}
+	if metrics.PendingLeaseEvents != nil {
+		metrics.PendingLeaseEvents.WithLabelValues(c.component, "heartbeat_success").Inc()
+	}
+	c.logLeaseEvent("debug", "pending lease heartbeat refreshed", "username", trimmed, "owner", trimmedOwner)
+	return nil
+}
+
 // 观察指定用户的待处理租约状态
 // 返回租约状态详情，包括存在性、状态、持有者、版本、队列深度等信息
 // 如果租约不存在，返回状态为 Unknown
@@ -1987,6 +2306,11 @@ func (c *PendingCoordinator) Observe(ctx context.Context, username string) (*Pen
 		if snapshot.ReleasedAt != "" {
 			if releasedAt, parseErr := time.Parse(time.RFC3339Nano, snapshot.ReleasedAt); parseErr == nil {
 				result.ReleasedAt = releasedAt
+			}
+		}
+		if snapshot.HeartbeatAt != "" {
+			if heartbeatAt, parseErr := time.Parse(time.RFC3339Nano, snapshot.HeartbeatAt); parseErr == nil {
+				result.HeartbeatAt = heartbeatAt
 			}
 		}
 		if snapshot.ExpiredAt != "" {
@@ -2116,6 +2440,13 @@ func (c *PendingCoordinator) promoteExpired(ctx context.Context, username string
 	if metrics.PendingLeaseEvents != nil {
 		metrics.PendingLeaseEvents.WithLabelValues(c.component, "expire_promote").Inc()
 	}
+	reason := c.classifyExpiredReason(state, time.Now())
+	if snapshot.ExpiredReason == "" && reason != "" {
+		snapshot.ExpiredReason = reason
+	}
+	if snapshot.HeartbeatAt == "" && !state.HeartbeatAt.IsZero() {
+		snapshot.HeartbeatAt = state.HeartbeatAt.Format(time.RFC3339Nano)
+	}
 	if err := c.writeExpiredSnapshot(ctx, username, &snapshot, remaining); err != nil {
 		return false, err
 	}
@@ -2127,6 +2458,34 @@ func (c *PendingCoordinator) promoteExpired(ctx context.Context, username string
 	return true, nil
 }
 
+func (c *PendingCoordinator) heartbeatExpired(state *PendingState, now time.Time) bool {
+	if c == nil || state == nil {
+		return false
+	}
+	timeout := c.cfg.HeartbeatTimeout
+	if timeout <= 0 {
+		return false
+	}
+	last := state.HeartbeatAt
+	if last.IsZero() && !state.LeaseExpiresAt.IsZero() && c.cfg.LeaseTTL > 0 {
+		approx := state.LeaseExpiresAt.Add(-c.cfg.LeaseTTL)
+		if approx.Before(state.LeaseExpiresAt) {
+			last = approx
+		}
+	}
+	if last.IsZero() {
+		return false
+	}
+	return now.Sub(last) >= timeout
+}
+
+func (c *PendingCoordinator) classifyExpiredReason(state *PendingState, now time.Time) string {
+	if c.heartbeatExpired(state, now) {
+		return "heartbeat_timeout"
+	}
+	return "lease_timeout"
+}
+
 func (c *PendingCoordinator) shouldPromoteExpired(state *PendingState) bool {
 	if c == nil || state == nil {
 		return false
@@ -2135,6 +2494,9 @@ func (c *PendingCoordinator) shouldPromoteExpired(state *PendingState) bool {
 		return false
 	}
 	now := time.Now()
+	if c.heartbeatExpired(state, now) {
+		return true
+	}
 	if !state.LeaseExpiresAt.IsZero() {
 		expiry := state.LeaseExpiresAt.Add(c.cfg.ExpiredGracePeriod)
 		if now.After(expiry) {
@@ -2197,6 +2559,9 @@ func (c *PendingCoordinator) writeReleaseSnapshot(ctx context.Context, username 
 		}
 		if snapshot.LegacyRequestID != "" {
 			released.LegacyRequestID = snapshot.LegacyRequestID
+		}
+		if snapshot.HeartbeatAt != "" {
+			released.HeartbeatAt = snapshot.HeartbeatAt
 		}
 		if snapshot.AcquireAt != "" {
 			released.AcquireAt = snapshot.AcquireAt
@@ -2319,6 +2684,15 @@ func (c *PendingCoordinator) writeExpiredSnapshot(ctx context.Context, username 
 		if snapshot.InstanceBackpressure != "" {
 			expired.InstanceBackpressure = snapshot.InstanceBackpressure
 		}
+		if strings.TrimSpace(snapshot.OwnerID) != "" {
+			expired.OwnerID = strings.TrimSpace(snapshot.OwnerID)
+		}
+		if snapshot.ExpiredReason != "" {
+			expired.ExpiredReason = snapshot.ExpiredReason
+		}
+		if snapshot.HeartbeatAt != "" {
+			expired.HeartbeatAt = snapshot.HeartbeatAt
+		}
 	}
 
 	payload, err := json.Marshal(&expired)
@@ -2383,13 +2757,7 @@ func (c *PendingCoordinator) deleteKeyWithOwner(ctx context.Context, key, ownerI
 }
 
 func (c *PendingCoordinator) classifyBackpressure(depth int64) BackpressureLevel {
-	if depth >= int64(c.cfg.BackpressureHardLimit) {
-		return BackpressureSevere
-	}
-	if depth >= int64(c.cfg.BackpressureSoftLimit) {
-		return BackpressureElevated
-	}
-	return BackpressureNone
+	return classifyDepthWithProfile(depth, c.currentProfile(), c.cfg.BackpressureSoftLimit, c.cfg.BackpressureHardLimit)
 }
 
 const decrementActiveLua = `
@@ -2631,6 +2999,9 @@ func (c *PendingCoordinator) UpdateBackpressureProfile(profile BackpressureDelay
 	cloned := profile.clone()
 	c.cfg.BackpressureDelayProfile = cloned
 	c.backpressureProfile.Store(cloned)
+	if fallback := c.ensureFallback(); fallback != nil {
+		fallback.UpdateBackpressureProfile(cloned)
+	}
 	if metrics.PendingLeaseEvents != nil {
 		metrics.PendingLeaseEvents.WithLabelValues(c.component, "backpressure_profile_update").Inc()
 	}
@@ -2895,6 +3266,7 @@ func (c *PendingCoordinator) SampleQueueDepth(ctx context.Context) (int64, Backp
 	if c == nil {
 		return 0, BackpressureNone, nil
 	}
+	//如果降级模式激活，则直接走降级逻辑
 	if c.degradeActive(ctx) {
 		c.recordDegradeFallback("sample_queue_depth", "")
 		if fallback := c.ensureFallback(); fallback != nil {
@@ -2902,12 +3274,14 @@ func (c *PendingCoordinator) SampleQueueDepth(ctx context.Context) (int64, Backp
 		}
 		return 0, BackpressureNone, nil
 	}
+	//如果没有redis客户端，则直接走降级逻辑
 	if c.redis == nil {
 		if c.fallback != nil {
 			return c.fallback.SampleQueueDepth(ctx)
 		}
 		return 0, BackpressureNone, nil
 	}
+	//如果没有配置指标key，则认为没有背压
 	if strings.TrimSpace(c.cfg.MetricsKey) == "" {
 		return 0, BackpressureNone, nil
 	}
@@ -2953,19 +3327,50 @@ func (c *PendingCoordinator) BackpressureDelay(level BackpressureLevel, depth in
 	if c == nil {
 		return 0
 	}
-	if v := c.backpressureProfile.Load(); v != nil {
-		if profile, ok := v.(BackpressureDelayProfile); ok {
-			return profile.delay(level, depth)
-		}
-	}
-	return c.cfg.BackpressureDelayProfile.delay(level, depth)
+	return c.currentProfile().delay(level, depth)
 }
 
+func (c *PendingCoordinator) currentProfile() BackpressureDelayProfile {
+	if c == nil {
+		return BackpressureDelayProfile{}
+	}
+	if v := c.backpressureProfile.Load(); v != nil {
+		if profile, ok := v.(BackpressureDelayProfile); ok {
+			return profile
+		}
+	}
+	return c.cfg.BackpressureDelayProfile
+}
+
+// guardTokenBucket 依次执行用户级、实例级、全局三个令牌桶，
+// 只要某一层拒绝（或等待失败）即直接返回 errBackpressure。
+// username 用于区分用户级限流标签，可为空表示跳过用户维度。
 func (c *PendingCoordinator) guardTokenBucket(ctx context.Context, username string) error {
-	if c == nil || c.tokenLimiter == nil {
+	if c == nil {
 		return nil
 	}
-	if c.tokenLimiter.Allow() {
+	if err := c.waitOnLimiter(ctx, c.userLimiter(username), username, "user"); err != nil {
+		return err
+	}
+	if err := c.waitOnLimiter(ctx, c.instanceLimiter, username, "instance"); err != nil {
+		return err
+	}
+	return c.waitOnLimiter(ctx, c.tokenLimiter, username, "global")
+}
+
+// 获取令牌桶限流器
+func (c *PendingCoordinator) userLimiter(username string) *rate.Limiter {
+	if c == nil || c.userTokenBuckets == nil || username == "" {
+		return nil
+	}
+	return c.userTokenBuckets.getLimiter(username)
+}
+
+func (c *PendingCoordinator) waitOnLimiter(ctx context.Context, limiter *rate.Limiter, username, scope string) error {
+	if limiter == nil {
+		return nil
+	}
+	if limiter.Allow() {
 		return nil
 	}
 	waitCtx := ctx
@@ -2977,17 +3382,24 @@ func (c *PendingCoordinator) guardTokenBucket(ctx context.Context, username stri
 		waitCtx, cancel = context.WithTimeout(waitCtx, tokenBucketWaitTimeout)
 		defer cancel()
 	}
-	if err := c.tokenLimiter.Wait(waitCtx); err == nil {
-		if metrics.PendingLeaseEvents != nil {
-			metrics.PendingLeaseEvents.WithLabelValues(c.component, "token_bucket_wait").Inc()
-		}
+	if err := limiter.Wait(waitCtx); err == nil {
+		c.recordTokenBucketMetric("wait", scope)
 		return nil
 	}
-	if metrics.PendingLeaseEvents != nil {
-		metrics.PendingLeaseEvents.WithLabelValues(c.component, "token_bucket_reject").Inc()
-	}
-	c.logLeaseEvent("warn", "pending lease token bucket rejected", "username", username)
+	c.recordTokenBucketMetric("reject", scope)
+	c.logLeaseEvent("warn", "pending lease token bucket rejected", "scope", scope, "username", username)
 	return errBackpressure
+}
+
+func (c *PendingCoordinator) recordTokenBucketMetric(action, scope string) {
+	if c == nil || metrics.PendingLeaseEvents == nil {
+		return
+	}
+	event := "token_bucket_" + action
+	if scope != "" {
+		event += "_" + scope
+	}
+	metrics.PendingLeaseEvents.WithLabelValues(c.component, event).Inc()
 }
 
 func (c *PendingCoordinator) pendingUserDepthKey(username string) string {
@@ -3039,23 +3451,11 @@ func (c *PendingCoordinator) decrementUserQueueDepth(ctx context.Context, userna
 }
 
 func (c *PendingCoordinator) classifyUserBackpressure(depth int64) BackpressureLevel {
-	if depth >= int64(c.cfg.UserBackpressureHardLimit) {
-		return BackpressureSevere
-	}
-	if depth >= int64(c.cfg.UserBackpressureSoftLimit) {
-		return BackpressureElevated
-	}
-	return BackpressureNone
+	return classifyDepthWithProfile(depth, c.currentProfile(), c.cfg.UserBackpressureSoftLimit, c.cfg.UserBackpressureHardLimit)
 }
 
 func (c *PendingCoordinator) classifyInstanceBackpressure(depth int64) BackpressureLevel {
-	if depth >= int64(c.cfg.InstanceBackpressureHardLimit) {
-		return BackpressureSevere
-	}
-	if depth >= int64(c.cfg.InstanceBackpressureSoftLimit) {
-		return BackpressureElevated
-	}
-	return BackpressureNone
+	return classifyDepthWithProfile(depth, c.currentProfile(), c.cfg.InstanceBackpressureSoftLimit, c.cfg.InstanceBackpressureHardLimit)
 }
 
 // mergeBackpressureLevels 合并多个背压等级，返回最高等级。

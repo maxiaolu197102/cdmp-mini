@@ -272,7 +272,7 @@ func (u *UserService) resolveUserExistence(ctx context.Context, user *v1.User, p
 			return existing, nil
 		}
 	}
-
+	//preflight.UsernameChecked 为 true 时留在该阶段记录 recordUserCreateStep(ctx, "check_user_exist", …) 是刻意设计：创建管道走到 ResolveExistence 这一步，就算 Redis 查询被预检短路，也要在这一阶段写出“已完成用户名存在性检查（由预检提供）”，因此记录保留在 resolveUserExistence，不需要把记录移到 ensureUserUnique。
 	if preflight.UsernameChecked {
 		u.recordUserCreateStep(ctx, "check_user_exist", "username", user.Name, 0, nil)
 		trace.AddRequestTag(ctx, "username_preflight_verified", true)
@@ -281,7 +281,7 @@ func (u *UserService) resolveUserExistence(ctx context.Context, user *v1.User, p
 
 	checkCtx, span := trace.StartSpan(ctx, "user-service", "check_user_exist")
 	start := time.Now()
-	existing, err := u.checkUserExist(checkCtx, user.Name, false)
+	existing, err := u.checkUserExist(checkCtx, user.Name, true)
 	duration := time.Since(start)
 
 	status := "success"
@@ -319,6 +319,7 @@ func (u *UserService) handleUserExisting(user *v1.User, existing *v1.User) error
 	if existing == nil {
 		return nil
 	}
+
 	if existing.Name == RATE_LIMIT_PREVENTION {
 		return nil
 	}
@@ -413,6 +414,7 @@ func (u *UserService) afterUserPending(ctx context.Context, user *v1.User, pendi
 			if pending.Backend != "" {
 				env.Headers[pendingBackendHeader] = pending.Backend
 			}
+			u.startPendingHeartbeatSession(env.ID, user.Name, pending.OwnerID)
 		}
 	}
 }

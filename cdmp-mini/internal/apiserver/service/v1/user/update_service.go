@@ -5,6 +5,7 @@ import (
 	stdErrors "errors"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/options"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/common/service/operation"
@@ -138,11 +139,15 @@ func (u *UserService) processUserUpdate(ctx context.Context, user *v1.User) (err
 		})
 	}()
 
+	normalizeStart := time.Now()
 	user.Email = usercache.NormalizeEmail(user.Email)
 	user.Phone = usercache.NormalizePhone(user.Phone)
+	u.recordUserCreateStep(updateCtx, "update_normalize_contacts", "contacts", user.Name, time.Since(normalizeStart), nil)
 
 	checkCtx, checkSpan := trace.StartSpan(updateCtx, "user-service", "check_user_exist")
+	checkStart := time.Now()
 	ruser, existErr := u.checkUserExist(checkCtx, user.Name, true)
+	checkDuration := time.Since(checkStart)
 	spanStatusCheck := "success"
 	spanCodeCheck := strconv.Itoa(code.ErrSuccess)
 	if existErr != nil {
@@ -162,6 +167,7 @@ func (u *UserService) processUserUpdate(ctx context.Context, user *v1.User) (err
 	trace.EndSpan(checkSpan, spanStatusCheck, spanCodeCheck, map[string]interface{}{
 		"username": user.Name,
 	})
+	u.recordUserCreateStep(updateCtx, "update_check_user_exist", "username", user.Name, checkDuration, existErr)
 	if err != nil {
 		return err
 	}
@@ -174,7 +180,9 @@ func (u *UserService) processUserUpdate(ctx context.Context, user *v1.User) (err
 
 	sendCtx, sendSpan := trace.StartSpan(updateCtx, "user-service", "producer_send_update")
 	trace.AddRequestTag(sendCtx, "username", user.Name)
+	sendStart := time.Now()
 	errKafka := u.Producer.SendUpdateMessage(sendCtx, user)
+	sendDuration := time.Since(sendStart)
 	sendStatus := "success"
 	sendCode := strconv.Itoa(code.ErrSuccess)
 	if errKafka != nil {
@@ -190,6 +198,7 @@ func (u *UserService) processUserUpdate(ctx context.Context, user *v1.User) (err
 	trace.EndSpan(sendSpan, sendStatus, sendCode, map[string]interface{}{
 		"username": user.Name,
 	})
+	u.recordUserCreateStep(updateCtx, "kafka_send_update_user", "kafka", user.Name, sendDuration, errKafka)
 	if errKafka != nil {
 		return err
 	}

@@ -20,6 +20,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/jmoiron/sqlx"
+	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/backpressure"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/code"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/dbscan"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/metrics"
@@ -1057,6 +1058,7 @@ func (c *UserConsumer) runFetchLoop(ctx context.Context, readerIdx int, reader *
 	}
 
 	componentLabel := c.metricsComponent()
+	loopStart := time.Now()
 	for {
 		select {
 		case <-loopCtx.Done():
@@ -1089,15 +1091,48 @@ func (c *UserConsumer) runFetchLoop(ctx context.Context, readerIdx int, reader *
 					}
 				}
 			}
-			if delay := c.fetchDelayForBackpressure(currentBackpressure, currentQueueDepth); delay > 0 {
-				trace.AddRequestTag(loopCtx, "pending_backpressure_delay_ms", delay.Milliseconds())
-				select {
-				case <-time.After(delay):
-				case <-loopCtx.Done():
-					status = "error"
-					statusCode = strconv.Itoa(code.ErrUnknown)
-					trace.AddRequestTag(loopCtx, "loop_cancelled", true)
-					return
+			if rawDelay := c.fetchDelayForBackpressure(currentBackpressure, currentQueueDepth); rawDelay > 0 {
+				leadTime := backpressure.LeadTime(loopCtx, loopStart)
+				if leadTime > 0 {
+					trace.AddRequestTag(loopCtx, "pending_backpressure_elapsed_ms", leadTime.Milliseconds())
+					metrics.RecordPendingBackpressureLeadTime(componentLabel, string(currentBackpressure), leadTime)
+				}
+				decision := backpressure.AlignDelayWithDeadline(loopCtx, rawDelay, 0)
+				if decision.Action != "" {
+					metrics.RecordPendingBackpressureDeadlineDecision(componentLabel, string(currentBackpressure), decision.Action)
+					remaining := decision.Remaining
+					if remaining < 0 {
+						remaining = 0
+					}
+					trace.AddRequestTag(loopCtx, "pending_backpressure_deadline_action", decision.Action)
+					trace.AddRequestTag(loopCtx, "pending_backpressure_deadline_remaining_ms", remaining.Milliseconds())
+					log.Infow("pending consumer delay adjusted by deadline", "component", componentLabel, "reader_idx", readerIdx, "action", decision.Action, "requested_delay_ms", rawDelay.Milliseconds(), "remaining_budget_ms", decision.Remaining.Milliseconds())
+				}
+				delay := decision.Effective
+				if delay <= 0 {
+					trace.AddRequestTag(loopCtx, "pending_backpressure_delay_skipped", true)
+				} else {
+					metrics.RecordPendingBackpressureDelay(componentLabel, string(currentBackpressure), delay)
+					trace.AddRequestTag(loopCtx, "pending_backpressure_delay_ms", delay.Milliseconds())
+					waitStart := time.Now()
+					timer := time.NewTimer(delay)
+					select {
+					case <-timer.C:
+					case <-loopCtx.Done():
+						if !timer.Stop() {
+							<-timer.C
+						}
+						waited := time.Since(waitStart)
+						metrics.RecordPendingBackpressureDelayCancellation(componentLabel, string(currentBackpressure))
+						metrics.ObservePendingBackpressureCancellationDuration(componentLabel, string(currentBackpressure), waited)
+						if waited > 0 {
+							trace.AddRequestTag(loopCtx, "pending_backpressure_waited_before_cancel_ms", waited.Milliseconds())
+						}
+						status = "error"
+						statusCode = strconv.Itoa(code.ErrUnknown)
+						trace.AddRequestTag(loopCtx, "loop_cancelled", true)
+						return
+					}
 				}
 			}
 		}

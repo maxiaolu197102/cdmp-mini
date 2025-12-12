@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/options"
 	storectx "github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/store"
@@ -49,7 +50,10 @@ func (u *UserService) Get(ctx context.Context, username string, opts metav1.GetO
 		ctx = storectx.WithForcePrimary(ctx)
 	}
 
-	if blocked, blkErr := u.isUserBlacklisted(ctx, username); blkErr != nil {
+	blacklistStart := time.Now()
+	blocked, blkErr := u.isUserBlacklisted(ctx, username)
+	u.recordUserCreateStep(ctx, "get_check_blacklist", "protection", username, time.Since(blacklistStart), blkErr)
+	if blkErr != nil {
 		log.Warnf("黑名单状态查询失败: username=%s err=%v", username, blkErr)
 	} else if blocked {
 		cacheHitLabel = "blacklist_active"
@@ -91,7 +95,9 @@ func (u *UserService) Get(ctx context.Context, username string, opts metav1.GetO
 		trace.RecordOutcome(ctx, outcomeCode, outcomeMessage, outcomeStatus, outcomeHTTP)
 	}()
 
+	cacheStart := time.Now()
 	cachedUser, found, cacheErr := u.tryGetFromCache(ctx, username)
+	u.recordUserCreateStep(ctx, "get_try_cache", "cache", username, time.Since(cacheStart), cacheErr)
 	if cacheErr != nil {
 		log.Errorf("缓存查询异常，继续流程", "error", cacheErr.Error(), "username", username)
 		metrics.CacheErrors.WithLabelValues("query_failed", "get").Inc()
@@ -124,9 +130,11 @@ func (u *UserService) Get(ctx context.Context, username string, opts metav1.GetO
 
 	// 缓存未命中，使用singleflight保护数据库查询
 	var dbResult interface{}
+	dbStart := time.Now()
 	dbResult, err, sharedResult = u.group.Do(cacheKey, func() (interface{}, error) {
 		return u.getUserFromDBAndSetCache(ctx, username)
 	})
+	u.recordUserCreateStep(ctx, "get_fetch_db", "database", username, time.Since(dbStart), err)
 	if sharedResult {
 		metrics.RequestsMerged.WithLabelValues("get").Inc()
 	}
@@ -143,6 +151,7 @@ func (u *UserService) Get(ctx context.Context, username string, opts metav1.GetO
 }
 
 // 专门处理缓存查询，不包含降级逻辑
+// 返回值：用户对象（可能为 nil）、是否命中缓存、错误信息.这里返回的是 (*v1.User, bool, error)。第二个布尔值 true 表示“缓存层处理过该用户名”——即便取出来的是 sentinel（负缓存或黑名单）或空值，也算命中了缓存；只有真正没有这个 key 时才会返回 false。这样调用层就知道：true 代表“本次请求已经得到缓存结论，不需要继续打 DB”，哪怕结论是 “nil/黑名单/负缓存”。
 func (u *UserService) tryGetFromCache(ctx context.Context, username string) (*v1.User, bool, error) {
 	redisTimeout := u.Options.RedisOptions.Timeout
 	if redisTimeout == 0 {
@@ -159,6 +168,8 @@ func (u *UserService) tryGetFromCache(ctx context.Context, username string) (*v1
 		// 只返回错误，不处理降级
 		return nil, false, err
 	}
+	// 处理版本为0的缓存，视为无效缓存
+	// 读到的结构来自 Redis 序列化的 v1.User，其中 ObjectMeta.Version 按约定只要是合法写入就会带上数据库版本号或至少是 >0。如果版本字段是 0，意味着序列化时缺了版本信息（早期 bug 或序列化被截断），无法判断缓存里的数据是否对应当前 DB 状态，因此被视为“坏缓存”。为了避免把这种来源不明的数据返回给业务，就直接标记 cache_missing_version=true、删除该 key 并让后续逻辑走正常 miss/回源流程。
 	if isCached && cachedUser != nil && cachedUser.ObjectMeta.Version == 0 {
 		trace.AddRequestTag(ctx, "cache_missing_version", true)
 		isCached = false
@@ -173,11 +184,19 @@ func (u *UserService) tryGetFromCache(ctx context.Context, username string) (*v1
 	if isCached {
 		if cachedUser != nil {
 			switch cachedUser.Name {
+			/*
+				防护触发：当 getUserFromDBAndSetCache 查库返回 code.ErrUserNotFound 时，会调用 handleProtectionForMiss。这个函数用 NegativeCounterKey(username) 统计“某个用户名在保护窗口内被查询却不存在”的次数；当次数 ≥ NegativeCacheThreshold（在 ServerRunOptions 里配置，例如 5 次/60 秒）时，就调用 cacheNullValue 把该用户名的缓存写成哨兵值 RATE_LIMIT_PREVENTION，即打上负缓存标记（见 user_service.go 约 699、1365 行）。
+				删除补偿：执行删除流程后，cleanupUserStateForDelete 在清理正/联系缓存后也会调用 cacheNullValue(ctx, username, 0)（delete_service.go ~370 行），确保刚删除的用户短时间内被 GET/创建再查时直接命中负缓存，避免重复落库或立刻被重建。
+				特性说明：这两个入口都会写同一个 Redis key user:<username>，TTL 默认 45s+抖动，可配置；负缓存是逐用户名独立的，不会互相污染。forceRefresh=true 时会无条件回源刷新；force=false 时只有拿到 shouldRefreshNullCache 锁的请求才会去确认，从而“偶尔刷新一次”防止雪崩。
+
+			*/
 			case RATE_LIMIT_PREVENTION:
 				metrics.CacheHits.WithLabelValues("null_hit").Inc()
 				trace.AddRequestTag(ctx, "protection_negative_cache_hit", true)
+				// 强制刷新负缓存
 				if force {
 					trace.AddRequestTag(ctx, "cache_negative_bypass", true)
+					//	强制刷新负缓存
 					refreshedUser, refreshErr := u.refreshUserCacheFromDB(ctx, username)
 					if refreshErr != nil {
 						log.Warnf("负缓存强制刷新失败: username=%s err=%v", username, refreshErr)
@@ -186,6 +205,7 @@ func (u *UserService) tryGetFromCache(ctx context.Context, username string) (*v1
 					}
 					return nil, true, nil
 				}
+				//如果成功获取到刷新所需的锁，则查库
 				if refreshAllowed, lockKey := u.shouldRefreshNullCache(ctx, username); refreshAllowed {
 					defer u.releaseNullCacheRefreshLock(lockKey)
 					refreshedUser, refreshErr := u.refreshUserCacheFromDB(ctx, username)
@@ -195,10 +215,8 @@ func (u *UserService) tryGetFromCache(ctx context.Context, username string) (*v1
 						return refreshedUser, true, nil
 					}
 				} else {
-					refreshedUser, refreshErr := u.refreshUserCacheFromDB(ctx, username)
-					if refreshErr != nil {
-						return refreshedUser, true, nil
-					}
+					trace.AddRequestTag(ctx, "cache_negative_refresh_skipped", true)
+					metrics.CacheHits.WithLabelValues("negative_refresh_skipped").Inc()
 				}
 				return nil, true, nil
 			case BLACKLIST_SENTINEL:

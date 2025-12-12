@@ -188,3 +188,57 @@ func TestPendingAcquireViaLuaUnavailableRecordsMetric(t *testing.T) {
 		t.Fatalf("expected lua unavailable metric 1, got %f", value)
 	}
 }
+
+func TestHeartbeatExpiredDetection(t *testing.T) {
+	cfg := PendingCoordinatorConfig{
+		Component:        "heartbeat",
+		LeaseTTL:         2 * time.Second,
+		HeartbeatTimeout: time.Second,
+	}
+	coord := newTestCoordinator(cfg)
+	state := &PendingState{State: PendingStateLease, HeartbeatAt: time.Now().Add(-2 * time.Second)}
+	if !coord.heartbeatExpired(state, time.Now()) {
+		t.Fatalf("expected heartbeat expired detection to trigger")
+	}
+	noHeartbeatState := &PendingState{State: PendingStateLease}
+	if coord.heartbeatExpired(noHeartbeatState, time.Now()) {
+		t.Fatalf("expected heartbeat check to skip when no timestamp available")
+	}
+}
+
+func TestMemoryCoordinatorHeartbeatRefresh(t *testing.T) {
+	cfg := PendingCoordinatorConfig{Component: "memory", LeaseTTL: time.Second, HeartbeatTimeout: 500 * time.Millisecond}
+	memory := newMemoryPendingCoordinator(cfg, "memory_component")
+	ctx := context.Background()
+	result, err := memory.Acquire(ctx, "alice", LeaseMetadata{})
+	if err != nil {
+		t.Fatalf("acquire failed: %v", err)
+	}
+	if result == nil || result.Lease == nil {
+		t.Fatalf("expected lease from memory coordinator")
+	}
+	shard := memory.shardFor("alice")
+	if shard == nil {
+		t.Fatalf("expected shard for alice")
+	}
+	shard.mu.RLock()
+	entry := shard.leases["alice"]
+	initialHeartbeat := entry.lastHeartbeat
+	initialExpiry := entry.lease.LeaseExpiresAt
+	shard.mu.RUnlock()
+	time.Sleep(10 * time.Millisecond)
+	if err := memory.Heartbeat(ctx, "alice", result.Lease.OwnerID); err != nil {
+		t.Fatalf("heartbeat failed: %v", err)
+	}
+	shard.mu.RLock()
+	refreshed := shard.leases["alice"]
+	updatedHeartbeat := refreshed.lastHeartbeat
+	updatedExpiry := refreshed.lease.LeaseExpiresAt
+	shard.mu.RUnlock()
+	if !updatedHeartbeat.After(initialHeartbeat) {
+		t.Fatalf("expected heartbeat timestamp to advance")
+	}
+	if !updatedExpiry.After(initialExpiry) {
+		t.Fatalf("expected lease expiry to extend after heartbeat")
+	}
+}

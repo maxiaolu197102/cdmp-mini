@@ -16,14 +16,13 @@ import (
 )
 
 const (
-	DefaultContactLookupTimeout           = 2 * time.Second
-	DefaultContactRefreshTimeout          = 3 * time.Second
-	DefaultContactPreflightMaxConcurrency = 64
-	//MinUserPendingCreateTTL guarantees pending markers survive slow consumer restarts and large Kafka backlogs.
-	MinUserPendingCreateTTL = 10 * time.Minute
-	operationModeSync       = "sync"
-	operationModeQueue      = "queue"
-	operationModeRollout    = "rollout"
+	DefaultContactLookupTimeout           = 2 * time.Second  // 联系方式查库默认超时，覆盖范围 1s~5s，防止预检长时间阻塞。
+	DefaultContactRefreshTimeout          = 3 * time.Second  // 负缓存刷新查库默认超时，通常略大于 LookupTimeout，建议 2s~6s。
+	DefaultContactPreflightMaxConcurrency = 128              // 联系方式预检最大并发默认值，必须为 >0 的整型，常见 32/64/128。
+	MinUserPendingCreateTTL               = 10 * time.Minute // 用户创建 pending lease 的最小 TTL，下限 10m，实际可配置更大。
+	operationModeSync                     = "sync"           // 用户操作同步执行模式标识。
+	operationModeQueue                    = "queue"          // 用户操作完全进入异步队列模式标识。
+	operationModeRollout                  = "rollout"        // 用户操作按百分比分流（灰度）模式标识。
 )
 
 var defaultOperationQueueKinds = []string{
@@ -34,68 +33,69 @@ var defaultOperationQueueKinds = []string{
 }
 
 type ServerRunOptions struct {
-	Mode                              string        `json:"mode"        mapstructure:"mode"`
-	Healthz                           bool          `json:"healthz"     mapstructure:"healthz"`
-	Middlewares                       []string      `json:"middlewares" mapstructure:"middlewares"`
-	EnableProfiling                   bool          `json:"enableProfiling" mapstructure:"enableProfiling"`
-	EnableMetrics                     bool          `json:"enableMetrics" mapstructure:"enableMetrics"`
-	FastDebugStartup                  bool          `json:"fastDebugStartup" mapstructure:"fastDebugStartup"`
-	EnableContactWarmup               bool          `json:"enableContactWarmup" mapstructure:"enableContactWarmup"`
-	EnableUserTraceLogging            bool          `json:"enableUserTraceLogging" mapstructure:"enableUserTraceLogging"`
-	UserTraceLogSampleRate            float64       `json:"userTraceLogSampleRate" mapstructure:"userTraceLogSampleRate"`
-	UserTraceForceLogErrors           bool          `json:"userTraceForceLogErrors" mapstructure:"userTraceForceLogErrors"`
-	UserTraceDisableLogging           bool          `json:"userTraceDisableLogging" mapstructure:"userTraceDisableLogging"`
-	ContactLookupTimeout              time.Duration `json:"contactLookupTimeout" mapstructure:"contactLookupTimeout"`
-	ContactRefreshTimeout             time.Duration `json:"contactRefreshTimeout" mapstructure:"contactRefreshTimeout"`
-	ContactPreflightMaxConcurrency    int           `json:"contactPreflightMaxConcurrency" mapstructure:"contactPreflightMaxConcurrency"`
-	ContactDegradeCacheTTL            time.Duration `json:"contactDegradeCacheTTL" mapstructure:"contactDegradeCacheTTL"`
-	ContactDegradeHealthCheckInterval time.Duration `json:"contactDegradeHealthCheckInterval" mapstructure:"contactDegradeHealthCheckInterval"`
-	ContactDegradeCacheMaxEntries     int           `json:"contactDegradeCacheMaxEntries" mapstructure:"contactDegradeCacheMaxEntries"`
+	Mode                              string        `json:"mode"        mapstructure:"mode"`                                                    // Gin 运行模式：debug/release/test，影响日志与中间件注册。
+	Healthz                           bool          `json:"healthz"     mapstructure:"healthz"`                                                 // 是否暴露 /healthz 健康检查，true 表示对外暴露。
+	Middlewares                       []string      `json:"middlewares" mapstructure:"middlewares"`                                             // 自定义中间件键名列表，留空则使用默认链路。
+	EnableProfiling                   bool          `json:"enableProfiling" mapstructure:"enableProfiling"`                                     // 是否开启 pprof；仅在 debug 模式下建议打开。
+	EnableMetrics                     bool          `json:"enableMetrics" mapstructure:"enableMetrics"`                                         // 是否注册 Prometheus 采集端点。
+	FastDebugStartup                  bool          `json:"fastDebugStartup" mapstructure:"fastDebugStartup"`                                   // Debug 下是否跳过依赖探测，true 可加速本地起服。
+	EnableContactWarmup               bool          `json:"enableContactWarmup" mapstructure:"enableContactWarmup"`                             // 是否在启动阶段预热邮箱/手机号唯一性缓存。
+	ContactWarmupRefreshInterval      time.Duration `json:"contactWarmupRefreshInterval" mapstructure:"contactWarmupRefreshInterval"`           // 预热后续自动刷新周期，0 关闭定时刷新，典型 1h~24h。
+	EnableUserTraceLogging            bool          `json:"enableUserTraceLogging" mapstructure:"enableUserTraceLogging"`                       // 是否启用用户链路日志中间件。
+	UserTraceLogSampleRate            float64       `json:"userTraceLogSampleRate" mapstructure:"userTraceLogSampleRate"`                       // 链路日志采样率，取值 [0,1]。
+	UserTraceForceLogErrors           bool          `json:"userTraceForceLogErrors" mapstructure:"userTraceForceLogErrors"`                     // 是否在出错时即使采样未命中也强制记录日志。
+	UserTraceDisableLogging           bool          `json:"userTraceDisableLogging" mapstructure:"userTraceDisableLogging"`                     // true 完全关闭链路日志输出。
+	ContactLookupTimeout              time.Duration `json:"contactLookupTimeout" mapstructure:"contactLookupTimeout"`                           // 联系方式查库超时，建议 1s-5s。
+	ContactRefreshTimeout             time.Duration `json:"contactRefreshTimeout" mapstructure:"contactRefreshTimeout"`                         // 联系方式缓存刷新查库超时，通常略大于 LookupTimeout。
+	ContactPreflightMaxConcurrency    int           `json:"contactPreflightMaxConcurrency" mapstructure:"contactPreflightMaxConcurrency"`       // 预检并发上限，需 >0，常见 32/64。
+	ContactDegradeCacheTTL            time.Duration `json:"contactDegradeCacheTTL" mapstructure:"contactDegradeCacheTTL"`                       // Redis 降级时本地缓存 TTL，典型 10s-60s。
+	ContactDegradeHealthCheckInterval time.Duration `json:"contactDegradeHealthCheckInterval" mapstructure:"contactDegradeHealthCheckInterval"` // 降级期间健康检查频率，>0。
+	ContactDegradeCacheMaxEntries     int           `json:"contactDegradeCacheMaxEntries" mapstructure:"contactDegradeCacheMaxEntries"`         // 降级本地缓存最大条目，>0，防止内存爆炸。
 	// 新增：Cookie相关配置
-	CookieDomain             string        `json:"cookieDomain"    mapstructure:"cookieDomain"`
-	CookieSecure             bool          `json:"cookieSecure"    mapstructure:"cookieSecure"`
-	CtxTimeout               time.Duration `json:"ctxtimeout"    mapstructure:"ctxtimeout"`
-	Env                      string        `json:"env"    mapstructure:"env"`
-	LoginRateLimit           int           `json:"loginlimit"   mapstructure:"loginlimit"`
-	LoginWindow              time.Duration `json:"loginwindow"   mapstructure:"loginwindow"`
-	MaxLoginFailures         int           `json:"maxLoginFailures" mapstructure:"maxLoginFailures"`
-	LoginFailReset           time.Duration `json:"loginFailReset"   mapstructure:"loginFailReset"`
-	LoginFastFailThreshold   int           `json:"loginFastFailThreshold" mapstructure:"loginFastFailThreshold"`
-	LoginFastFailMessage     string        `json:"loginFastFailMessage" mapstructure:"loginFastFailMessage"`
-	LoginUpdateBuffer        int           `json:"loginUpdateBuffer" mapstructure:"loginUpdateBuffer"`
-	LoginUpdateBatchSize     int           `json:"loginUpdateBatchSize" mapstructure:"loginUpdateBatchSize"`
-	LoginUpdateFlushInterval time.Duration `json:"loginUpdateFlushInterval" mapstructure:"loginUpdateFlushInterval"`
-	LoginUpdateTimeout       time.Duration `json:"loginUpdateTimeout" mapstructure:"loginUpdateTimeout"`
-	LoginCredentialCacheTTL  time.Duration `json:"loginCredentialCacheTTL" mapstructure:"loginCredentialCacheTTL"`
-	LoginCredentialCacheSize int           `json:"loginCredentialCacheSize" mapstructure:"loginCredentialCacheSize"`
+	CookieDomain             string        `json:"cookieDomain"    mapstructure:"cookieDomain"`                      // Set-Cookie 允许的域，支持 .example.com 或空串。
+	CookieSecure             bool          `json:"cookieSecure"    mapstructure:"cookieSecure"`                      // true 仅 HTTPS 传输 Cookie。
+	CtxTimeout               time.Duration `json:"ctxtimeout"    mapstructure:"ctxtimeout"`                          // 控制请求链路默认超时，建议 >=30s。
+	Env                      string        `json:"env"    mapstructure:"env"`                                        // 环境标签：development/release/test。
+	LoginRateLimit           int           `json:"loginlimit"   mapstructure:"loginlimit"`                           // 登录限流阈值，单位请求/窗口，>=0。
+	LoginWindow              time.Duration `json:"loginwindow"   mapstructure:"loginwindow"`                         // 登录限流窗口长度，>0。
+	MaxLoginFailures         int           `json:"maxLoginFailures" mapstructure:"maxLoginFailures"`                 // 单个账号连续失败次数上限，>0。
+	LoginFailReset           time.Duration `json:"loginFailReset"   mapstructure:"loginFailReset"`                   // 失败计数自动清零时间，>0。
+	LoginFastFailThreshold   int           `json:"loginFastFailThreshold" mapstructure:"loginFastFailThreshold"`     // 并发超过该值快速拒绝，0 表示关闭。
+	LoginFastFailMessage     string        `json:"loginFastFailMessage" mapstructure:"loginFastFailMessage"`         // 快速拒绝时返回给客户端的提示语。
+	LoginUpdateBuffer        int           `json:"loginUpdateBuffer" mapstructure:"loginUpdateBuffer"`               // 登录时间异步更新缓冲大小，>=1。
+	LoginUpdateBatchSize     int           `json:"loginUpdateBatchSize" mapstructure:"loginUpdateBatchSize"`         // 每批刷库条数，>=1。
+	LoginUpdateFlushInterval time.Duration `json:"loginUpdateFlushInterval" mapstructure:"loginUpdateFlushInterval"` // 登录时间刷新间隔，>0。
+	LoginUpdateTimeout       time.Duration `json:"loginUpdateTimeout" mapstructure:"loginUpdateTimeout"`             // 登录批量写库超时，>0。
+	LoginCredentialCacheTTL  time.Duration `json:"loginCredentialCacheTTL" mapstructure:"loginCredentialCacheTTL"`   // 凭证比较结果本地缓存 TTL。
+	LoginCredentialCacheSize int           `json:"loginCredentialCacheSize" mapstructure:"loginCredentialCacheSize"` // 凭证缓存最大条目，>=1。
 	// WriteRateLimit: 默认的写操作限流阈值（当 Redis 未配置 override 时使用）
-	WriteRateLimit int `json:"writeRateLimit"   mapstructure:"writeRateLimit"`
+	WriteRateLimit int `json:"writeRateLimit"   mapstructure:"writeRateLimit"` // 全局写接口限流阈值，>=0。
 	// AdminToken: 简单的管理API访问令牌（如果为空，只允许本地或 debug 访问）
-	AdminToken string `json:"adminToken" mapstructure:"adminToken"`
+	AdminToken string `json:"adminToken" mapstructure:"adminToken"` // 管理端共享令牌，空串表示关闭远程访问。
 	// 新增：生产端限流器开关
-	EnableRateLimiter bool `json:"enableRateLimiter" mapstructure:"enableRateLimiter"`
+	EnableRateLimiter bool `json:"enableRateLimiter" mapstructure:"enableRateLimiter"` // 是否激活写消息端限流。
 	// 并发处理配置
-	MaxGoroutines    int           `json:"max-goroutines" mapstructure:"max-goroutines"`
-	MaxQueueSize     int           `json:"max-queue-size" mapstructure:"max-queue-size"`
-	TimeoutThreshold time.Duration `json:"timeout-threshold" mapstructure:"timeout-threshold"`
+	MaxGoroutines    int           `json:"max-goroutines" mapstructure:"max-goroutines"`       // 统一后台协程池容量，>0。
+	MaxQueueSize     int           `json:"max-queue-size" mapstructure:"max-queue-size"`       // 协程池队列长度，>=0。
+	TimeoutThreshold time.Duration `json:"timeout-threshold" mapstructure:"timeout-threshold"` // 请求全链路熔断阈值，应大于 CtxTimeout。
 	// 新增：Kafka 生产者失败消息的降级目录
-	ProducerFallbackDir                string        `json:"producer-fallback-dir" mapstructure:"producer-fallback-dir"`
-	PasswordHashCost                   int           `json:"password-hash-cost" mapstructure:"password-hash-cost"`
-	PasswordHashAlgorithm              string        `json:"password-hash-algorithm" mapstructure:"password-hash-algorithm"`
-	Argon2Time                         uint32        `json:"argon2-time" mapstructure:"argon2-time"`
-	Argon2MemoryKB                     uint32        `json:"argon2-memory-kb" mapstructure:"argon2-memory-kb"`
-	Argon2Parallelism                  uint32        `json:"argon2-parallelism" mapstructure:"argon2-parallelism"`
-	Argon2KeyLength                    uint32        `json:"argon2-key-length" mapstructure:"argon2-key-length"`
-	Argon2SaltLength                   uint32        `json:"argon2-salt-length" mapstructure:"argon2-salt-length"`
-	UserPendingCreateTTL               time.Duration `json:"userPendingCreateTTL" mapstructure:"userPendingCreateTTL"`
-	OperationMode                      string        `json:"operationMode" mapstructure:"operationMode"`
-	OperationRolloutPercent            int           `json:"operationRolloutPercent" mapstructure:"operationRolloutPercent"`
-	OperationRolloutStickyHeader       string        `json:"operationRolloutStickyHeader" mapstructure:"operationRolloutStickyHeader"`
-	OperationQueueKinds                []string      `json:"operationQueueKinds" mapstructure:"operationQueueKinds"`
-	OperationQueueUserAllowlist        []string      `json:"operationQueueUserAllowlist" mapstructure:"operationQueueUserAllowlist"`
-	OperationQueueUserBlocklist        []string      `json:"operationQueueUserBlocklist" mapstructure:"operationQueueUserBlocklist"`
-	OperationRolloutPreferSubjectKinds []string      `json:"operationRolloutPreferSubjectKinds" mapstructure:"operationRolloutPreferSubjectKinds"`
-	OperationRolloutPreferSubjectUsers []string      `json:"operationRolloutPreferSubjectUsers" mapstructure:"operationRolloutPreferSubjectUsers"`
+	ProducerFallbackDir                string        `json:"producer-fallback-dir" mapstructure:"producer-fallback-dir"`                           // Kafka 发送失败后本地落盘路径。
+	PasswordHashCost                   int           `json:"password-hash-cost" mapstructure:"password-hash-cost"`                                 // bcrypt 成本因子，范围 4-31。
+	PasswordHashAlgorithm              string        `json:"password-hash-algorithm" mapstructure:"password-hash-algorithm"`                       // 密码算法，支持 bcrypt/argon2id。
+	Argon2Time                         uint32        `json:"argon2-time" mapstructure:"argon2-time"`                                               // Argon2 迭代次数 t，>=1。
+	Argon2MemoryKB                     uint32        `json:"argon2-memory-kb" mapstructure:"argon2-memory-kb"`                                     // Argon2 内存 (KB)，建议 >=1024。
+	Argon2Parallelism                  uint32        `json:"argon2-parallelism" mapstructure:"argon2-parallelism"`                                 // Argon2 并行度 p，>=1。
+	Argon2KeyLength                    uint32        `json:"argon2-key-length" mapstructure:"argon2-key-length"`                                   // Argon2 输出长度（字节），常用 32。
+	Argon2SaltLength                   uint32        `json:"argon2-salt-length" mapstructure:"argon2-salt-length"`                                 // Argon2 盐长度（字节），>=16。
+	UserPendingCreateTTL               time.Duration `json:"userPendingCreateTTL" mapstructure:"userPendingCreateTTL"`                             // 用户创建占位 TTL，要求 >= MinUserPendingCreateTTL。
+	OperationMode                      string        `json:"operationMode" mapstructure:"operationMode"`                                           // 用户操作执行模式：sync/queue/rollout。
+	OperationRolloutPercent            int           `json:"operationRolloutPercent" mapstructure:"operationRolloutPercent"`                       // rollout 模式下进入异步队列的百分比 0-100。
+	OperationRolloutStickyHeader       string        `json:"operationRolloutStickyHeader" mapstructure:"operationRolloutStickyHeader"`             // 灰度粘性哈希的 header 名，空表示默认用户名。
+	OperationQueueKinds                []string      `json:"operationQueueKinds" mapstructure:"operationQueueKinds"`                               // 需要异步排队的操作类型列表，小写。
+	OperationQueueUserAllowlist        []string      `json:"operationQueueUserAllowlist" mapstructure:"operationQueueUserAllowlist"`               // 强制走队列的用户白名单。
+	OperationQueueUserBlocklist        []string      `json:"operationQueueUserBlocklist" mapstructure:"operationQueueUserBlocklist"`               // 强制走同步的用户黑名单。
+	OperationRolloutPreferSubjectKinds []string      `json:"operationRolloutPreferSubjectKinds" mapstructure:"operationRolloutPreferSubjectKinds"` // 指定某些操作优先使用 subject 作为粘性 key。
+	OperationRolloutPreferSubjectUsers []string      `json:"operationRolloutPreferSubjectUsers" mapstructure:"operationRolloutPreferSubjectUsers"` // 指定用户在 rollout 下优先 subject 粘性。
 }
 
 // NewServerRunOptions 初始化并返回服务器运行的默认配置选项
@@ -116,6 +116,8 @@ func NewServerRunOptions() *ServerRunOptions {
 		FastDebugStartup: false,
 		// EnableContactWarmup 决定是否执行联系人唯一性缓存预热，user_service.ensureContactCacheReady() 按此开关拉起后台任务。
 		EnableContactWarmup: true,
+		// ContactWarmupRefreshInterval 控制联系人缓存的周期性全量刷新，0 表示关闭自动刷新。
+		ContactWarmupRefreshInterval: 6 * time.Hour,
 		// EnableUserTraceLogging 控制是否安装用户链路日志中间件，router.installSystemRoutes() 创建 UserTraceLoggingMiddleware 时读取。
 		EnableUserTraceLogging: true,
 		// UserTraceLogSampleRate 为用户链路日志采样率，合法范围 [0,1]，传入 UserTraceLoggingMiddleware 配置。
@@ -361,6 +363,9 @@ func (s *ServerRunOptions) Complete() {
 	}
 	if s.ContactDegradeCacheMaxEntries <= 0 {
 		s.ContactDegradeCacheMaxEntries = 5000
+	}
+	if s.ContactWarmupRefreshInterval < 0 {
+		s.ContactWarmupRefreshInterval = 0
 	}
 
 	if strings.TrimSpace(s.PasswordHashAlgorithm) == "" {
@@ -617,6 +622,7 @@ func (s *ServerRunOptions) HashConfig() auth.HashConfig {
 func (s *ServerRunOptions) AddFlags(fs *pflag.FlagSet) {
 	fs.BoolVar(&s.EnableRateLimiter, "server.enable-rate-limiter", s.EnableRateLimiter, "是否启用生产端限流器（默认启用）")
 	fs.BoolVar(&s.EnableContactWarmup, "server.enable-contact-warmup", s.EnableContactWarmup, "是否在启动后预热邮箱/手机号唯一性缓存（默认关闭）")
+	fs.DurationVar(&s.ContactWarmupRefreshInterval, "server.contact-warmup-refresh-interval", s.ContactWarmupRefreshInterval, "联系人唯一性缓存的周期刷新间隔，设为0可关闭自动刷新")
 	fs.BoolVar(&s.EnableMetrics, "server.enable-metrics", s.EnableMetrics, "是否注册 Prometheus 指标路由")
 	fs.BoolVar(&s.EnableProfiling, "server.enable-profiling", s.EnableProfiling, "是否暴露 pprof 调试端点（仅 debug 模式有效）")
 	fs.BoolVar(&s.EnableUserTraceLogging, "server.enable-user-trace-logging", s.EnableUserTraceLogging, "是否启用用户API链路追踪日志输出")

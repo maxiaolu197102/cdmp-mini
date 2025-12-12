@@ -21,6 +21,7 @@ import (
 	operation "github.com/maxiaolu1981/cretem/cdmp-mini/internal/common/service/operation"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/common/service/unique"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/audit"
+	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/backpressure"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/code"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/metrics"
 	serveropts "github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/options"
@@ -79,6 +80,12 @@ const (
 	// 用途: 控制单批预热的拉取量，权衡速度与负载
 	// 生效范围: 联系方式预热任务
 	contactWarmupBatchSize = 1000
+	// contactWarmupRetryDelay 联系方式预热失败后的重试间隔
+	// 数值定义: 30s
+	// 数据类型: time.Duration 常量
+	// 用途: 控制预热失败后的退避节奏，避免持续冲击底层存储
+	// 生效范围: 联系方式预热任务
+	contactWarmupRetryDelay = 30 * time.Second
 	// pendingWarmupRequestCount 待审批协调器预热请求数量
 	// 数值定义: 3
 	// 数据类型: 整型常量
@@ -156,6 +163,15 @@ const (
 	redisDegradeReasonPlaceholder = "redis_placeholder_error"
 	// contactDegradeCacheDefaultMaxEntries 降级本地缓存默认最大容量
 	contactDegradeCacheDefaultMaxEntries = 5000
+	// pendingHeartbeatIntervalMin pending 心跳最小间隔，用于避免过度刷新
+	// 数值定义: 2s
+	pendingHeartbeatIntervalMin = 2 * time.Second
+	// pendingHeartbeatIntervalMax pending 心跳最大间隔，用于保证长任务仍能看到及时刷新
+	// 数值定义: 15s
+	pendingHeartbeatIntervalMax = 15 * time.Second
+	// pendingHeartbeatCallTimeout 单次心跳命令最大等待
+	// 数值定义: 2s
+	pendingHeartbeatCallTimeout = 2 * time.Second
 )
 
 var json = jsoniter.ConfigCompatibleWithStandardLibrary
@@ -191,6 +207,10 @@ type UserService struct {
 	// 用途: 管理用户待处理状态与缓存协调
 	// 生效范围: 待审批用户流程
 	pendingCoordinator *usercache.PendingCoordinator
+	// pendingHeartbeats 正在运行的 pending 心跳任务
+	// 数据类型: sync.Map
+	// 用途: 为长耗时操作维持 pending 心跳
+	pendingHeartbeats sync.Map
 	// group singleflight 组
 	// 数据类型: singleflight.Group 结构体
 	// 用途: 合并并发请求避免重复执行
@@ -230,6 +250,11 @@ type UserService struct {
 	// 用途: 表示预热任务是否正在运行
 	// 生效范围: 预热任务调度
 	contactWarming bool
+	// contactWarmupWaitCh 当前预热线程完成通知通道
+	// 数据类型: chan struct{}
+	// 用途: 允许阻塞调用等待正在进行的预热任务
+	// 生效范围: 启动预热与周期刷新
+	contactWarmupWaitCh chan struct{}
 	// contactCacheReady 联系方式缓存就绪标志
 	// 数据类型: atomic.Bool 原子布尔
 	// 用途: 指示缓存是否可供读取
@@ -250,6 +275,12 @@ type UserService struct {
 	// 用途: 记录下一次预热的重试时间戳
 	// 生效范围: 预热调度与退避机制
 	contactWarmupNextRetry atomic.Int64
+	// contactWarmupLoopOnce 确保周期预热循环只启动一次
+	contactWarmupLoopOnce sync.Once
+	// contactWarmupLoopCancel 周期预热循环取消函数
+	contactWarmupLoopCancel context.CancelFunc
+	// contactWarmupLoopWG 周期预热循环等待组
+	contactWarmupLoopWG sync.WaitGroup
 	// contactRedisDegradeActive Redis 降级全局标记
 	// 数据类型: atomic.Bool 原子布尔
 	contactRedisDegradeActive atomic.Bool
@@ -452,6 +483,7 @@ func NewUserService(store interfaces.Factory, redis *storage.RedisCluster, opts 
 	}
 	svc.startContactDegradeMonitor()
 	if redis != nil {
+		// 初始化待审批协调器
 		cfg := usercache.PendingCoordinatorConfig{
 			LeaseTTL:       svc.pendingCreateTTL(),
 			Component:      "user_service",
@@ -496,11 +528,39 @@ func NewUserService(store interfaces.Factory, redis *storage.RedisCluster, opts 
 				cfg.SevereDelayMax = kopts.PendingDelaySevereMax
 			}
 		}
+		warnIfPendingDelayExceedsTimeout(cfg, opts)
 		svc.pendingCoordinator = usercache.NewPendingCoordinator(redis, cfg)
 	}
 	svc.ensureOperationModeController()
 	svc.initCreatePipeline()
 	return svc
+}
+
+func warnIfPendingDelayExceedsTimeout(cfg usercache.PendingCoordinatorConfig, opts *options.Options) {
+	if opts == nil || opts.ServerRunOptions == nil {
+		return
+	}
+	budget := opts.ServerRunOptions.CtxTimeout
+	if budget <= 0 {
+		return
+	}
+	maxProfileDelay := maxDuration(cfg.ElevatedDelayMax, cfg.SevereDelayMax, cfg.ElevatedDelayBase, cfg.SevereDelayBase)
+	if pendingBackpressureMaxDelay > 0 && pendingBackpressureMaxDelay > budget {
+		log.Warnw("pending backpressure max delay exceeds request timeout budget", "pending_delay_ms", pendingBackpressureMaxDelay.Milliseconds(), "request_timeout_ms", budget.Milliseconds())
+	}
+	if maxProfileDelay > budget {
+		log.Warnw("pending backpressure profile delay exceeds request timeout budget", "profile_delay_ms", maxProfileDelay.Milliseconds(), "request_timeout_ms", budget.Milliseconds())
+	}
+}
+
+func maxDuration(values ...time.Duration) time.Duration {
+	maxDelay := time.Duration(0)
+	for _, v := range values {
+		if v > maxDelay {
+			maxDelay = v
+		}
+	}
+	return maxDelay
 }
 
 // PendingCoordinator exposes the pending lease coordinator for downstream components (e.g. HTTP middleware).
@@ -550,6 +610,7 @@ func (u *UserService) OperationModeSnapshot() OperationModeConfig {
 	return ctrl.Snapshot()
 }
 
+// userStoreReadOnly 获取只读用户存储接口
 func (u *UserService) userStoreReadOnly() interfaces.UserStore {
 	if u == nil || u.Store == nil {
 		return nil
@@ -741,17 +802,18 @@ func (u *UserService) strongConsistencyProbeDelay() time.Duration {
 	return base + delta
 }
 
-func waitWithContext(ctx context.Context, delay time.Duration) bool {
+func waitWithContext(ctx context.Context, delay time.Duration) (bool, time.Duration) {
 	if delay <= 0 {
-		return true
+		return true, 0
 	}
+	start := time.Now()
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
-		return false
+		return false, time.Since(start)
 	case <-timer.C:
-		return true
+		return true, time.Since(start)
 	}
 }
 
@@ -785,7 +847,7 @@ func (u *UserService) handleStrongConsistencyReadError(ctx context.Context, user
 	if attempt+1 < maxAttempts {
 		delay := u.strongConsistencyBackoffDelay(attempt)
 		trace.AddRequestTag(ctx, fmt.Sprintf("strong_consistency_retry_delay_ms_%d", attempt+1), delay.Milliseconds())
-		if waitWithContext(ctx, delay) {
+		if ok, _ := waitWithContext(ctx, delay); ok {
 			return true, nil
 		}
 		if ctx.Err() != nil {
@@ -888,6 +950,9 @@ func (u *UserService) cacheNullValue(ctx context.Context, username string, ttl t
 	return u.Redis.SetKey(redisCtx, cacheKey, RATE_LIMIT_PREVENTION, expireTime)
 }
 
+// 这是为了防止“看到负缓存就人人去读库”造成雪崩： • 当命中了负缓存但    force=false，我们只想偶尔刷新一次来确认数据是否真的不存在。 • shouldRefreshNullCache 会尝试在 Redis 里加一把短 TTL 的互斥锁（或标志），只有拿到锁的那一个请求才允许回源刷新；没拿到锁的直接沿用旧的 negative 哨兵。 • 这样一来，多个请求同时命中负缓存时，不会都跑去查数据库；有锁的那一个负责刷新成功则更新缓存，其它请求复用新结果或继续读旧缓存即可。 • 如果 Redis 不可用，就返回 false，表示不要刷新，防止在 Redis 故障期间因每次都回源而把数据库打穿。  因此在“负缓存 + 非强制刷新”这条路径里，先调用 shouldRefreshNullCache 来控制是否需要真正回源刷新。shouldRefreshNullCache 检测是否需要刷新负缓存，如果需要则返回 true 和锁的 key，调用方负责在刷新完成后释放锁。
+// “force=false” 并不是完全禁止查库，而是“不立刻回源”，具体逻辑是：
+// 命中负缓存时先看 force。为 true 就直接回源刷新，这种强一致场景不讨论force=false 时，会调用 shouldRefreshNullCache 尝试拿一个短 TTL 的刷新锁。拿到锁：认为当前请求有资格“代表大家去确认一次”，于是回源查库并刷新缓存。没拿到锁：为了避免所有请求都去读库，就直接沿用现有负缓存结果（返回 nil,true），不再查库。所以“非强制”只是在绝大多数请求上不查库如果不需要刷新则返回 false，调用方直接沿用旧的负缓存结果。
 func (u *UserService) shouldRefreshNullCache(ctx context.Context, username string) (bool, string) {
 	if u.Redis == nil {
 		return false, ""
@@ -907,6 +972,7 @@ func (u *UserService) shouldRefreshNullCache(ctx context.Context, username strin
 	return success, lockKey
 }
 
+// releaseNullCacheRefreshLock 释放负缓存刷新锁
 func (u *UserService) releaseNullCacheRefreshLock(lockKey string) {
 	if lockKey == "" {
 		return
@@ -922,6 +988,7 @@ func (u *UserService) releaseNullCacheRefreshLock(lockKey string) {
 	}
 }
 
+// refreshUserCacheFromDB 从数据库刷新用户缓存
 func (u *UserService) refreshUserCacheFromDB(ctx context.Context, username string) (*v1.User, error) {
 	refreshKey := fmt.Sprintf("refresh:%s", username)
 	result, err, _ := u.group.Do(refreshKey, func() (interface{}, error) {
@@ -1001,6 +1068,8 @@ func durationToSecondsCeil(d time.Duration) int64 {
 	return int64(seconds)
 }
 
+// tagIfLockWait 根据错误内容判断是否为锁等待相关错误，若是则在 trace 上打标签
+// 记录“锁等待”是为了在观测层快速定位数据库层面的性能瓶颈。大多数 get/create/delete 的错误都只是“未找到”“参数错误”这类业务问题，而锁等待代表数据库行/表被其他事务长时间占用，通常预示着竞争或死锁隐患。 •    tagIfLockWait 会在 trace 上打    tag.lock_wait=<前缀> 之类的标记，方便在 Jaeger/Tempo 这类链路追踪系统里一眼筛出“因为锁阻塞而慢/失败”的请求；配合指标还能统计锁等待的发生频率、定位具体 SQL/用户。 • 没有这个标签的话，锁等待只是“数据库超时”或“未知错误”，需要翻日志才能确认；加上标签就能直接在可观测平台里看到“这条请求是由于锁等待失败的”，极大缩短排障时间。tag: 用于标识标签前缀
 func tagIfLockWait(ctx context.Context, err error, tag string) {
 	if ctx == nil || err == nil {
 		return
@@ -1015,6 +1084,7 @@ func tagIfLockWait(ctx context.Context, err error, tag string) {
 	}
 }
 
+// pendingCreateTTL 获取用户创建占位标记的 TTL 配置
 func (u *UserService) pendingCreateTTL() time.Duration {
 	minTTL := serveropts.MinUserPendingCreateTTL
 	if u == nil || u.Options == nil || u.Options.ServerRunOptions == nil {
@@ -1075,6 +1145,8 @@ func (u *UserService) pendingLeaseMetadata(ctx context.Context, username string)
 // 异常情况：
 //   - Redis 操作失败会返回 ErrRedis 相关错误码
 //   - 当上下文超时时会提前终止并返回错误
+//
+// 流程:参数校验 → 降级检查 → 背压采样+延迟 → 抢占租约 → 结果处理/异常兜底
 func (u *UserService) markUserPendingCreate(ctx context.Context, username string) (bool, bool, time.Duration, time.Duration, time.Duration, string, string, error) {
 	trimmed := strings.TrimSpace(username)
 	if trimmed == "" {
@@ -1085,13 +1157,16 @@ func (u *UserService) markUserPendingCreate(ctx context.Context, username string
 		log.Errorw("pending coordinator not initialized", "component", "user_service", "username", trimmed)
 		return false, false, 0, 0, 0, "", "", errors.WithCode(code.ErrServerBusy, "pending coordinator 未初始化")
 	}
+	componentLabel := "user_service"
+	// 检测降级状态，若处于降级则跳过占位逻辑
 	if u.isRedisDegradeActive() {
 		trace.AddRequestTag(ctx, "pending_marker_degraded_skip", true)
 		if metrics.PendingLeaseEvents != nil {
-			metrics.PendingLeaseEvents.WithLabelValues("user_service", "acquire_skip_degraded").Inc()
+			metrics.PendingLeaseEvents.WithLabelValues(componentLabel, "acquire_skip_degraded").Inc()
 		}
 		return false, false, 0, 0, 0, "", "", nil
 	}
+	// 根据采样排队深度与背压状态计算出延迟时间,并在必要时进行等待
 	if depth, level, sampleErr := u.pendingCoordinator.SampleQueueDepth(ctx); sampleErr != nil {
 		trace.AddRequestTag(ctx, "pending_queue_sample_error", sampleErr.Error())
 	} else {
@@ -1101,27 +1176,55 @@ func (u *UserService) markUserPendingCreate(ctx context.Context, username string
 		if level != usercache.BackpressureNone {
 			trace.AddRequestTag(ctx, "pending_backpressure_level", string(level))
 			if metrics.PendingLeaseEvents != nil {
-				metrics.PendingLeaseEvents.WithLabelValues("user_service", "pre_acquire_backpressure").Inc()
+				metrics.PendingLeaseEvents.WithLabelValues(componentLabel, "pre_acquire_backpressure").Inc()
 			}
-			if delay := u.pendingCoordinator.BackpressureDelay(level, depth); delay > 0 {
-				if pendingBackpressureMaxDelay > 0 && delay > pendingBackpressureMaxDelay {
-					delay = pendingBackpressureMaxDelay
+			if rawDelay := u.pendingCoordinator.BackpressureDelay(level, depth); rawDelay > 0 {
+				if pendingBackpressureMaxDelay > 0 && rawDelay > pendingBackpressureMaxDelay {
+					rawDelay = pendingBackpressureMaxDelay
 				}
-				trace.AddRequestTag(ctx, "pending_backpressure_delay_ms", delay.Milliseconds())
-				log.Infow("pending lease pre-acquire delay", "component", "user_service", "username", trimmed, "queue_depth", depth, "backpressure", string(level), "delay_ms", delay.Milliseconds())
-				if !waitWithContext(ctx, delay) {
-					if ctx != nil {
-						return false, false, 0, 0, 0, "", "", ctx.Err()
+				requestElapsed := backpressure.LeadTime(ctx, time.Time{})
+				if requestElapsed > 0 {
+					trace.AddRequestTag(ctx, "pending_backpressure_elapsed_ms", requestElapsed.Milliseconds())
+					metrics.RecordPendingBackpressureLeadTime(componentLabel, string(level), requestElapsed)
+				}
+				decision := backpressure.AlignDelayWithDeadline(ctx, rawDelay, 0)
+				if decision.Action != "" {
+					metrics.RecordPendingBackpressureDeadlineDecision(componentLabel, string(level), decision.Action)
+					trace.AddRequestTag(ctx, "pending_backpressure_deadline_action", decision.Action)
+					remaining := decision.Remaining
+					if remaining < 0 {
+						remaining = 0
 					}
-					return false, false, 0, 0, 0, "", "", context.Canceled
+					trace.AddRequestTag(ctx, "pending_backpressure_deadline_remaining_ms", remaining.Milliseconds())
+					log.Infow("pending lease delay adjusted by deadline", "component", componentLabel, "username", trimmed, "action", decision.Action, "requested_delay_ms", rawDelay.Milliseconds(), "remaining_budget_ms", decision.Remaining.Milliseconds())
 				}
-				if metrics.PendingLeaseEvents != nil {
-					metrics.PendingLeaseEvents.WithLabelValues("user_service", "pre_acquire_delay").Inc()
+				delay := decision.Effective
+				if delay <= 0 {
+					trace.AddRequestTag(ctx, "pending_backpressure_delay_skipped", true)
+				} else {
+					metrics.RecordPendingBackpressureDelay(componentLabel, string(level), delay)
+					trace.AddRequestTag(ctx, "pending_backpressure_delay_ms", delay.Milliseconds())
+					log.Infow("pending lease pre-acquire delay", "component", componentLabel, "username", trimmed, "queue_depth", depth, "backpressure", string(level), "delay_ms", delay.Milliseconds())
+					if ok, waited := waitWithContext(ctx, delay); !ok {
+						metrics.RecordPendingBackpressureDelayCancellation(componentLabel, string(level))
+						metrics.ObservePendingBackpressureCancellationDuration(componentLabel, string(level), waited)
+						if waited > 0 {
+							trace.AddRequestTag(ctx, "pending_backpressure_waited_before_cancel_ms", waited.Milliseconds())
+						}
+						if ctx != nil {
+							return false, false, 0, 0, 0, "", "", ctx.Err()
+						}
+						return false, false, 0, 0, 0, "", "", context.Canceled
+					}
+					if metrics.PendingLeaseEvents != nil {
+						metrics.PendingLeaseEvents.WithLabelValues(componentLabel, "pre_acquire_delay").Inc()
+					}
 				}
 			}
 		}
 	}
 	meta := u.pendingLeaseMetadata(ctx, trimmed)
+	// 等待delay事件后尝试抢占待创建租约
 	result, err := u.pendingCoordinator.Acquire(ctx, trimmed, meta)
 	if err != nil {
 		var acquireErr *usercache.AcquireError
@@ -1251,6 +1354,160 @@ func (u *UserService) cacheBlacklistSentinel(ctx context.Context, username strin
 		expire += jitter
 	}
 	return u.Redis.SetKey(redisCtx, u.generateUserCacheKey(username), BLACKLIST_SENTINEL, expire)
+}
+
+type pendingHeartbeatSession struct {
+	username    string
+	ownerID     string
+	component   string
+	coordinator *usercache.PendingCoordinator
+	interval    time.Duration
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
+}
+
+func (s *pendingHeartbeatSession) start(ctx context.Context) {
+	if s == nil {
+		return
+	}
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		ticker := time.NewTicker(s.interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				hbCtx, cancel := context.WithTimeout(ctx, pendingHeartbeatCallTimeout)
+				if err := s.coordinator.Heartbeat(hbCtx, s.username, s.ownerID); err != nil {
+					log.Debugw("pending lease heartbeat failed", "username", s.username, "owner", s.ownerID, "component", s.component, "error", err)
+				}
+				cancel()
+			}
+		}
+	}()
+}
+
+func (s *pendingHeartbeatSession) stop() {
+	if s == nil {
+		return
+	}
+	if s.cancel != nil {
+		s.cancel()
+	}
+	s.wg.Wait()
+}
+
+func (u *UserService) pendingHeartbeatInterval() time.Duration {
+	if u == nil {
+		return pendingHeartbeatIntervalMin
+	}
+	ttl := u.pendingCreateTTL()
+	if ttl <= 0 {
+		log.Warnw("pending heartbeat ttl invalid, fallback to default", "component", "user_service", "ttl", ttl)
+		ttl = 30 * time.Second
+	}
+	grace := u.pendingExpiredGrace()
+	if grace < 0 {
+		log.Warnw("pending heartbeat grace invalid, clamped to zero", "component", "user_service", "grace", grace)
+		grace = 0
+	}
+	base := ttl + grace
+	if base <= 0 {
+		log.Warnw("pending heartbeat base duration invalid", "component", "user_service", "ttl", ttl, "grace", grace)
+		return pendingHeartbeatIntervalMin
+	}
+	interval := base / 2
+	if interval < pendingHeartbeatIntervalMin {
+		log.Warnw("pending heartbeat interval below minimum, clamped", "component", "user_service", "interval", interval, "min", pendingHeartbeatIntervalMin, "ttl", ttl, "grace", grace)
+		interval = pendingHeartbeatIntervalMin
+	}
+	if interval > pendingHeartbeatIntervalMax {
+		log.Warnw("pending heartbeat interval above maximum, clamped", "component", "user_service", "interval", interval, "max", pendingHeartbeatIntervalMax, "ttl", ttl, "grace", grace)
+		interval = pendingHeartbeatIntervalMax
+	}
+	return interval
+}
+
+func (u *UserService) pendingExpiredGrace() time.Duration {
+	const defaultGrace = 2 * time.Second
+	if u == nil {
+		return defaultGrace
+	}
+	if u.pendingCoordinator != nil {
+		grace := u.pendingCoordinator.ExpiredGracePeriod()
+		if grace >= 0 {
+			return grace
+		}
+	}
+	if u.Options != nil && u.Options.KafkaOptions != nil && u.Options.KafkaOptions.PendingExpiredGrace >= 0 {
+		return u.Options.KafkaOptions.PendingExpiredGrace
+	}
+	log.Warnw("pending expired grace missing, fallback to default", "component", "user_service", "default_grace", defaultGrace)
+	return defaultGrace
+}
+
+func (u *UserService) startPendingHeartbeatSession(operationID, username, ownerID string) {
+	if u == nil || u.pendingCoordinator == nil {
+		return
+	}
+	trimmedOwner := strings.TrimSpace(ownerID)
+	trimmedUser := strings.TrimSpace(username)
+	if trimmedOwner == "" || trimmedUser == "" {
+		return
+	}
+	opID := strings.TrimSpace(operationID)
+	if opID == "" {
+		opID = trimmedUser
+	}
+	interval := u.pendingHeartbeatInterval()
+	ctx, cancel := context.WithCancel(context.Background())
+	session := &pendingHeartbeatSession{
+		username:    trimmedUser,
+		ownerID:     trimmedOwner,
+		component:   "user_service",
+		coordinator: u.pendingCoordinator,
+		interval:    interval,
+		cancel:      cancel,
+	}
+	session.start(ctx)
+	if existing, loaded := u.pendingHeartbeats.LoadOrStore(opID, session); loaded {
+		if oldSession, ok := existing.(*pendingHeartbeatSession); ok {
+			oldSession.stop()
+		}
+		u.pendingHeartbeats.Store(opID, session)
+	}
+}
+
+func (u *UserService) stopPendingHeartbeatSession(operationID string) {
+	if u == nil {
+		return
+	}
+	opID := strings.TrimSpace(operationID)
+	if opID == "" {
+		return
+	}
+	if existing, ok := u.pendingHeartbeats.LoadAndDelete(opID); ok {
+		if session, ok := existing.(*pendingHeartbeatSession); ok {
+			session.stop()
+		}
+	}
+}
+
+func (u *UserService) startHeartbeatFromEnvelope(env *operation.OperationEnvelope, username string) func() {
+	if u == nil || env == nil || env.Headers == nil {
+		return func() {}
+	}
+	owner := strings.TrimSpace(env.Headers[pendingOwnerHeader])
+	if owner == "" {
+		return func() {}
+	}
+	u.startPendingHeartbeatSession(env.ID, username, owner)
+	return func() {
+		u.stopPendingHeartbeatSession(env.ID)
+	}
 }
 
 func (u *UserService) setBlacklist(ctx context.Context, username string, ttl time.Duration) error {
@@ -1471,24 +1728,149 @@ func (u *UserService) ensureContactCacheReady() {
 		return
 	}
 	u.contactWarming = true
+	u.contactWarmupWaitCh = make(chan struct{})
 	u.contactWarmupMu.Unlock()
 
 	go func() {
-		retryDelay := 30 * time.Second
-		if err := u.warmContactCache(); err != nil {
-			u.contactWarmupNextRetry.Store(time.Now().Add(retryDelay).Unix())
-			log.Warnw("联系人缓存预热失败", "error", err, "retry_after", retryDelay)
-			u.contactWarmupMu.Lock()
-			u.contactWarming = false
+		err := u.warmContactCache(context.Background())
+		u.completeContactWarmup(err)
+	}()
+}
+
+// WarmupContactCacheBlocking 在启动阶段同步预热联系方式唯一性缓存。
+//
+// 当配置启用且依赖就绪后，会串行扫描用户存储并写入 Redis，直到成功或上下文取消。
+// 若预热正在进行则阻塞等待结果，便于启动阶段与周期任务复用相同的互斥控制。
+func (u *UserService) WarmupContactCacheBlocking(ctx context.Context) error {
+	if u == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if u.contactCacheReady.Load() {
+		return nil
+	}
+	if u.Options == nil || u.Options.ServerRunOptions == nil || !u.Options.ServerRunOptions.EnableContactWarmup {
+		u.contactCacheReady.Store(true)
+		return nil
+	}
+	if u.Store == nil || u.Redis == nil {
+		return fmt.Errorf("contact warmup dependencies not ready")
+	}
+
+	for {
+		u.contactWarmupMu.Lock()
+		if u.contactCacheReady.Load() {
 			u.contactWarmupMu.Unlock()
-			return
+			return nil
 		}
+		if u.contactWarming {
+			waitCh := u.contactWarmupWaitCh
+			u.contactWarmupMu.Unlock()
+			if waitCh == nil {
+				select {
+				case <-time.After(10 * time.Millisecond):
+					continue
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+			select {
+			case <-waitCh:
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		u.contactWarming = true
+		u.contactWarmupWaitCh = make(chan struct{})
+		u.contactWarmupMu.Unlock()
+
+		err := u.warmContactCache(ctx)
+		u.completeContactWarmup(err)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+}
+
+// StartContactWarmupLoop 启动周期性的联系方式缓存刷新任务。
+//
+// 若配置未启用或刷新间隔小于等于 0，将直接返回。
+func (u *UserService) StartContactWarmupLoop() {
+	if u == nil {
+		return
+	}
+	if u.Options == nil || u.Options.ServerRunOptions == nil || !u.Options.ServerRunOptions.EnableContactWarmup {
+		return
+	}
+	interval := u.Options.ServerRunOptions.ContactWarmupRefreshInterval
+	if interval <= 0 {
+		return
+	}
+	u.contactWarmupLoopOnce.Do(func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		u.contactWarmupLoopCancel = cancel
+		u.contactWarmupLoopWG.Add(1)
+		go u.runContactWarmupLoop(ctx, interval)
+	})
+}
+
+// StopContactWarmupLoop 停止周期性的联系方式缓存刷新任务。
+func (u *UserService) StopContactWarmupLoop() {
+	if u == nil {
+		return
+	}
+	if cancel := u.contactWarmupLoopCancel; cancel != nil {
+		cancel()
+	}
+	u.contactWarmupLoopWG.Wait()
+	u.contactWarmupLoopCancel = nil
+}
+
+func (u *UserService) runContactWarmupLoop(ctx context.Context, interval time.Duration) {
+	defer u.contactWarmupLoopWG.Done()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			warmCtx, cancel := context.WithTimeout(ctx, contactWarmupTimeout)
+			err := u.WarmupContactCacheBlocking(warmCtx)
+			cancel()
+			if err == nil {
+				log.Debugw("周期联系人缓存预热完成", "component", "user_service", "interval", interval.String())
+			}
+		}
+	}
+}
+
+func (u *UserService) completeContactWarmup(err error) {
+	var waitCh chan struct{}
+	u.contactWarmupMu.Lock()
+	u.contactWarming = false
+	waitCh = u.contactWarmupWaitCh
+	u.contactWarmupWaitCh = nil
+	if err == nil {
 		u.contactCacheReady.Store(true)
 		u.contactWarmupNextRetry.Store(0)
-		u.contactWarmupMu.Lock()
-		u.contactWarming = false
-		u.contactWarmupMu.Unlock()
-	}()
+	} else if !stdErrors.Is(err, context.Canceled) {
+		u.contactWarmupNextRetry.Store(time.Now().Add(contactWarmupRetryDelay).Unix())
+	}
+	u.contactWarmupMu.Unlock()
+
+	if waitCh != nil {
+		close(waitCh)
+	}
+	if err == nil || stdErrors.Is(err, context.Canceled) {
+		return
+	}
+	log.Warnw("联系人缓存预热失败", "error", err, "retry_after", contactWarmupRetryDelay)
 }
 
 func (u *UserService) contactLookupTimeout() time.Duration {
@@ -1526,7 +1908,8 @@ func (u *UserService) contactRefreshTimeout() time.Duration {
 //	}
 //
 // 注意事项：
-//   - 当缓存尚未预热或 Redis 不可用时，会主动要求执行预检
+//   - 当缓存尚未预热或 Redis 客户端不可用时，会主动要求执行预检
+//   - 进入 Redis 降级模式后会跳过预检，避免在缓存异常时进一步放大数据库负载
 //   - 强一致性请求（如删除、强制刷新）会始终执行预检
 //
 // forceCacheRefreshFromContext(ctx)强制刷新标记时会执行预检
@@ -1538,7 +1921,11 @@ func (u *UserService) shouldRunPreflight(ctx context.Context, user *v1.User) boo
 	if user == nil {
 		return false
 	}
-	// Redis 降级模式时跳过预检
+	// Redis 全局降级模式时跳过预检
+	/*
+		Redis 进入降级态（isRedisDegradeActive=true）意味着我们已经判定缓存链路不可靠：占位写失败、操作超时或健康检查连续告警。此时如果仍按原逻辑对每个请求执行数据库预检（PreflightConflicts），“唯一性校验 + 限流”将在高并发下把读压全部落到主库，会立刻把数据库拖垮，形成“缓存雪崩 → 读风暴 → 主库故障”的连锁反应。 在降级模式里，系统会切换到以下策略来维持可用性与数据一致性： • 联系人数占位：调用 ensureContactPlaceholder 把当前请求写成本地降级缓存，减少重复写库。 • 本地降级缓存：contactRedisDegradeCache 维护最近的联系方式命中，避免每次都查数据库。 • 必要时的兜底查库：ensureContactUniqueDegraded 提供严格一致性路径，只在确认需要的时候才访问数据库。 • 限流保护：   preflightLimiter 仍然生效，防止数据库被历史积压请求冲垮。  因此，降级状态下跳过预检并不是因为“数据库也不可用”，而是为了避免在缓存异常期间再额外制造数据库高峰，转而依赖降级校验逻辑（本地缓存 + 限流 + 必要的兜底查库）来保证唯一性。待 Redis 恢复、降级标记解除后，预检路径会自动恢复正常工作。
+
+	*/
 	if u.isRedisDegradeActive() {
 		return false
 	}
@@ -1579,6 +1966,15 @@ func (u *UserService) newDBContext(parent context.Context, timeout time.Duration
 	return context.WithTimeout(base, timeout)
 }
 
+//	shouldDegradeForError 判断给定错误是否应触发降级逻辑
+//
+// 通过检查错误类型和内容，识别出数据库超时、上下文取消或超时等情况，决定是否进入降级模式。
+//
+// 参数：
+//
+//	err: 待检查的错误对象
+//
+// 返回值：
 func shouldDegradeForError(err error) bool {
 	if err == nil {
 		return false
@@ -1622,14 +2018,29 @@ func (u *UserService) enableRedisDegrade(reason string, kv ...interface{}) {
 	}
 }
 
+// disableRedisDegrade 关闭联系人唯一性 Redis 降级模式
+//
+// 当 Redis 健康检查恢复或手动干预时调用，重置降级标记并清理本地缓存。
+//
+// 参数：
+//
+//	reason: 关闭降级的原因描述
+//
+// 返回值：
+//
+//	无: 无返回值
 func (u *UserService) disableRedisDegrade(reason string) {
 	if u == nil {
 		return
 	}
+	// 原本未处于降级状态则直接返回
+	//确保全局只有一次机会将 contactRedisDegradeActive 从 true 改为 false，后续其他协程执行到这里时，因为值已经是 false，会直接 return，避免重复操作。
 	if !u.contactRedisDegradeActive.CompareAndSwap(true, false) {
 		return
 	}
+	// 重置降级开始时间
 	u.contactRedisDegradeSince.Store(0)
+	// 清理本地降级缓存
 	u.clearContactDegradeCache()
 	log.Infow("联系人唯一性Redis降级结束", "reason", reason)
 }
@@ -1715,6 +2126,7 @@ func (u *UserService) clearContactDegradeCache() {
 	u.contactRedisDegradeCacheSize.Store(0)
 }
 
+// contactDegradeCacheDelete 从本地降级缓存中删除指定键
 func (u *UserService) contactDegradeCacheDelete(key interface{}) bool {
 	if u == nil || key == nil {
 		return false
@@ -1796,6 +2208,10 @@ func (u *UserService) checkRedisHealthy() bool {
 	return err == nil || stdErrors.Is(err, redis.Nil)
 }
 
+// startContactDegradeMonitor 启动周期性的 Redis 健康检查任务。
+//
+// 通过定时探测 Redis 可用性，动态管理联系人唯一性缓存的降级状态。
+// 当 Redis 恢复后会自动清理降级缓存并解除降级标记。
 func (u *UserService) startContactDegradeMonitor() {
 	if u == nil {
 		return
@@ -1823,6 +2239,7 @@ func (u *UserService) startContactDegradeMonitor() {
 	})
 }
 
+// markCreateDegraded 记录用户创建降级状态并输出日志
 func (u *UserService) markCreateDegraded(ctx context.Context, reason string, kv ...interface{}) {
 	metrics.RecordUserCreateDegrade(reason, userctx.AccountType(ctx))
 
@@ -1843,7 +2260,7 @@ func (u *UserService) markCreateDegraded(ctx context.Context, reason string, kv 
 	if reason != "" {
 		trace.AddRequestTag(ctx, "create_degraded_reason", reason)
 	}
-	//把全局降级标志拉起，让后续请求改走本地缓存兜底，直到监控线程发现 Redis 恢复
+	//如果是redis错误把全局降级标志拉起，让后续请求改走本地缓存兜底，直到监控线程发现 Redis 恢复
 	if reason == redisDegradeReasonCache || reason == redisDegradeReasonPlaceholder {
 		u.enableRedisDegrade(reason, kv...)
 	}
@@ -1895,6 +2312,7 @@ func (u *UserService) ensureContactPlaceholder(ctx context.Context, cacheKey, ow
 	}
 	setCtx, setCancel := u.redisOpContext(ctx)
 	setStart := time.Now()
+	//30秒TTL就是用来做“短期幂等保护”，防止并发写穿
 	ok, err := u.Redis.SetNX(setCtx, cacheKey, placeholder, contactPlaceholderTTL)
 	setDuration := time.Since(setStart)
 	setCancel()
@@ -1907,6 +2325,7 @@ func (u *UserService) ensureContactPlaceholder(ctx context.Context, cacheKey, ow
 	if ok {
 		return
 	}
+	//键已存在，读取旧值
 	getCtx, getCancel := u.redisOpContext(ctx)
 	getStart := time.Now()
 	existing, err := u.Redis.GetKey(getCtx, cacheKey)
@@ -1939,6 +2358,8 @@ func (u *UserService) ensureContactPlaceholder(ctx context.Context, cacheKey, ow
 		refreshCancel()
 	}
 }
+
+//ensureDegradedContactPlaceholders 确保用户的邮箱和手机号占位符存在于 Redis
 
 func (u *UserService) ensureDegradedContactPlaceholders(ctx context.Context, username, email, phone string) {
 	if email != "" {
@@ -1982,6 +2403,7 @@ func (u *UserService) ensureDegradedContactPlaceholders(ctx context.Context, use
 //   - 数据库不可用时可能返回 ErrDatabase、ErrDatabaseTimeout 等错误码
 //   - 数据不一致时会返回 ErrValidation 指示具体占用字段
 func (u *UserService) ensureContactUniqueness(ctx context.Context, user *v1.User) (map[string]*v1.User, bool, error) {
+	//对数据库预检加限流保护，防止高并发时打垮数据库
 	limiter := u.preflightLimiter
 	if limiter != nil {
 		waitStart := time.Now()
@@ -1989,7 +2411,7 @@ func (u *UserService) ensureContactUniqueness(ctx context.Context, user *v1.User
 		u.recordUserCreateStep(ctx, "preflight_limiter_wait", "limiter", user.Name, time.Since(waitStart), err)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return nil, false, errors.WithCode(code.ErrDatabaseTimeout, "预检查询等待超时")
+				return nil, false, errors.WithCode(code.ErrDatabaseTimeout, "预检-数据库限流查询等待超时")
 			}
 			return nil, false, errors.WithCode(code.ErrDatabase, "预检查询等待失败: %v", err)
 		}
@@ -1999,24 +2421,25 @@ func (u *UserService) ensureContactUniqueness(ctx context.Context, user *v1.User
 			u.recordUserCreateStep(ctx, "preflight_limiter_release", "limiter", user.Name, time.Since(releaseStart), nil)
 		}()
 	}
-
+	//确保联系方式缓存已预热
 	u.ensureContactCacheReady()
+	//规范化用户联系方式
 	u.normalizeUserContacts(user)
 
 	email := user.Email
 	phone := user.Phone
-
+	//
 	store := u.userStoreReadOnly()
 	if store == nil {
 		return nil, false, errors.WithCode(code.ErrDatabase, "用户存储未就绪")
 	}
 
 	var (
-		preflight       map[string]*v1.User
-		preflightErr    error
-		retryAttempts   = u.Options.RedisOptions.MaxRetries
-		usernameChecked bool
-		ranPreflight    bool
+		preflight       map[string]*v1.User                 //预检冲突结果
+		preflightErr    error                               //		预检错误
+		retryAttempts   = u.Options.RedisOptions.MaxRetries //重试次数
+		usernameChecked bool                                // 标记用户名是否经过有效检查
+		ranPreflight    bool                                // 标记是否执行过预检
 	)
 
 	if retryAttempts <= 0 {
@@ -2027,6 +2450,7 @@ func (u *UserService) ensureContactUniqueness(ctx context.Context, user *v1.User
 	//不需要预检的条件：降级模式、用户字段全为空、缓存已预热等
 	//bool: true 代表执行预检，false 代表不执行
 	runPreflight := u.shouldRunPreflight(ctx, user)
+	//执行预检逻辑
 	if runPreflight && (strings.TrimSpace(user.Name) != "" || email != "" || phone != "") {
 		result, err := util.RetryWithBackoff(retryAttempts, isRetryableError, func() (interface{}, error) {
 			dbCtx, cancel := u.newDBContext(ctx, u.contactLookupTimeout())
@@ -2056,8 +2480,34 @@ func (u *UserService) ensureContactUniqueness(ctx context.Context, user *v1.User
 		usernameChecked = true
 	}
 	// 处理预检错误：根据配置决定是否降级
+	/*
+				如果数据库预检（preflight）失败，并且错误属于“可降级”类型（如超时、Redis 故障等），就会：
+				标记本次创建为降级（markCreateDegraded），用于后续链路和监控。
+				调用 ensureDegradedContactPlaceholders，给 username/email/phone 写入“降级占位符”到 Redis。
+				将 preflightErr 置为 nil，usernameChecked 置为 false，流程继续往下走（即“放行”）。
+				你的疑问。
+				“此时写入的是非哨兵模式的占位符，本身预检失败了，写入占位符有什么意义？”
+				“下次请求不是拿不到真实的值？”
+				解答：
+
+				写入降级占位符的意义：
+
+				目的是“兜底保护并发唯一性”：即使预检失败（比如数据库超时），也要在 Redis 里占个位，防止同一邮箱/手机号/用户名被多个请求并发写入，造成唯一性冲突。
+				这种占位符不是“哨兵”模式（即不是严格的唯一性确认），而是“临时锁位”，让后续请求看到有占位符就不再并发写入，等 Redis 恢复或预检恢复后再做真正的唯一性校验。
+				这样做的好处是：即使后端存储不可靠，仍然能用 Redis 作为“并发写保护”，避免雪崩式写入。
+		下次请求会发生什么？
+
+		下次请求如果命中降级占位符，流程会优先判断是否处于降级状态（isRedisDegradeActive），如果是，依然会走降级兜底分支（比如直接查库或本地缓存），不会直接信任 Redis 的唯一性。
+		等 Redis/数据库恢复后，后台会清理降级占位符，恢复正常的唯一性校验流程。
+		期间如果有并发写入，依然有 Redis 占位符兜底，防止同一用户被多次创建。
+		总结：
+
+		这一步的本质是“牺牲强一致性，优先保证高可用和幂等性”，即使后端不可靠，也要用 Redis 做兜底保护，防止并发写穿。
+		占位符不是最终的唯一性判据，只是临时锁位，等后端恢复后再做最终一致性校验。
+
+	*/
 	if runPreflight && preflightErr != nil {
-		//预检出错且需要降级时，写入占位符并清除错误
+
 		if shouldDegradeForError(preflightErr) {
 			u.markCreateDegraded(ctx, "preflight_timeout", "username", user.Name)
 			u.ensureDegradedContactPlaceholders(ctx, user.Name, email, phone)
@@ -2088,6 +2538,7 @@ func (u *UserService) ensureContactUniqueness(ctx context.Context, user *v1.User
 			label:    "邮箱",
 			value:    emailCopy,
 			fieldKey: "email",
+			//这里的逻辑其实是“如果预检已经覆盖了邮箱，就不再打库；只有预检没跑或没覆盖到时才查库”。
 			lookup: func(lookupCtx context.Context, fieldStore interfaces.UserStore, value string) (*v1.User, error) {
 				if err := lookupCtx.Err(); err != nil {
 					return nil, err
@@ -2095,12 +2546,15 @@ func (u *UserService) ensureContactUniqueness(ctx context.Context, user *v1.User
 				if fieldStore == nil {
 					fieldStore = store
 				}
+				//找预检结果里有没有邮箱冲突
 				if existing := preflight["email"]; existing != nil {
 					return existing, nil
 				}
+				//ErrUserNotFound 只是用来告诉通用检查器“这条路已经验证过，没有冲突”，不会阻止后续逻辑。
 				if runPreflight {
 					return nil, errors.WithCode(code.ErrUserNotFound, "用户不存在")
 				}
+				//预检没命中邮箱，才查库
 				return fieldStore.GetByEmail(lookupCtx, value, u.Options)
 			},
 		})
@@ -2352,9 +2806,19 @@ func (u *UserService) ensureContactUniqueDegraded(
 // 返回值：
 //
 //	error: 预热过程中发生的错误，nil 表示预热成功
-func (u *UserService) warmContactCache() error {
-	ctx, cancel := context.WithTimeout(context.Background(), contactWarmupTimeout)
-	defer cancel()
+func (u *UserService) warmContactCache(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var cancel context.CancelFunc
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		ctx, cancel = context.WithTimeout(ctx, contactWarmupTimeout)
+	} else {
+		ctx, cancel = context.WithCancel(ctx)
+	}
+	if cancel != nil {
+		defer cancel()
+	}
 
 	if u.Store == nil || u.Redis == nil {
 		return fmt.Errorf("warmContactCache dependencies not ready")
@@ -2471,7 +2935,12 @@ func (u *UserService) warmContactCache() error {
 // 异常情况：
 //   - Redis/数据库超时将返回相应错误码
 //   - 当批量缓存不可用时会自动降级到单条查询
+//   - 用户不存在时不会返回错误，而是返回 nil 用户实体
+//     强刷（   forceRefresh 或    isStrongConsistencyRequest) 不会无条件“命中也查库”，而是根据命中的类型决定： ◦ 普通正缓存命中：先返回缓存结果，但同时会在后台发起 refreshUserCacheFromDB，用最新数据覆盖缓存（create/update 场景需要即时确认时很有用）。 ◦ 负缓存 / 黑名单命中：视为可疑，强刷请求会直接绕过 sentinel，立即回源主库确认；若查库成功就更新缓存，否则仍返回负缓存结论。 ◦ 缓存 miss：一定会查库，而且在强一致场景下会先 sleep 一小段（strongConsistencyProbeDelay) 再读主库，提升“刚写就读”的成功率。    所以“强刷”并不等同于“永远忽略缓存”，而是“命中正缓存→可用就直接用，但后台刷新；命中哨兵→绕过去查库；没命中→查库并带保护延迟”。- 调用方可通过上下文携带的标记控制缓存行为（如强一致性请求）.
+//
+// 当前实现里真正“触发写负缓存”的入口只有两个： 1. 查询 miss 触发保护阈值：checkUserExist/Get 走到 DB，返回    code.ErrUserNotFound 后会调用 handleProtectionForMiss。它给用户名的 NegativeCounterKey 加 1；当计数在窗口内到达 NegativeCacheThreshold（默认 5 次/60s，可配）时，才会调用 cacheNullValue 把    user:<username> 写成    RATE_LIMIT_PREVENTION，TTL 约 45s 带抖动。未达到阈值前不会写负缓存。 2. 删除流程主动兜底：cleanupUserStateForDelete 在清理正缓存后，总是调用 cacheNullValue(ctx, username, 0)，直接写入负缓存，确保刚删完的用户在 TTL 内命中 “不存在”。   •  其他提到的“普通 miss 就写”“SetNX 占位失败就写”等在当前代码没有实现；缓存 miss 只会统计    CacheHits.WithLabelValues("no_record") 并回源，除非进入上面两个分支。  •  这些入口都满足你说的“先删正缓存→短 TTL→只在确定不存在时写”，同时也避免了“查询出错/超时”误写：只有拿到明确的 ErrUserNotFound 或删除完成后才会写负缓存。主要是为了“区分偶发 miss 和真实不存在”。普通 miss 很可能只是缓存刚失效、DB 延迟、复制未完成等暂态，如果一 miss 就写负缓存，会把真实存在的数据标记成不存在，影响业务。 • 阈值机制把需要负缓存的对象限定在“短时间内被重复查库却始终不存在”的热点，比如机器人穷举用户名、压测脚本反复查未建用户。这类流量才对 DB 造成压力，适合用负缓存挡住。 • 由于你的系统会做自动重试、singleflight、强一致检查等，某些请求会在短时间内触发 2~3 次 miss（比如 DB 回源失败/重试），如果没有阈值，这些正常重试也会被误认为“真的不存在”而写入负缓存。阈值（默认 5 次/60 秒）就相当于一道“判别器”，让真正的恶性 miss 才触发负缓存，而把一次性的 miss/重试过滤掉。
 func (u *UserService) checkUserExist(ctx context.Context, username string, forceRefresh bool) (*v1.User, error) {
+	//按需启动批量缓. 先查批量预读缓存
 	batchCache := batchLookupCacheFromContext(ctx)
 	recordBatchResult := func(user *v1.User, notFound bool) {
 		if batchCache != nil {
@@ -2485,6 +2954,7 @@ func (u *UserService) checkUserExist(ctx context.Context, username string, force
 		}
 		return entry.user, nil
 	}
+	//未命中批量缓存
 	if batchCache != nil {
 		metrics.CacheHits.WithLabelValues("batch_miss").Inc()
 	}
@@ -2499,6 +2969,8 @@ func (u *UserService) checkUserExist(ctx context.Context, username string, force
 		"username":      username,
 		"force_refresh": forceRefresh,
 	}
+	//验证用户已删除意图
+	//verifyIntent  是通过    WithVerifyUserGone(ctx) 在上下文里打的一个标记，表示“当前这一趟 checkUserExist 是为了确认用户是否已经被删除/不存在”，主要服务于删除流程和幂等校验。它的作用有几方面： • Trace 可观测性：当    verifyIntent 为 true 时，缓存阶段会打 verify_user_gone_* 标签（命中、miss、负缓存等），数据库阶段也会记录 verify_user_gone_db_result，让我们在链路追踪里区分“普通存在性查询”与“删除后确认查询”，排查“删完还读到”的问题更容易。 • 语义区分：这个标记不会直接改变查询逻辑，但能让 checkUserExist 在处理结果时明确这是“验证是否消失”。例如命中负缓存、黑名单或 nil 时会把结果视为“已不存在”，并打相应 tag，供删除流程决定是否继续。 • 上游流程控制：删除和异步操作流水线在调用 checkUserExist 前都会调用    WithVerifyUserGone，这样就能统一收集“删除验证”这类调用的命中率、延迟，帮助我们判断删除后缓存/DB 刷新是否及时。  所以    verifyIntent 本质是一个“查询意图”标记，用于观测和决策，而不是决定是否查库。
 	verifyIntent := verifyUserGoneFromContext(ctx)
 	if verifyIntent {
 		cacheDetails["verify_user_gone"] = true
@@ -2517,7 +2989,7 @@ func (u *UserService) checkUserExist(ctx context.Context, username string, force
 		baseCtx = WithForceCacheRefresh(ctx)
 		cacheDetails["forced_refresh_ctx"] = true
 	}
-
+	//尝试从缓存获取用户
 	user, found, err := u.tryGetFromCache(baseCtx, username)
 	cacheDetails["cache_found"] = found
 	if err != nil {
@@ -2531,7 +3003,7 @@ func (u *UserService) checkUserExist(ctx context.Context, username string, force
 			cacheCode = strconv.Itoa(code.ErrUnknown)
 		}
 	}
-
+	//处理缓存命中结果
 	if err == nil && found {
 		cacheDetails["cache_return_candidate"] = true
 	}
@@ -2587,13 +3059,15 @@ func (u *UserService) checkUserExist(ctx context.Context, username string, force
 		cacheDetails["fallback_db"] = true
 	}
 	endCacheSpan()
-
+	//缓存未命中或强制刷新，继续查库.这里的    shouldDelay 只是“在打 DB 之前先等一小段时间”，并不是决定查不查库。   forceRefresh（或者    ctx 标记了    isStrongConsistencyRequest）通常意味着：刚刚有人针对这个用户做了写操作，随后立刻来验证状态。此时 cache miss 立刻去读 DB，有可能正好撞上复制/提交的窗口期，得到一个“旧状态”，又会触发下一轮刷新。 • strongConsistencyProbeDelay() 返回的就是这个“保护性等待”；等上一点点（几十毫秒级）可以让前面的写完成提交、主从同步或 CDC 触发，把“确认读”变得更可靠，同时也避免一窝蜂地打 DB。 • 等完之后仍然会执行后面的    util.RetryWithBackoff(...) 查库逻辑，因此不会影响最终一定会回源 DB 的事实，只是让“强一致/force refresh”场景更稳、更少脏读。
+	// 当然，这个保护性等待也不是绝对的，仍然有可能遇到极端情况（比如写入延迟特别高、DB 瞬时压力大等）导致读到旧数据，但整体概率会大幅降低。
+	//create/delete 场景下强制刷新的读请求，通常希望尽量避免读到旧数据
 	shouldDelay := forceRefresh || isStrongConsistencyRequest(ctx)
 	if shouldDelay {
 		delay := u.strongConsistencyProbeDelay()
 		if delay > 0 {
 			trace.AddRequestTag(ctx, "strong_consistency_probe_delay_ms", delay.Milliseconds())
-			if !waitWithContext(ctx, delay) {
+			if ok, _ := waitWithContext(ctx, delay); !ok {
 				if ctx.Err() != nil {
 					return nil, ctx.Err()
 				}
@@ -2630,6 +3104,11 @@ func (u *UserService) checkUserExist(ctx context.Context, username string, force
 			dbCtx = storectx.WithForcePrimary(dbCtx)
 		}
 		defer cancel()
+		//利用 singleflight 避免并发请求打穿数据库
+		//对于同一用户名的多并发请求，只会有一个实际查询数据库，其他请求等待结果返回
+		//减少数据库压力和重复查询
+		//注意：singleflight 作用域为 UserService 实例级别，不同实例间无法共享
+		//适用于高并发场景下的用户存在性检查
 		r, err, shared := u.group.Do(username, func() (interface{}, error) {
 			return u.getUserFromDBAndSetCache(dbCtx, username)
 		})

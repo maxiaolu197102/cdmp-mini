@@ -124,9 +124,15 @@ var (
 	PendingLeaseLuaAttempts         *prometheus.CounterVec
 
 	// Pending consumer 观测指标
-	PendingConsumerQueueDepth      *prometheus.GaugeVec
-	PendingConsumerRedisLatency    *prometheus.HistogramVec
-	PendingConsumerDequeueDuration *prometheus.HistogramVec
+	PendingConsumerQueueDepth                *prometheus.GaugeVec
+	PendingConsumerRedisLatency              *prometheus.HistogramVec
+	PendingConsumerDequeueDuration           *prometheus.HistogramVec
+	PendingBackpressureDelaySeconds          *prometheus.HistogramVec
+	PendingBackpressureDelayTriggerRate      *prometheus.CounterVec
+	PendingBackpressureDelayCancelRate       *prometheus.CounterVec
+	PendingBackpressureLeadTimeSeconds       *prometheus.HistogramVec
+	PendingBackpressureDelayCancelledSeconds *prometheus.HistogramVec
+	PendingBackpressureDeadlineDecisions     *prometheus.CounterVec
 )
 
 var (
@@ -789,6 +795,57 @@ func init() {
 			Buckets: []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5},
 		},
 		[]string{"component", "outcome"},
+	)
+
+	PendingBackpressureDelaySeconds = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "pending_backpressure_delay_seconds",
+			Help:    "Scheduled backpressure delays applied before pending operations proceed",
+			Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10},
+		},
+		[]string{"component", "level"},
+	)
+
+	PendingBackpressureDelayTriggerRate = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "pending_backpressure_delay_trigger_rate",
+			Help: "Count of times a pending backpressure delay is injected (derive rate() in Prometheus)",
+		},
+		[]string{"component", "level"},
+	)
+
+	PendingBackpressureDelayCancelRate = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "pending_backpressure_delay_cancel_rate",
+			Help: "Count of pending backpressure delay waits canceled before completion",
+		},
+		[]string{"component", "level"},
+	)
+
+	PendingBackpressureLeadTimeSeconds = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "pending_backpressure_lead_time_seconds",
+			Help:    "Elapsed request time before a pending backpressure delay is applied",
+			Buckets: []float64{0.001, 0.003, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10},
+		},
+		[]string{"component", "level"},
+	)
+
+	PendingBackpressureDelayCancelledSeconds = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "pending_backpressure_delay_cancelled_seconds",
+			Help:    "Actual time spent waiting before a pending backpressure delay was canceled",
+			Buckets: []float64{0.001, 0.003, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10},
+		},
+		[]string{"component", "level"},
+	)
+
+	PendingBackpressureDeadlineDecisions = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "pending_backpressure_deadline_decisions_total",
+			Help: "Count of times pending backpressure delays were truncated or skipped due to context deadlines",
+		},
+		[]string{"component", "level", "action"},
 	)
 
 	OperationQueueReadyDepth = prometheus.NewGaugeVec(
@@ -1555,6 +1612,12 @@ func init() {
 		PendingConsumerQueueDepth,
 		PendingConsumerRedisLatency,
 		PendingConsumerDequeueDuration,
+		PendingBackpressureDelaySeconds,
+		PendingBackpressureDelayTriggerRate,
+		PendingBackpressureDelayCancelRate,
+		PendingBackpressureLeadTimeSeconds,
+		PendingBackpressureDelayCancelledSeconds,
+		PendingBackpressureDeadlineDecisions,
 		OperationQueueReadyDepth,
 		OperationQueueScheduledDepth,
 		OperationQueueInflightGauge,
@@ -2106,6 +2169,62 @@ func SetPendingConsumerQueueDepth(component string, depth int64) {
 	}
 	comp := normalizeLabelValue(component, "user_consumer")
 	PendingConsumerQueueDepth.WithLabelValues(comp).Set(float64(depth))
+}
+
+// RecordPendingBackpressureDelay 记录一次背压延迟的注入与分布。
+func RecordPendingBackpressureDelay(component, level string, delay time.Duration) {
+	if delay <= 0 {
+		return
+	}
+	comp := normalizeLabelValue(component, "unknown")
+	lvl := normalizeLabelValue(level, "none")
+	if PendingBackpressureDelaySeconds != nil {
+		PendingBackpressureDelaySeconds.WithLabelValues(comp, lvl).Observe(delay.Seconds())
+	}
+	if PendingBackpressureDelayTriggerRate != nil {
+		PendingBackpressureDelayTriggerRate.WithLabelValues(comp, lvl).Inc()
+	}
+}
+
+// RecordPendingBackpressureDelayCancellation 统计背压延迟被提前取消的次数。
+func RecordPendingBackpressureDelayCancellation(component, level string) {
+	if PendingBackpressureDelayCancelRate == nil {
+		return
+	}
+	comp := normalizeLabelValue(component, "unknown")
+	lvl := normalizeLabelValue(level, "none")
+	PendingBackpressureDelayCancelRate.WithLabelValues(comp, lvl).Inc()
+}
+
+// RecordPendingBackpressureLeadTime 观测从请求开始到延迟注入前的耗时。
+func RecordPendingBackpressureLeadTime(component, level string, elapsed time.Duration) {
+	if elapsed <= 0 || PendingBackpressureLeadTimeSeconds == nil {
+		return
+	}
+	comp := normalizeLabelValue(component, "unknown")
+	lvl := normalizeLabelValue(level, "none")
+	PendingBackpressureLeadTimeSeconds.WithLabelValues(comp, lvl).Observe(elapsed.Seconds())
+}
+
+// ObservePendingBackpressureCancellationDuration 记录延迟等待被取消前已等待的时长。
+func ObservePendingBackpressureCancellationDuration(component, level string, waited time.Duration) {
+	if waited <= 0 || PendingBackpressureDelayCancelledSeconds == nil {
+		return
+	}
+	comp := normalizeLabelValue(component, "unknown")
+	lvl := normalizeLabelValue(level, "none")
+	PendingBackpressureDelayCancelledSeconds.WithLabelValues(comp, lvl).Observe(waited.Seconds())
+}
+
+// RecordPendingBackpressureDeadlineDecision 统计因 deadline 触发的延迟调整动作。
+func RecordPendingBackpressureDeadlineDecision(component, level, action string) {
+	if PendingBackpressureDeadlineDecisions == nil {
+		return
+	}
+	comp := normalizeLabelValue(component, "unknown")
+	lvl := normalizeLabelValue(level, "none")
+	act := normalizeLabelValue(action, "unknown")
+	PendingBackpressureDeadlineDecisions.WithLabelValues(comp, lvl, act).Inc()
 }
 
 // RecordOperationWorkerIteration 统计一次工作线程迭代，并记录耗时。

@@ -269,6 +269,17 @@ func TraceIDFromContext(ctx context.Context) string {
 	return ""
 }
 
+// ElapsedSinceStart 返回从 trace 启动到当前的耗时，若上下文未绑定 trace 则返回 0。
+func ElapsedSinceStart(ctx context.Context) time.Duration {
+	if ctx == nil {
+		return 0
+	}
+	if t := FromContext(ctx); t != nil && !t.Start.IsZero() {
+		return time.Since(t.Start)
+	}
+	return 0
+}
+
 // StartSpan starts a new span under the current trace.
 func StartSpan(ctx context.Context, component, operation string) (context.Context, *Span) {
 	t := FromContext(ctx)

@@ -15,20 +15,14 @@ type PreflightResult[T any] struct {
 }
 
 // PendingResult 描述 pending 标记阶段返回的元信息。
-//
-// param Created: true 表示首次创建占位，false 表示刷新已有占位。
-// param Refreshed: true 表示刷新过已有占位。
-// param TTL: Redis 占位标记剩余存活时间。
-// param SetDuration: 执行 SetNX 或 Acquire 操作的耗时。
-// param RefreshDuration: 刷新占位时的耗时，当未刷新时为 0。
 type PendingResult struct {
-	Created         bool
-	Refreshed       bool
-	TTL             time.Duration
-	SetDuration     time.Duration
-	RefreshDuration time.Duration
-	OwnerID         string
-	Backend         string
+	Created         bool          // true 表示本次新建占位；false 表示命中了同一资源已有的占位。常用来区分“首次创建”与“并发重入”。
+	Refreshed       bool          // true 表示占位在本轮被延长/续租，false 表示未触发续租。一般只在占位持有者一致时才会为 true。
+	TTL             time.Duration // Redis/PBO 存储中该占位剩余寿命，单位同 time.Duration；通常范围 0~pendingTTL（如 30s-120s），0 代表已过期或不可读。
+	SetDuration     time.Duration // 申请占位（SetNX/Acquire）耗时，用于观测锁竞争，通常在毫秒级，超过 100ms 需要排查。
+	RefreshDuration time.Duration // 续租耗时；未发生续租时为 0。一般与 SetDuration 同量级。
+	OwnerID         string        // 当前占位持有者标识（如实例 ID / request ID），空字符串表示来源无法识别。
+	Backend         string        // 占位的后端实现标签，例如 "redis"、"etcd"、"local"；用于多实现场景的观测分类。
 }
 
 // PipelineConfig 为通用创建流程提供自定义钩子。
