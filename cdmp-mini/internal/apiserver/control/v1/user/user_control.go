@@ -3,6 +3,8 @@ package user
 import (
 	createcontrol "github.com/maxiaolu1981/cretem/cdmp-mini/internal/common/control/create"
 
+	"sync"
+
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/options"
 	service "github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/service/v1"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/apiserver/store/interfaces"
@@ -16,10 +18,10 @@ import (
 )
 
 type UserController struct {
-	srv           service.ServiceManager                     // 服务层实例
-	options       *options.Options                           // 配置选项
-	Producer      producer.MessageProducer[*v1.User, string] // 消息生产者
-	createHandler *createcontrol.Handler[*v1.User]           // 创建处理器
+	srv           service.ServiceManager           // 服务层实例
+	options       *options.Options                 // 配置选项
+	createHandler *createcontrol.Handler[*v1.User] // 创建处理器
+	initOnce      sync.Once                        // handler 初始化一次
 }
 
 // NewUserController creates a user handler.
@@ -34,9 +36,8 @@ func NewUserController(store interfaces.Factory,
 		return nil, err
 	}
 	return &UserController{
-		srv:      s,
-		options:  options,
-		Producer: producer,
+		srv:     s,
+		options: options,
 	}, nil
 }
 

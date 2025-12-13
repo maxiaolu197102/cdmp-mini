@@ -164,22 +164,21 @@ func (u *UserController) ensureCreateHandler() *createcontrol.Handler[*v1.User] 
 	if u == nil {
 		return nil
 	}
-	if u.createHandler != nil {
-		return u.createHandler
-	}
-	cfg := createcontrol.HandlerConfig[*v1.User]{
-		Name:           "users",
-		ReadBody:       u.readCreateRequestBody,
-		Decode:         u.decodeCreateUser,
-		Enhance:        u.enhanceCreateUser,
-		Validate:       u.validateCreateUserEntity,
-		Prepare:        u.prepareCreateUserEntity,
-		WithTimeout:    u.createUserWithTimeout,
-		InvokeService:  u.invokeCreateUserService,
-		SuccessPayload: u.buildCreateUserResponse,
-		ResponseWriter: u.writeCreateUserResponse,
-	}
-	u.createHandler = createcontrol.NewHandler[*v1.User](cfg)
+	u.initOnce.Do(func() {
+		cfg := createcontrol.HandlerConfig[*v1.User]{
+			Name:           "users",
+			ReadBody:       u.readCreateRequestBody,
+			Decode:         u.decodeCreateUser,
+			Enhance:        u.enhanceCreateUser,
+			Validate:       u.validateCreateUserEntity,
+			Prepare:        u.prepareCreateUserEntity,
+			WithTimeout:    u.createUserWithTimeout,
+			InvokeService:  u.invokeCreateUserService,
+			SuccessPayload: u.buildCreateUserResponse,
+			ResponseWriter: u.writeCreateUserResponse,
+		}
+		u.createHandler = createcontrol.NewHandler[*v1.User](cfg)
+	})
 	return u.createHandler
 }
 

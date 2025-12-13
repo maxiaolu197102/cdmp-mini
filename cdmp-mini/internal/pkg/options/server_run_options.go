@@ -175,7 +175,7 @@ func NewServerRunOptions() *ServerRunOptions {
 		// AdminToken 为管理端 API 的共享令牌，server/audit_admin.go 及 server/ratelimit_admin.go 在校验 Header 时读取。
 		AdminToken: "",
 		// EnableRateLimiter 控制 Kafka 生产端限流器是否启用，genericapiserver.go 中的 producer 初始化会按该值配置。
-		EnableRateLimiter: false,
+		EnableRateLimiter: true,
 		// MaxGoroutines 用于限制后台任务协程数，目前尚未在运行期引用，预留给负载调度扩展。
 		MaxGoroutines: 100,
 		// MaxQueueSize 控制任务排队长度，当前未消费，保留给后续通用工作池实现。

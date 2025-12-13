@@ -55,7 +55,7 @@
 ## 1. 架构图（Architecture Diagram）
 
 ```mermaid
-%%{init: {'themeVariables': {'lineColor': '#1E63B5', 'flowchartLinkColor': '#1E63B5', 'lineWidth': 3}}}%%
+%%{init: {'themeVariables': {'lineColor': '#1E63B5', 'flowchartLinkColor': '#1E63B5', 'lineWidth': 3, 'fontSize': '24px'}}}%%
 graph LR
     subgraph Client Layer
         UI[前端/调用方]
@@ -128,6 +128,7 @@ graph LR
     Config --> RateLimiter
     Config --> Producer
 
+    classDef default font-size:24px;
     linkStyle default stroke:#1E63B5,stroke-width:3px
 ```
 
@@ -151,7 +152,7 @@ graph LR
 ## 2. 主流程图（Flow Chart）
 
 ```mermaid
-%%{init: {'themeVariables': {'lineColor': '#1E63B5', 'flowchartLinkColor': '#1E63B5', 'lineWidth': 3}}}%%
+%%{init: {'themeVariables': {'lineColor': '#1E63B5', 'flowchartLinkColor': '#1E63B5', 'lineWidth': 3, 'fontSize': '24px'}}}%%
 flowchart TD
     Start([开始])
     Mode["decideOperationMode 选择执行模式"]
@@ -184,6 +185,7 @@ flowchart TD
     Respond([返回成功])
     Fail([返回错误])
 
+    classDef default font-size:24px;
     linkStyle default stroke:#1E63B5,stroke-width:3px
 
     Start --> Mode --> ModeSync
@@ -312,7 +314,7 @@ QueueKinds 配置 ["order_create", "refund"]（订单创建、退款）：
 在触发后调用 UpdateOperationMode(OperationModeConfig{Mode: OperationModeRollout, RolloutPercent: xxx})，并在负载恢复时再切回同步。
 核心还是要有外部的“策略引擎”或控制面来根据监控做动态调节。生产环境常见的做法是：默认同步 → 观测到高并发风险时切到 rollout（10%→30%→50%）→ 确认稳定再切 queue，全过程由 SRE/自动化脚本根据指标驱动。单靠当前代码，无法自动完成这一步。
 ```mermaid
-%%{init: {'themeVariables': {'lineColor': '#1E63B5', 'flowchartLinkColor': '#1E63B5', 'lineWidth': 3}}}%%
+%%{init: {'themeVariables': {'lineColor': '#1E63B5', 'flowchartLinkColor': '#1E63B5', 'lineWidth': 3, 'fontSize': '24px'}}}%%
 flowchart TD
     Start([开始])
     HasCtrl{"operationModeController 存在?"}
@@ -328,6 +330,7 @@ flowchart TD
     ReturnQueue([返回 Queue])
     ReturnSync([返回 Sync])
 
+    classDef default font-size:24px;
     linkStyle default stroke:#1E63B5,stroke-width:3px
 
     Start --> HasCtrl
@@ -485,7 +488,7 @@ flowchart TD
 #### EnsureUnique 主流程图
 
 ```mermaid
-%%{init: {'themeVariables': {'lineColor': '#1E63B5', 'flowchartLinkColor': '#1E63B5', 'lineWidth': 3}}}%%
+%%{init: {'themeVariables': {'lineColor': '#1E63B5', 'flowchartLinkColor': '#1E63B5', 'lineWidth': 3, 'fontSize': '24px'}}}%%
 flowchart TD
     Start([开始])
     AcquireLimiter["preflightLimiter Acquire"]
@@ -510,6 +513,7 @@ flowchart TD
     PreflightErr -- 否 --> BuildConflicts
     BuildConflicts --> EmailCheck --> PhoneCheck --> Done
 
+    classDef default font-size:24px;
     linkStyle default stroke:#1E63B5,stroke-width:3px
     classDef decision fill:#fff3cd,stroke:#f0ad4e,stroke-width:1px
     class LimiterFail,ShouldPreflight,PreflightErr decision
@@ -520,7 +524,7 @@ flowchart TD
 #### EnsureUnique 数据流程图
 
 ```mermaid
-%%{init: {'themeVariables': {'lineColor': '#1E63B5', 'flowchartLinkColor': '#1E63B5', 'lineWidth': 3}}}%%
+%%{init: {'themeVariables': {'lineColor': '#1E63B5', 'flowchartLinkColor': '#1E63B5', 'lineWidth': 3, 'fontSize': '24px'}}}%%
 graph LR
     Ctx[请求上下文] --> Limiter[preflightLimiter]
     Limiter --> WarmupStep[ensureContactCacheReady]
@@ -551,13 +555,14 @@ graph LR
     DegradeFlag --> Placeholder[Redis 占位符]
     Conflicts --> Result["PreflightResult + UsernameChecked"]
 
+    classDef default font-size:24px;
     linkStyle default stroke:#1E63B5,stroke-width:3px
 ```
 
 #### EnsureUnique 状态机
 
 ```mermaid
-%%{init: {'themeVariables': {'lineColor': '#1E63B5', 'lineWidth': 3}}}%%
+%%{init: {'themeVariables': {'lineColor': '#1E63B5', 'lineWidth': 3, 'fontSize': '24px'}}}%%
 stateDiagram-v2
     [*] --> Normal
     Normal --> PreflightDegraded: 预检超时/失败且可降级
@@ -608,7 +613,7 @@ stateDiagram-v2
 ## 3. 时序图（Sequence Diagram）
 
 ```mermaid
-%%{init: {'themeVariables': {'lineColor': '#1E63B5', 'actorLineColor': '#1E63B5', 'sequenceNumberColor': '#1E63B5', 'lineWidth': 3}}}%%
+%%{init: {'themeVariables': {'lineColor': '#1E63B5', 'actorLineColor': '#1E63B5', 'sequenceNumberColor': '#1E63B5', 'lineWidth': 3, 'fontSize': '24px'}}}%%
 sequenceDiagram
     participant Client
     participant API as UserService
@@ -652,7 +657,7 @@ sequenceDiagram
 ## 4. 状态图（State Diagram）
 
 ```mermaid
-%%{init: {'themeVariables': {'lineColor': '#1E63B5', 'lineWidth': 3}}}%%
+%%{init: {'themeVariables': {'lineColor': '#1E63B5', 'lineWidth': 3, 'fontSize': '24px'}}}%%
 stateDiagram-v2
     [*] --> PendingStateUnknown
     PendingStateUnknown --> PendingStateLease: Acquire 成功
@@ -685,7 +690,7 @@ stateDiagram-v2
 ## 5. 数据流程图（Data Flow Diagram）
 
 ```mermaid
-%%{init: {'themeVariables': {'lineColor': '#1E63B5', 'flowchartLinkColor': '#1E63B5', 'lineWidth': 3}}}%%
+%%{init: {'themeVariables': {'lineColor': '#1E63B5', 'flowchartLinkColor': '#1E63B5', 'lineWidth': 3, 'fontSize': '24px'}}}%%
 graph TD
     Client[客户端请求] --> Req[HTTP 请求
 (CreateRequest)]
@@ -702,6 +707,7 @@ graph TD
     PC --> Metrics[(Prometheus)]
     PC --> Log[结构化日志]
 
+    classDef default font-size:24px;
     linkStyle default stroke:#1E63B5,stroke-width:3px
 ```
 
@@ -714,7 +720,7 @@ graph TD
 ## 6. 依赖关系图（Dependency Graph）
 
 ```mermaid
-%%{init: {'themeVariables': {'lineColor': '#1E63B5', 'flowchartLinkColor': '#1E63B5', 'lineWidth': 3}}}%%
+%%{init: {'themeVariables': {'lineColor': '#1E63B5', 'flowchartLinkColor': '#1E63B5', 'lineWidth': 3, 'fontSize': '24px'}}}%%
 graph LR
     PC[PendingCoordinator]
     ACQ[Acquire]
@@ -745,6 +751,7 @@ graph LR
     OBS --> REDIS
     OBS --> METR
 
+    classDef default font-size:24px;
     linkStyle default stroke:#1E63B5,stroke-width:3px
 ```
 
@@ -756,7 +763,7 @@ graph LR
 ## 7. 可选图示（高并发泳道）
 
 ```mermaid
-%%{init: {'themeVariables': {'lineColor': '#1E63B5', 'flowchartLinkColor': '#1E63B5', 'lineWidth': 3}}}%%
+%%{init: {'themeVariables': {'lineColor': '#1E63B5', 'flowchartLinkColor': '#1E63B5', 'lineWidth': 3, 'fontSize': '24px'}}}%%
 flowchart LR
     subgraph Client Lane
         C1[请求 1]
@@ -776,6 +783,7 @@ flowchart LR
     C2 --> P2 --> R1
     P1 --> R2 --> P3
 
+    classDef default font-size:24px;
     linkStyle default stroke:#1E63B5,stroke-width:3px
 ```
 
@@ -787,14 +795,9 @@ flowchart LR
 
 1. **Redis 依赖较重**：已补充 `pending_lease_*` Redis 操作指标（GET/SETNX/TTL/计数器），结合哨兵或 Proxy 监控可快速锁定热点命令的延迟与失败率。
 2. **计数器漂移观测**：新增 `pending_lease_calibration_duration_seconds` 直方图与取消事件，配合 `calibration_*` 计数可量化后台校准的耗时、失败与恢复情况。
-3. **背压策略调优**：`PendingCoordinator.UpdateBackpressureProfile` 现已统一作用于 Redis 与内存实现，所有采样/Acquire/延迟注入都读取相同的 `BackpressureDelayProfile`。装载阶段依赖 `validateDelayBuckets` 做强校验：
-    - 桶列表必须与 `ElevatedBucketCount`/`SevereBucketCount` 完全一致，且首桶深度对齐软/硬阈值，后续桶严格单调递增（等价于“区间连续且无重叠”）。
-    - 指定 `ElevatedMaxDepth`/`SevereMaxDepth` 时，最后一个桶的深度必须与之匹配；若未显式配置则自动回填为末桶深度，避免出现“深度 250 匹配，深度 320 无桶”的空洞。
-    - 自动生成分支会在 `buildDelayBuckets` 内预留剩余空间并强制最后一个桶落在 MaxDepth，上述校验未通过会在启动期 panic 提示 `invalid ... backpressure profile`，请在配置中心修正后再发版。
-    - 运维侧仍可以通过远程调用 `UpdateBackpressureProfile` 热更新桶阈值与延迟梯度，校验成功后会同步刷新内存 fallback。
+3. **背压策略调优**：`PendingCoordinator.UpdateBackpressureProfile` 支持热更新延迟曲线，可通过聚合配置中心或运维指令动态调整桶阈值与延迟梯度。
 4. **日志/指标一致性**：统一使用 `PendingLeaseEvents` 记录背压曲线变更、校准重试等关键事件，与 Trace Tag 共享相同枚举，辅助排障。
 5. **配置热更新**：保留 `UpdateCalibration` + `Stop()` 优雅退出流程，结合新的背压曲线热更新接口，实现租约与背压配置的在线调整。
-6. **内存兜底并发能力**：`memoryPendingCoordinator` 已切换为 32 分片的 RWMutex 结构（可按 power-of-two 调整），并以 `activeCount` 原子计数与分片级清理取代全局大锁。`SampleQueueDepth`、`Observe`、`ListExpired` 全部走分片锁定，可在 Redis 降级场景下承受更高并发，但也要求应用尽快回切 Redis 以避免长时间运行在内存兜底模式。
 
 ---
 
