@@ -489,6 +489,11 @@ func NewUserService(store interfaces.Factory, redis *storage.RedisCluster, opts 
 			Component:      "user_service",
 			LogLeaseEvents: true,
 		}
+		// 通过 DegradeActive 将全局 Redis 降级视图注入 PendingCoordinator，
+		// 降级期间由协调器内部自动切换到内存 fallback，而不是由上层直接跳过占位。
+		cfg.DegradeActive = func(ctx context.Context) bool {
+			return svc.isRedisDegradeActive()
+		}
 		if opts != nil && opts.KafkaOptions != nil {
 			kopts := opts.KafkaOptions
 			if kopts.PendingLeaseTTL > 0 {
@@ -588,10 +593,59 @@ func (u *UserService) ensureOperationModeController() *operationModeController {
 // decideOperationMode 决定指定用户在当前请求下的操作模式。
 func (u *UserService) decideOperationMode(ctx context.Context, kind operation.OperationKind, subject string) OperationMode {
 	ctrl := u.ensureOperationModeController()
-	if ctrl == nil {
-		return OperationModeQueue
+	decision := OperationModeDecision{Mode: OperationModeQueue}
+	snapshot := cloneOperationModeConfig(defaultOperationModeConfig())
+	if ctrl != nil {
+		decision = ctrl.DecideDetailed(ctx, kind, subject)
+		snapshot = ctrl.Snapshot()
 	}
-	return ctrl.Decide(ctx, kind, subject)
+	spanCtx, span := trace.StartSpan(ctx, "user-service", "decide_operation_mode")
+	tagCtx := ctx
+	if spanCtx != nil {
+		tagCtx = spanCtx
+	}
+	// 按决策优先级写入 trace 标签，便于阅读
+	trace.AddRequestTag(tagCtx, "queue_kinds_hit", decision.QueueKindsHit)
+	if decision.SubjectBlocked {
+		trace.AddRequestTag(tagCtx, "subject_block", true)
+	}
+	if decision.SubjectAllowed {
+		trace.AddRequestTag(tagCtx, "subject_allow", true)
+	}
+	trace.AddRequestTag(tagCtx, "mode", decision.Mode.String())
+	trace.AddRequestTag(tagCtx, "rollout_sample", decision.RolloutSample)
+	if subject != "" {
+		trace.AddRequestTag(tagCtx, "subject", subject)
+	}
+	if snapshot.RolloutPercent > 0 {
+		trace.AddRequestTag(tagCtx, "rollout_percent", snapshot.RolloutPercent)
+	}
+	if snapshot.StickyHeader != "" {
+		trace.AddRequestTag(tagCtx, "rollout_sticky_header", snapshot.StickyHeader)
+	}
+	if len(snapshot.AllowUsers) > 0 {
+		trace.AddRequestTag(tagCtx, "allow_users", strings.Join(snapshot.AllowUsers, ","))
+	}
+	if len(snapshot.BlockUsers) > 0 {
+		trace.AddRequestTag(tagCtx, "block_users", strings.Join(snapshot.BlockUsers, ","))
+	}
+	if span != nil {
+		trace.EndSpan(span, "success", strconv.Itoa(code.ErrSuccess), map[string]interface{}{
+			"mode":             decision.Mode.String(),
+			"queue_kinds_hit":  decision.QueueKindsHit,
+			"subject_block":    decision.SubjectBlocked,
+			"subject_allow":    decision.SubjectAllowed,
+			"rollout_sample":   decision.RolloutSample,
+			"rollout_percent":  snapshot.RolloutPercent,
+			"rollout_sticky":   snapshot.StickyHeader,
+			"allow_users":      strings.Join(snapshot.AllowUsers, ","),
+			"block_users":      strings.Join(snapshot.BlockUsers, ","),
+			"operation_kind":   string(kind),
+			"decision_subject": strings.TrimSpace(subject),
+		})
+	}
+
+	return decision.Mode
 }
 
 func (u *UserService) UpdateOperationMode(cfg OperationModeConfig) OperationModeConfig {
@@ -1158,67 +1212,68 @@ func (u *UserService) markUserPendingCreate(ctx context.Context, username string
 		return false, false, 0, 0, 0, "", "", errors.WithCode(code.ErrServerBusy, "pending coordinator 未初始化")
 	}
 	componentLabel := "user_service"
-	// 检测降级状态，若处于降级则跳过占位逻辑
-	if u.isRedisDegradeActive() {
-		trace.AddRequestTag(ctx, "pending_marker_degraded_skip", true)
-		if metrics.PendingLeaseEvents != nil {
-			metrics.PendingLeaseEvents.WithLabelValues(componentLabel, "acquire_skip_degraded").Inc()
-		}
-		return false, false, 0, 0, 0, "", "", nil
-	}
 	// 根据采样排队深度与背压状态计算出延迟时间,并在必要时进行等待
-	if depth, level, sampleErr := u.pendingCoordinator.SampleQueueDepth(ctx); sampleErr != nil {
-		trace.AddRequestTag(ctx, "pending_queue_sample_error", sampleErr.Error())
-	} else {
-		if depth > 0 {
-			trace.AddRequestTag(ctx, "pending_queue_depth", depth)
+	sample, hasSample := usercache.BackpressureSampleFromContext(ctx)
+	if !hasSample || (sample.Username != "" && sample.Username != trimmed) {
+		sample = u.pendingCoordinator.SampleBackpressure(ctx, trimmed)
+		ctx = usercache.ContextWithBackpressureSample(ctx, sample)
+	}
+	if sample.GlobalErr != nil {
+		trace.AddRequestTag(ctx, "pending_queue_sample_error", sample.GlobalErr.Error())
+	}
+	if sample.UserErr != nil {
+		trace.AddRequestTag(ctx, "pending_user_sample_error", sample.UserErr.Error())
+	}
+	depth := sample.MaxDepth()
+	level := sample.AggregateLevel
+	if depth > 0 {
+		trace.AddRequestTag(ctx, "pending_queue_depth", depth)
+	}
+	if level != usercache.BackpressureNone {
+		trace.AddRequestTag(ctx, "pending_backpressure_level", string(level))
+		if metrics.PendingLeaseEvents != nil {
+			metrics.PendingLeaseEvents.WithLabelValues(componentLabel, "pre_acquire_backpressure").Inc()
 		}
-		if level != usercache.BackpressureNone {
-			trace.AddRequestTag(ctx, "pending_backpressure_level", string(level))
-			if metrics.PendingLeaseEvents != nil {
-				metrics.PendingLeaseEvents.WithLabelValues(componentLabel, "pre_acquire_backpressure").Inc()
+		if rawDelay := u.pendingCoordinator.BackpressureDelay(level, depth); rawDelay > 0 {
+			if pendingBackpressureMaxDelay > 0 && rawDelay > pendingBackpressureMaxDelay {
+				rawDelay = pendingBackpressureMaxDelay
 			}
-			if rawDelay := u.pendingCoordinator.BackpressureDelay(level, depth); rawDelay > 0 {
-				if pendingBackpressureMaxDelay > 0 && rawDelay > pendingBackpressureMaxDelay {
-					rawDelay = pendingBackpressureMaxDelay
+			requestElapsed := backpressure.LeadTime(ctx, time.Time{})
+			if requestElapsed > 0 {
+				trace.AddRequestTag(ctx, "pending_backpressure_elapsed_ms", requestElapsed.Milliseconds())
+				metrics.RecordPendingBackpressureLeadTime(componentLabel, string(level), requestElapsed)
+			}
+			decision := backpressure.AlignDelayWithDeadline(ctx, rawDelay, 0)
+			if decision.Action != "" {
+				metrics.RecordPendingBackpressureDeadlineDecision(componentLabel, string(level), decision.Action)
+				trace.AddRequestTag(ctx, "pending_backpressure_deadline_action", decision.Action)
+				remaining := decision.Remaining
+				if remaining < 0 {
+					remaining = 0
 				}
-				requestElapsed := backpressure.LeadTime(ctx, time.Time{})
-				if requestElapsed > 0 {
-					trace.AddRequestTag(ctx, "pending_backpressure_elapsed_ms", requestElapsed.Milliseconds())
-					metrics.RecordPendingBackpressureLeadTime(componentLabel, string(level), requestElapsed)
+				trace.AddRequestTag(ctx, "pending_backpressure_deadline_remaining_ms", remaining.Milliseconds())
+				log.Infow("pending lease delay adjusted by deadline", "component", componentLabel, "username", trimmed, "action", decision.Action, "requested_delay_ms", rawDelay.Milliseconds(), "remaining_budget_ms", decision.Remaining.Milliseconds())
+			}
+			delay := decision.Effective
+			if delay <= 0 {
+				trace.AddRequestTag(ctx, "pending_backpressure_delay_skipped", true)
+			} else {
+				metrics.RecordPendingBackpressureDelay(componentLabel, string(level), delay)
+				trace.AddRequestTag(ctx, "pending_backpressure_delay_ms", delay.Milliseconds())
+				log.Infow("pending lease pre-acquire delay", "component", componentLabel, "username", trimmed, "queue_depth", depth, "backpressure", string(level), "delay_ms", delay.Milliseconds())
+				if ok, waited := waitWithContext(ctx, delay); !ok {
+					metrics.RecordPendingBackpressureDelayCancellation(componentLabel, string(level))
+					metrics.ObservePendingBackpressureCancellationDuration(componentLabel, string(level), waited)
+					if waited > 0 {
+						trace.AddRequestTag(ctx, "pending_backpressure_waited_before_cancel_ms", waited.Milliseconds())
+					}
+					if ctx != nil {
+						return false, false, 0, 0, 0, "", "", ctx.Err()
+					}
+					return false, false, 0, 0, 0, "", "", context.Canceled
 				}
-				decision := backpressure.AlignDelayWithDeadline(ctx, rawDelay, 0)
-				if decision.Action != "" {
-					metrics.RecordPendingBackpressureDeadlineDecision(componentLabel, string(level), decision.Action)
-					trace.AddRequestTag(ctx, "pending_backpressure_deadline_action", decision.Action)
-					remaining := decision.Remaining
-					if remaining < 0 {
-						remaining = 0
-					}
-					trace.AddRequestTag(ctx, "pending_backpressure_deadline_remaining_ms", remaining.Milliseconds())
-					log.Infow("pending lease delay adjusted by deadline", "component", componentLabel, "username", trimmed, "action", decision.Action, "requested_delay_ms", rawDelay.Milliseconds(), "remaining_budget_ms", decision.Remaining.Milliseconds())
-				}
-				delay := decision.Effective
-				if delay <= 0 {
-					trace.AddRequestTag(ctx, "pending_backpressure_delay_skipped", true)
-				} else {
-					metrics.RecordPendingBackpressureDelay(componentLabel, string(level), delay)
-					trace.AddRequestTag(ctx, "pending_backpressure_delay_ms", delay.Milliseconds())
-					log.Infow("pending lease pre-acquire delay", "component", componentLabel, "username", trimmed, "queue_depth", depth, "backpressure", string(level), "delay_ms", delay.Milliseconds())
-					if ok, waited := waitWithContext(ctx, delay); !ok {
-						metrics.RecordPendingBackpressureDelayCancellation(componentLabel, string(level))
-						metrics.ObservePendingBackpressureCancellationDuration(componentLabel, string(level), waited)
-						if waited > 0 {
-							trace.AddRequestTag(ctx, "pending_backpressure_waited_before_cancel_ms", waited.Milliseconds())
-						}
-						if ctx != nil {
-							return false, false, 0, 0, 0, "", "", ctx.Err()
-						}
-						return false, false, 0, 0, 0, "", "", context.Canceled
-					}
-					if metrics.PendingLeaseEvents != nil {
-						metrics.PendingLeaseEvents.WithLabelValues(componentLabel, "pre_acquire_delay").Inc()
-					}
+				if metrics.PendingLeaseEvents != nil {
+					metrics.PendingLeaseEvents.WithLabelValues(componentLabel, "pre_acquire_delay").Inc()
 				}
 			}
 		}
@@ -1551,6 +1606,16 @@ func (u *UserService) emitProtectionAudit(ctx context.Context, username, reason 
 	if u == nil || u.Audit == nil {
 		return
 	}
+	spanCtx, span := trace.StartSpan(ctx, "user-service", "audit_submit")
+	if spanCtx != nil {
+		ctx = spanCtx
+	}
+	status := "success"
+	codeStr := strconv.Itoa(code.ErrSuccess)
+	details := map[string]interface{}{
+		"username": username,
+		"reason":   reason,
+	}
 	eventMetadata := map[string]any{
 		"username": username,
 	}
@@ -1567,6 +1632,9 @@ func (u *UserService) emitProtectionAudit(ctx context.Context, username, reason 
 		}
 		requestID = traceCtx.RequestContext.RequestID
 		clientIP = traceCtx.RequestContext.ClientIP
+		details["request_id"] = requestID
+		details["client_ip"] = clientIP
+		details["actor"] = actor
 	}
 	event := audit.Event{
 		Actor:        actor,
@@ -1580,6 +1648,7 @@ func (u *UserService) emitProtectionAudit(ctx context.Context, username, reason 
 		Metadata:     eventMetadata,
 	}
 	u.Audit.Submit(ctx, event)
+	trace.EndSpan(span, status, codeStr, details)
 }
 
 func (u *UserService) handleProtectionForMiss(ctx context.Context, username string) (bool, bool) {
@@ -1690,7 +1759,7 @@ func (u *UserService) normalizeUserContacts(user *v1.User) {
 // 适用于用户创建等入口在首次访问时触发缓存预热，依赖 Redis 与用户存储已初始化。
 // 参数：
 //
-//	无: 此函数无显式入参
+//	ctx: 调用上下文，携带链路追踪信息以确保 span 父子关系正确
 //
 // 返回值：
 //
@@ -1698,7 +1767,7 @@ func (u *UserService) normalizeUserContacts(user *v1.User) {
 //
 // 示例：
 //
-//	u.ensureContactCacheReady()
+//	u.ensureContactCacheReady(ctx)
 //
 // 注意事项：
 //   - 预热过程在独立 goroutine 中执行，调用方无需等待结果
@@ -1707,24 +1776,78 @@ func (u *UserService) normalizeUserContacts(user *v1.User) {
 // 异常情况：
 //   - 预热失败会记录下一次重试时间并输出警告日志
 //   - 上一次预热仍在运行时会跳过本次触发
-func (u *UserService) ensureContactCacheReady() {
+func (u *UserService) ensureContactCacheReady(ctx context.Context) {
+	if u == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	spanCtx, span := trace.StartSpan(ctx, "user-service", "ensure_contact_cache_ready")
+	if spanCtx != nil {
+		ctx = spanCtx
+	}
+	status := "success"
+	codeStr := strconv.Itoa(code.ErrSuccess)
+	degradeReason := ""
+	createDegraded := false
+	defer func() {
+		ready := u.contactCacheReady.Load()
+		finishDetails := map[string]interface{}{
+			"ready":            ready,
+			"warmup_enabled":   u.Options != nil && u.Options.ServerRunOptions != nil && u.Options.ServerRunOptions.EnableContactWarmup,
+			"redis_available":  u.Redis != nil,
+			"store_available":  u.Store != nil,
+			"contact_degraded": u.isRedisDegradeActive(),
+			"next_retry_unix":  u.contactWarmupNextRetry.Load(),
+		}
+		finishDetails["create_degraded"] = createDegraded
+		if degradeReason != "" {
+			finishDetails["degrade_reason"] = degradeReason
+		}
+		trace.EndSpan(span, status, codeStr, finishDetails)
+	}()
+
 	if u.contactCacheReady.Load() {
+		trace.AddRequestTag(ctx, "contact_cache_ready", true)
 		return
 	}
 	if u.Options == nil || u.Options.ServerRunOptions == nil || !u.Options.ServerRunOptions.EnableContactWarmup {
 		u.contactCacheReady.Store(true)
+		trace.AddRequestTag(ctx, "contact_cache_ready", true)
+		trace.AddRequestTag(ctx, "create_degraded", false)
 		return
 	}
 	if u.Store == nil || u.Redis == nil {
+		trace.AddRequestTag(ctx, "contact_cache_ready", false)
+		createDegraded = true
+		degradeReason = "deps_not_ready"
+		trace.AddRequestTag(ctx, "create_degraded", true)
+		trace.AddRequestTag(ctx, "degrade_reason", degradeReason)
+		status = "error"
+		codeStr = strconv.Itoa(code.ErrServerBusy)
 		return
 	}
 	next := u.contactWarmupNextRetry.Load()
 	if next > 0 && time.Now().Unix() < next {
+		trace.AddRequestTag(ctx, "contact_cache_ready", false)
+		createDegraded = true
+		degradeReason = "warmup_pending"
+		trace.AddRequestTag(ctx, "create_degraded", true)
+		trace.AddRequestTag(ctx, "degrade_reason", degradeReason)
 		return
 	}
 	u.contactWarmupMu.Lock()
 	if u.contactCacheReady.Load() || u.contactWarming {
 		u.contactWarmupMu.Unlock()
+		ready := u.contactCacheReady.Load()
+		trace.AddRequestTag(ctx, "contact_cache_ready", ready)
+		if !ready {
+			createDegraded = true
+			degradeReason = "warmup_inflight"
+			trace.AddRequestTag(ctx, "create_degraded", true)
+			trace.AddRequestTag(ctx, "degrade_reason", degradeReason)
+		}
 		return
 	}
 	u.contactWarming = true
@@ -1732,7 +1855,29 @@ func (u *UserService) ensureContactCacheReady() {
 	u.contactWarmupMu.Unlock()
 
 	go func() {
-		err := u.warmContactCache(context.Background())
+		errorCtx, warmSpan := trace.StartSpan(ctx, "user-service", "contact_cache_warmup_async")
+		warmStatus := "success"
+		warmCode := strconv.Itoa(code.ErrSuccess)
+		details := map[string]interface{}{}
+		err := u.warmContactCache(errorCtx)
+		if err != nil {
+			warmStatus = "error"
+			if c := errors.GetCode(err); c != 0 {
+				warmCode = strconv.Itoa(c)
+			} else {
+				warmCode = strconv.Itoa(code.ErrUnknown)
+			}
+			details["warmup_fail_reason"] = err.Error()
+			nextRetry := u.contactWarmupNextRetry.Load()
+			if nextRetry > 0 {
+				delay := time.Until(time.Unix(nextRetry, 0))
+				if delay < 0 {
+					delay = 0
+				}
+				details["retry_delay_ms"] = delay.Milliseconds()
+			}
+		}
+		trace.EndSpan(warmSpan, warmStatus, warmCode, details)
 		u.completeContactWarmup(err)
 	}()
 }
@@ -1966,38 +2111,21 @@ func (u *UserService) newDBContext(parent context.Context, timeout time.Duration
 	return context.WithTimeout(base, timeout)
 }
 
-//	shouldDegradeForError 判断给定错误是否应触发降级逻辑
-//
-// 通过检查错误类型和内容，识别出数据库超时、上下文取消或超时等情况，决定是否进入降级模式。
-//
-// 参数：
-//
-//	err: 待检查的错误对象
-//
-// 返回值：
 func shouldDegradeForError(err error) bool {
 	if err == nil {
 		return false
 	}
-	//数据库超时错误
+	// 1. 可重试/临时性错误（包含 Redis 网络抖动、超时等）一律视为可降级，
+	//    通过 isRetryableError 统一判定，避免因为短暂抖动直接打回整条创建链路。
+	if isRetryableError(err) {
+		return true
+	}
+	// 2. 兜底：显式标记为数据库超时的错误也视为可降级（兼容历史行为，
+	//    防止某些错误码未被 isRetryableError 捕获）。
 	if errors.IsCode(err, code.ErrDatabaseTimeout) {
 		return true
 	}
-	cause := errors.Cause(err)
-	if cause == nil {
-		cause = err
-	}
-	//上下文取消或超时错误 上下文被取消
-	if cause == context.DeadlineExceeded || cause == context.Canceled {
-		return true
-	}
-	//检查是否为超时类型错误
-	if te, ok := cause.(interface{ Timeout() bool }); ok && te.Timeout() {
-		return true
-	}
-	msg := strings.ToLower(cause.Error())
-	//错误信息中包含超时关键词
-	return strings.Contains(msg, "deadline exceeded") || strings.Contains(msg, "timeout")
+	return false
 }
 
 func (u *UserService) isRedisDegradeActive() bool {
@@ -2317,12 +2445,16 @@ func (u *UserService) ensureContactPlaceholder(ctx context.Context, cacheKey, ow
 	setDuration := time.Since(setStart)
 	setCancel()
 	metrics.ObserveUserContactPlaceholderSet("redis_placeholder_setnx", fieldKey, setDuration, err)
+	resultLabel := "set"
 	u.recordUserCreateStep(ctx, "redis_placeholder_setnx", fieldKey, owner, setDuration, err)
 	if err != nil {
 		log.Warnw("唯一性灰度占位失败", "key", cacheKey, "error", err)
+		resultLabel = "error"
+		metrics.RecordUserContactPlaceholderEvent("redis_placeholder_setnx", fieldKey, resultLabel)
 		return
 	}
 	if ok {
+		metrics.RecordUserContactPlaceholderEvent("redis_placeholder_setnx", fieldKey, resultLabel)
 		return
 	}
 	//键已存在，读取旧值
@@ -2340,6 +2472,7 @@ func (u *UserService) ensureContactPlaceholder(ctx context.Context, cacheKey, ow
 		if err != redis.Nil {
 			log.Warnw("唯一性灰度占位读取失败", "key", cacheKey, "error", err)
 		}
+		metrics.RecordUserContactPlaceholderEvent("redis_placeholder_get", fieldKey, "error")
 		return
 	}
 	//ok == false：表示键早就存在（可能是同一用户的幂等请求，
@@ -2357,6 +2490,7 @@ func (u *UserService) ensureContactPlaceholder(ctx context.Context, cacheKey, ow
 		}
 		refreshCancel()
 	}
+	metrics.RecordUserContactPlaceholderEvent("redis_placeholder_get", fieldKey, "hit")
 }
 
 //ensureDegradedContactPlaceholders 确保用户的邮箱和手机号占位符存在于 Redis
@@ -2365,10 +2499,12 @@ func (u *UserService) ensureDegradedContactPlaceholders(ctx context.Context, use
 	if email != "" {
 		emailKey := u.generateEmailCacheKey(email)
 		u.ensureContactPlaceholder(ctx, emailKey, username)
+		metrics.RecordUserContactPlaceholderEvent("degraded_placeholder", "email", "degraded")
 	}
 	if phone != "" {
 		phoneKey := u.generatePhoneCacheKey(phone)
 		u.ensureContactPlaceholder(ctx, phoneKey, username)
+		metrics.RecordUserContactPlaceholderEvent("degraded_placeholder", "phone", "degraded")
 	}
 }
 
@@ -2403,26 +2539,58 @@ func (u *UserService) ensureDegradedContactPlaceholders(ctx context.Context, use
 //   - 数据库不可用时可能返回 ErrDatabase、ErrDatabaseTimeout 等错误码
 //   - 数据不一致时会返回 ErrValidation 指示具体占用字段
 func (u *UserService) ensureContactUniqueness(ctx context.Context, user *v1.User) (map[string]*v1.User, bool, error) {
+	spanCtx, span := trace.StartSpan(ctx, "user-service", "ensure_contact_uniqueness")
+	if spanCtx != nil {
+		ctx = spanCtx
+	}
+	status := "success"
+	codeStr := strconv.Itoa(code.ErrSuccess)
+	spanDetails := map[string]interface{}{}
+	defer func() {
+		trace.EndSpan(span, status, codeStr, spanDetails)
+	}()
 	//对数据库预检加限流保护，防止高并发时打垮数据库
 	limiter := u.preflightLimiter
 	if limiter != nil {
+		limiterCtx, limiterSpan := trace.StartSpan(ctx, "user-service", "preflight_limiter_wait")
+		if limiterCtx != nil {
+			ctx = limiterCtx
+		}
+		limiterStatus := "success"
+		limiterCode := strconv.Itoa(code.ErrSuccess)
+		limiterDetails := map[string]interface{}{"permit_requested": 1}
 		waitStart := time.Now()
 		err := limiter.Acquire(ctx, 1)
-		u.recordUserCreateStep(ctx, "preflight_limiter_wait", "limiter", user.Name, time.Since(waitStart), err)
+		waitDuration := time.Since(waitStart)
+		limiterDetails["wait_duration_ms"] = waitDuration.Milliseconds()
+		limiterDetails["permit_acquired"] = err == nil
+		trace.AddRequestTag(ctx, "preflight_limiter_wait_ms", waitDuration.Milliseconds())
+		u.recordUserCreateStep(ctx, "preflight_limiter_wait", "limiter", user.Name, waitDuration, err)
 		if err != nil {
+			limiterStatus = "error"
+			limiterCode = err.Error()
+			trace.EndSpan(limiterSpan, limiterStatus, limiterCode, limiterDetails)
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				status = "error"
+				codeStr = strconv.Itoa(code.ErrDatabaseTimeout)
 				return nil, false, errors.WithCode(code.ErrDatabaseTimeout, "预检-数据库限流查询等待超时")
 			}
+			status = "error"
+			codeStr = strconv.Itoa(code.ErrDatabase)
 			return nil, false, errors.WithCode(code.ErrDatabase, "预检查询等待失败: %v", err)
 		}
 		defer func() {
 			releaseStart := time.Now()
 			limiter.Release(1)
-			u.recordUserCreateStep(ctx, "preflight_limiter_release", "limiter", user.Name, time.Since(releaseStart), nil)
+			releaseDuration := time.Since(releaseStart)
+			limiterDetails["release_duration_ms"] = releaseDuration.Milliseconds()
+			u.recordUserCreateStep(ctx, "preflight_limiter_release", "limiter", user.Name, releaseDuration, nil)
+			trace.EndSpan(limiterSpan, limiterStatus, limiterCode, limiterDetails)
 		}()
 	}
 	//确保联系方式缓存已预热
-	u.ensureContactCacheReady()
+	u.ensureContactCacheReady(ctx)
+	spanDetails["contact_cache_ready"] = u.contactCacheReady.Load()
 	//规范化用户联系方式
 	u.normalizeUserContacts(user)
 
@@ -2431,6 +2599,8 @@ func (u *UserService) ensureContactUniqueness(ctx context.Context, user *v1.User
 	//
 	store := u.userStoreReadOnly()
 	if store == nil {
+		status = "error"
+		codeStr = strconv.Itoa(code.ErrDatabase)
 		return nil, false, errors.WithCode(code.ErrDatabase, "用户存储未就绪")
 	}
 
@@ -2451,25 +2621,75 @@ func (u *UserService) ensureContactUniqueness(ctx context.Context, user *v1.User
 	//bool: true 代表执行预检，false 代表不执行
 	runPreflight := u.shouldRunPreflight(ctx, user)
 	//执行预检逻辑
+	spanDetails["run_preflight"] = runPreflight
 	if runPreflight && (strings.TrimSpace(user.Name) != "" || email != "" || phone != "") {
+		pfCtx, pfSpan := trace.StartSpan(ctx, "user-service", "preflight_conflicts")
+		if pfCtx != nil {
+			ctx = pfCtx
+		}
+		pfStatus := "success"
+		pfCode := strconv.Itoa(code.ErrSuccess)
+		pfDetails := map[string]interface{}{"preflight_executed": true}
+		attemptCount := 0
+		var lastDBDuration time.Duration
 		result, err := util.RetryWithBackoff(retryAttempts, isRetryableError, func() (interface{}, error) {
+			attemptCount++
 			dbCtx, cancel := u.newDBContext(ctx, u.contactLookupTimeout())
 			defer cancel()
 			ranPreflight = true
 			dbStart := time.Now()
 			// 执行数据库预检
+			dbSpanCtx, dbSpan := trace.StartSpan(dbCtx, "mysql", "preflight_db_query")
+			if dbSpanCtx != nil {
+				dbCtx = dbSpanCtx
+			}
 			conflicts, confErr := store.PreflightConflicts(dbCtx, user.Name, email, phone, u.Options)
-			u.recordUserCreateStep(ctx, "preflight_query", "database", user.Name, time.Since(dbStart), confErr)
+			lastDBDuration = time.Since(dbStart)
+			u.recordUserCreateStep(ctx, "preflight_query", "database", user.Name, lastDBDuration, confErr)
+			if dbSpan != nil {
+				status := "success"
+				codeStr := strconv.Itoa(code.ErrSuccess)
+				if confErr != nil {
+					status = "error"
+					if c := errors.GetCode(confErr); c != 0 {
+						codeStr = strconv.Itoa(c)
+					} else {
+						codeStr = confErr.Error()
+					}
+				}
+				dbDetails := map[string]interface{}{
+					"username": user.Name,
+					"email":    email,
+					"phone":    phone,
+					"attempt":  attemptCount,
+					"db_ms":    lastDBDuration.Milliseconds(),
+				}
+				if confErr != nil {
+					dbDetails["error"] = confErr.Error()
+				}
+				trace.EndSpan(dbSpan, status, codeStr, dbDetails)
+			}
 			return conflicts, confErr
 		})
 		//处理预检结果
 		if err != nil {
 			preflightErr = err
+			pfStatus = "error"
+			pfCode = err.Error()
 		} else if result != nil {
 			//类型转换：将结果转为冲突用户的map（key为scope：username/email/phone）
 			if typed, ok := result.(map[string]*v1.User); ok {
 				preflight = typed
 			}
+		}
+		if pfSpan != nil {
+			pfDetails["attempts"] = attemptCount
+			pfDetails["database_query_ms"] = lastDBDuration.Milliseconds()
+			pfDetails["conflict_found"] = len(preflight) > 0
+			if preflightErr != nil {
+				pfDetails["preflight_error"] = preflightErr.Error()
+			}
+			trace.EndSpan(pfSpan, pfStatus, pfCode, pfDetails)
 		}
 	} else if !runPreflight {
 		// 记录跳过预检的情况--实际执行时，由于传入 0 耗时，并不会产生 “慢操作日志”，只是走了一个统一的流程入口。
@@ -2511,15 +2731,21 @@ func (u *UserService) ensureContactUniqueness(ctx context.Context, user *v1.User
 		if shouldDegradeForError(preflightErr) {
 			u.markCreateDegraded(ctx, "preflight_timeout", "username", user.Name)
 			u.ensureDegradedContactPlaceholders(ctx, user.Name, email, phone)
+			metrics.RecordUserContactPlaceholderEvent("preflight", "all", "degraded")
 			preflightErr = nil
 			usernameChecked = false
 		} else {
+			status = "error"
+			if c := errors.GetCode(preflightErr); c != 0 {
+				codeStr = strconv.Itoa(c)
+			}
 			return nil, false, preflightErr
 		}
 	}
 	if preflight == nil {
 		preflight = make(map[string]*v1.User)
 	}
+	trace.AddRequestTag(ctx, "preflight_executed", ranPreflight)
 
 	type contactCheck struct {
 		cacheKey string
@@ -2600,9 +2826,15 @@ func (u *UserService) ensureContactUniqueness(ctx context.Context, user *v1.User
 
 	switch len(checks) {
 	case 0:
+		spanDetails["preflight_executed"] = ranPreflight
+		spanDetails["username_checked"] = usernameChecked
 		return preflight, usernameChecked, nil
 	case 1:
 		if err := runCheck(ctx, checks[0]); err != nil {
+			status = "error"
+			if c := errors.GetCode(err); c != 0 {
+				codeStr = strconv.Itoa(c)
+			}
 			return nil, false, err
 		}
 	default:
@@ -2614,6 +2846,10 @@ func (u *UserService) ensureContactUniqueness(ctx context.Context, user *v1.User
 			})
 		}
 		if err := group.Wait(); err != nil {
+			status = "error"
+			if c := errors.GetCode(err); c != 0 {
+				codeStr = strconv.Itoa(c)
+			}
 			return nil, false, err
 		}
 	}
@@ -2845,8 +3081,35 @@ func (u *UserService) warmContactCache(ctx context.Context) error {
 			Limit:  &limit,
 		}
 
+		attempt := 0
 		result, err := util.RetryWithBackoff(3, isRetryableError, func() (interface{}, error) {
-			return u.Store.Users().List(ctx, opts, u.Options)
+			attempt++
+			trace.AddRequestTag(ctx, "warmup_retry_attempt", attempt)
+			listCtx, listSpan := trace.StartSpan(ctx, "mysql", "user_store_list_users_db")
+			if listCtx != nil {
+				ctx = listCtx
+			}
+			listStart := time.Now()
+			users, listErr := u.Store.Users().List(ctx, opts, u.Options)
+			if listSpan != nil {
+				status := "success"
+				codeStr := strconv.Itoa(code.ErrSuccess)
+				if listErr != nil {
+					status = "error"
+					if c := errors.GetCode(listErr); c != 0 {
+						codeStr = strconv.Itoa(c)
+					} else {
+						codeStr = strconv.Itoa(code.ErrUnknown)
+					}
+				}
+				trace.EndSpan(listSpan, status, codeStr, map[string]interface{}{
+					"offset":  off,
+					"limit":   limit,
+					"attempt": attempt,
+					"db_ms":   time.Since(listStart).Milliseconds(),
+				})
+			}
+			return users, listErr
 		})
 		if err != nil {
 			return err

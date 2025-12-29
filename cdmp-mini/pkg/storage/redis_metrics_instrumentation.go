@@ -2,7 +2,9 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 
 const (
 	redisPoolSampleInterval = 5 * time.Second
+	redisSlowThreshold      = 50 * time.Millisecond
 )
 
 type poolWaitSnapshot struct {
@@ -29,6 +32,17 @@ type redisCommandMetricsHook struct {
 	component     string
 	node          string
 	statsProvider statsProviderFunc
+}
+
+func isRedisConnectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return errors.Is(err, redis.ErrPoolTimeout) ||
+		strings.Contains(msg, "connection pool: was not able to get a healthy connection") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "i/o timeout")
 }
 
 func (h *redisCommandMetricsHook) DialHook(next redis.DialHook) redis.DialHook {
@@ -50,10 +64,14 @@ func (h *redisCommandMetricsHook) ProcessHook(next redis.ProcessHook) redis.Proc
 			service = 0
 		}
 
-		metrics.ObserveRedisCommandDurations(h.component, h.node, cmd.FullName(), total, queue, service, err)
+		normalizedErr, cacheMiss := normalizeRedisResult(err)
+		metrics.ObserveRedisCommandDurations(h.component, h.node, cmd.FullName(), total, queue, service, normalizedErr)
+		if isRedisConnectionError(err) {
+			log.Warnw("redis connection error", "component", h.component, "node", h.node, "command", cmd.FullName(), "error", err.Error(), "queue_ms", durationMillis(queue), "service_ms", durationMillis(service), "total_ms", durationMillis(total))
+		}
 		if span != nil {
 			status := "success"
-			if err != nil {
+			if normalizedErr != nil {
 				status = "error"
 			}
 			details := map[string]interface{}{
@@ -63,9 +81,15 @@ func (h *redisCommandMetricsHook) ProcessHook(next redis.ProcessHook) redis.Proc
 				"queue_ms":                    durationMillis(queue),
 				"service_ms":                  durationMillis(service),
 				"total_ms":                    durationMillis(total),
+				"cache_type":                  h.component,
+				"is_slow_query":               total > redisSlowThreshold,
 			}
-			if err != nil {
-				details["error"] = err.Error()
+			if cacheMiss {
+				details["cache_miss"] = true
+				details["raw_error"] = err.Error()
+			}
+			if normalizedErr != nil {
+				details["error"] = normalizedErr.Error()
 			}
 			trace.EndSpan(span, status, "", details)
 		}
@@ -89,10 +113,14 @@ func (h *redisCommandMetricsHook) ProcessPipelineHook(next redis.ProcessPipeline
 			service = 0
 		}
 
-		metrics.ObserveRedisCommandDurations(h.component, h.node, operation, total, queue, service, err)
+		normalizedErr, cacheMiss := normalizeRedisResult(err)
+		metrics.ObserveRedisCommandDurations(h.component, h.node, operation, total, queue, service, normalizedErr)
+		if isRedisConnectionError(err) {
+			log.Warnw("redis connection error", "component", h.component, "node", h.node, "command", operation, "error", err.Error(), "queue_ms", durationMillis(queue), "service_ms", durationMillis(service), "total_ms", durationMillis(total))
+		}
 		if span != nil {
 			status := "success"
-			if err != nil {
+			if normalizedErr != nil {
 				status = "error"
 			}
 			details := map[string]interface{}{
@@ -103,14 +131,30 @@ func (h *redisCommandMetricsHook) ProcessPipelineHook(next redis.ProcessPipeline
 				"queue_ms":                    durationMillis(queue),
 				"service_ms":                  durationMillis(service),
 				"total_ms":                    durationMillis(total),
+				"cache_type":                  h.component,
+				"is_slow_query":               total > redisSlowThreshold,
 			}
-			if err != nil {
-				details["error"] = err.Error()
+			if cacheMiss {
+				details["cache_miss"] = true
+				details["raw_error"] = err.Error()
+			}
+			if normalizedErr != nil {
+				details["error"] = normalizedErr.Error()
 			}
 			trace.EndSpan(span, status, "", details)
 		}
 		return err
 	}
+}
+
+func normalizeRedisResult(err error) (normalized error, cacheMiss bool) {
+	if err == nil {
+		return nil, false
+	}
+	if errors.Is(err, redis.Nil) {
+		return nil, true
+	}
+	return err, false
 }
 
 func computeQueueDuration(before, after poolWaitSnapshot) time.Duration {

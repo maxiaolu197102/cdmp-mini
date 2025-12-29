@@ -75,12 +75,15 @@ package auth
 
 import (
 	"encoding/base64"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/code"
 	middleware "github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/middleware/business"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/middleware/common"
+	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/trace"
 
 	"github.com/maxiaolu1981/cretem/nexuscore/component-base/core"
 	"github.com/maxiaolu1981/cretem/nexuscore/errors"
@@ -97,6 +100,21 @@ func NewBasicStrategy(compare func(username string, password string) bool) Basic
 // 修复后的 AuthFunc
 func (b BasicStrategy) AuthFunc() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		ctx := c.Request.Context()
+		spanCtx, span := trace.StartSpan(ctx, "auth-middleware", "check_permission")
+		start := time.Now()
+		defer func() {
+			dur := time.Since(start)
+			if !shouldRecordAuthSpan(nil, dur, 50*time.Millisecond, 0.1) {
+				return
+			}
+			trace.EndSpanAt(span, start.Add(dur), "success", strconv.Itoa(code.ErrSuccess), map[string]interface{}{
+				"path":        c.FullPath(),
+				"method":      c.Request.Method,
+				"duration_ms": dur.Milliseconds(),
+			})
+		}()
+		c.Request = c.Request.WithContext(spanCtx)
 		// 1. 第一步：获取并校验 Authorization 头格式（Basic 前缀）
 		authHeader := c.Request.Header.Get("Authorization")
 		if authHeader == "" {
@@ -154,7 +172,7 @@ func (b BasicStrategy) AuthFunc() gin.HandlerFunc {
 
 		// 4. 第四步：验证用户名密码（修正逻辑反置问题）
 		if !b.compare(username, password) { // 验证失败（compare返回false）才返回错误
-			// 场景5：密码不正确 → 用 ErrPasswordIncorrect（而非 
+			// 场景5：密码不正确 → 用 ErrPasswordIncorrect（而非
 			err := errors.WithCode(
 				code.ErrPasswordIncorrect,
 				"Basic认证失败：用户名或密码不正确",

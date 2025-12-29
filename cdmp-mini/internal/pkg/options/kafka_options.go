@@ -98,7 +98,7 @@ func NewKafkaOptions() *KafkaOptions {
 	return &KafkaOptions{
 		Brokers:                   []string{"192.168.10.8:9092", "192.168.10.8:9093", "192.168.10.8:9094"},
 		Topic:                     "user.create.v1",
-		ConsumerGroup:             "",
+		ConsumerGroup:             "user-service-prod",
 		RequiredAcks:              1, // leader确认
 		BatchSize:                 80,
 		BatchTimeout:              60 * time.Millisecond,

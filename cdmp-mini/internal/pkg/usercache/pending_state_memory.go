@@ -12,8 +12,10 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/metrics"
+	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/trace"
 )
 
+// 内存中待审批状态协调器的默认分片数量
 const defaultMemoryPendingShardCount = 32
 
 type memoryLeaseShard struct {
@@ -40,6 +42,7 @@ type memoryLeaseEntry struct {
 	lastHeartbeat time.Time
 }
 
+// newMemoryPendingCoordinator 创建一个基于内存的待审批状态协调器实例。
 func newMemoryPendingCoordinator(cfg PendingCoordinatorConfig, component string) *memoryPendingCoordinator {
 	cfg.BackpressureDelayProfile.ensureDefaults(cfg.BackpressureSoftLimit, cfg.BackpressureHardLimit, cfg.ElevatedDelayBase, cfg.ElevatedDelayMax, cfg.SevereDelayBase, cfg.SevereDelayMax)
 	shardCount := defaultMemoryPendingShardCount
@@ -61,6 +64,7 @@ func newMemoryPendingCoordinator(cfg PendingCoordinatorConfig, component string)
 	return m
 }
 
+// nextPowerOfTwo 返回大于或等于 n 的最小的 2 的幂次方数。
 func nextPowerOfTwo(n int) int {
 	if n <= 1 {
 		return 1
@@ -123,16 +127,33 @@ func (m *memoryPendingCoordinator) UpdateBackpressureProfile(profile Backpressur
 	m.profile.Store(cloned)
 }
 
-func (m *memoryPendingCoordinator) Acquire(_ context.Context, username string, meta LeaseMetadata) (*AcquireResult, error) {
+func (m *memoryPendingCoordinator) Acquire(ctx context.Context, username string, meta LeaseMetadata) (res *AcquireResult, err error) {
 	trimmed := strings.TrimSpace(username)
 	if trimmed == "" {
 		return nil, errors.New("username required")
 	}
+	spanCtx, span := startPendingSpan(ctx, "pending_memory_acquire")
+	if spanCtx != nil {
+		ctx = spanCtx
+	}
+	status := "success"
+	code := "0"
+	details := map[string]interface{}{"backend": "memory", "username": trimmed}
+	trace.AddRequestTag(ctx, "pending_backend", "memory")
+	trace.AddRequestTag(ctx, "pending_username", trimmed)
+	defer func() {
+		if err != nil {
+			status = "error"
+			code = err.Error()
+		}
+		finishPendingSpan(span, status, code, details)
+	}()
 
 	now := time.Now().UTC()
 	shard := m.shardFor(trimmed)
 	if shard == nil {
-		return nil, errors.New("pending coordinator unavailable")
+		err = errors.New("pending coordinator unavailable")
+		return nil, err
 	}
 
 	shard.mu.Lock()
@@ -144,10 +165,12 @@ func (m *memoryPendingCoordinator) Acquire(_ context.Context, username string, m
 		m.maybeExpireLocked(entry, now)
 		switch entry.state {
 		case PendingStateLease:
-			return nil, &AcquireError{Reason: AcquireFailureConflict, State: m.buildStateLocked(trimmed, entry, now), QueueDepth: m.activeCount.Load()}
+			err = &AcquireError{Reason: AcquireFailureConflict, State: m.buildStateLocked(trimmed, entry, now), QueueDepth: m.activeCount.Load()}
+			return nil, err
 		case PendingStateReleased:
 			if m.cfg.ReleaseRetention <= 0 || now.Sub(entry.releasedAt) < m.cfg.ReleaseRetention {
-				return nil, &AcquireError{Reason: AcquireFailureConflict, State: m.buildStateLocked(trimmed, entry, now), QueueDepth: m.activeCount.Load()}
+				err = &AcquireError{Reason: AcquireFailureConflict, State: m.buildStateLocked(trimmed, entry, now), QueueDepth: m.activeCount.Load()}
+				return nil, err
 			}
 			delete(shard.leases, trimmed)
 		case PendingStateExpired:
@@ -156,7 +179,8 @@ func (m *memoryPendingCoordinator) Acquire(_ context.Context, username string, m
 				expiry = entry.lease.LeaseExpiresAt
 			}
 			if m.cfg.ExpiredRetention <= 0 || now.Sub(expiry) < m.cfg.ExpiredRetention {
-				return nil, &AcquireError{Reason: AcquireFailureConflict, State: m.buildStateLocked(trimmed, entry, now), QueueDepth: m.activeCount.Load()}
+				err = &AcquireError{Reason: AcquireFailureConflict, State: m.buildStateLocked(trimmed, entry, now), QueueDepth: m.activeCount.Load()}
+				return nil, err
 			}
 			delete(shard.leases, trimmed)
 		default:
@@ -170,7 +194,10 @@ func (m *memoryPendingCoordinator) Acquire(_ context.Context, username string, m
 		if metrics.PendingLeaseEvents != nil {
 			metrics.PendingLeaseEvents.WithLabelValues(m.component, "memory_backpressure_reject").Inc()
 		}
-		return nil, &AcquireError{Reason: AcquireFailureBackpressure, State: state, QueueDepth: active}
+		err = &AcquireError{Reason: AcquireFailureBackpressure, State: state, QueueDepth: active}
+		details["queue_depth"] = active
+		details["backpressure"] = BackpressureSevere
+		return nil, err
 	}
 
 	ownerID := uuid.NewString()
@@ -189,15 +216,38 @@ func (m *memoryPendingCoordinator) Acquire(_ context.Context, username string, m
 	shard.leases[trimmed] = entry
 	m.activeCount.Add(1)
 	m.emitActiveGauge()
+	details["queue_depth"] = active + 1
+	details["backpressure"] = lease.Backpressure
+	trace.AddRequestTag(ctx, "pending_queue_depth", lease.QueueDepth)
+	trace.AddRequestTag(ctx, "pending_backpressure_level", string(lease.Backpressure))
 
 	return &AcquireResult{Lease: lease}, nil
 }
 
-func (m *memoryPendingCoordinator) Release(_ context.Context, username, ownerID string) (time.Duration, error) {
+func (m *memoryPendingCoordinator) Release(ctx context.Context, username, ownerID string) (duration time.Duration, err error) {
 	trimmed := strings.TrimSpace(username)
 	if trimmed == "" {
 		return 0, nil
 	}
+	spanCtx, span := startPendingSpan(ctx, "pending_memory_release")
+	if spanCtx != nil {
+		ctx = spanCtx
+	}
+	status := "success"
+	code := "0"
+	details := map[string]interface{}{"backend": "memory", "username": trimmed}
+	if ownerID := strings.TrimSpace(ownerID); ownerID != "" {
+		details["owner_id"] = ownerID
+	}
+	trace.AddRequestTag(ctx, "pending_backend", "memory")
+	trace.AddRequestTag(ctx, "pending_username", trimmed)
+	defer func() {
+		if err != nil {
+			status = "error"
+			code = err.Error()
+		}
+		finishPendingSpan(span, status, code, details)
+	}()
 
 	now := time.Now().UTC()
 	shard := m.shardFor(trimmed)
@@ -213,10 +263,10 @@ func (m *memoryPendingCoordinator) Release(_ context.Context, username, ownerID 
 		return 0, nil
 	}
 	if entry.lease != nil && ownerID != "" && entry.lease.OwnerID != "" && entry.lease.OwnerID != ownerID {
-		return 0, ErrPendingLeaseOwnerMismatch
+		err = ErrPendingLeaseOwnerMismatch
+		return 0, err
 	}
 
-	duration := time.Duration(0)
 	if entry.lease != nil && !entry.lease.AcquireAt.IsZero() {
 		duration = now.Sub(entry.lease.AcquireAt)
 		entry.lease.LeaseExpiresAt = now
@@ -229,30 +279,51 @@ func (m *memoryPendingCoordinator) Release(_ context.Context, username, ownerID 
 		entry.state = PendingStateReleased
 		entry.releasedAt = now
 	}
-	entry.releasedAt = now
 	m.emitActiveGauge()
+	details["duration_ms"] = duration.Milliseconds()
+	details["queue_depth"] = m.activeCount.Load()
+	trace.AddRequestTag(ctx, "pending_release_duration_ms", duration.Milliseconds())
 	return duration, nil
 }
 
-func (m *memoryPendingCoordinator) Heartbeat(_ context.Context, username, ownerID string) error {
+func (m *memoryPendingCoordinator) Heartbeat(ctx context.Context, username, ownerID string) (err error) {
 	trimmed := strings.TrimSpace(username)
 	trimmedOwner := strings.TrimSpace(ownerID)
 	if trimmed == "" || trimmedOwner == "" {
 		return nil
 	}
+	spanCtx, span := startPendingSpan(ctx, "pending_memory_heartbeat")
+	if spanCtx != nil {
+		ctx = spanCtx
+	}
+	status := "success"
+	code := "0"
+	details := map[string]interface{}{"backend": "memory", "username": trimmed, "owner_id": trimmedOwner}
+	trace.AddRequestTag(ctx, "pending_backend", "memory")
+	trace.AddRequestTag(ctx, "pending_username", trimmed)
+	defer func() {
+		if err != nil {
+			status = "error"
+			code = err.Error()
+		}
+		finishPendingSpan(span, status, code, details)
+	}()
 	now := time.Now().UTC()
 	shard := m.shardFor(trimmed)
 	if shard == nil {
-		return ErrPendingLeaseConflict
+		err = ErrPendingLeaseConflict
+		return err
 	}
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
 	entry, exists := shard.leases[trimmed]
 	if !exists || entry == nil || entry.state != PendingStateLease || entry.lease == nil {
-		return ErrPendingLeaseConflict
+		err = ErrPendingLeaseConflict
+		return err
 	}
 	if entry.lease.OwnerID != "" && entry.lease.OwnerID != trimmedOwner {
-		return ErrPendingLeaseOwnerMismatch
+		err = ErrPendingLeaseOwnerMismatch
+		return err
 	}
 	entry.lastHeartbeat = now
 	entry.lease.HeartbeatAt = now
@@ -263,12 +334,28 @@ func (m *memoryPendingCoordinator) Heartbeat(_ context.Context, username, ownerI
 	return nil
 }
 
-func (m *memoryPendingCoordinator) Observe(_ context.Context, username string) (*PendingState, error) {
+func (m *memoryPendingCoordinator) Observe(ctx context.Context, username string) (state *PendingState, err error) {
 	result := &PendingState{State: PendingStateUnknown}
 	trimmed := strings.TrimSpace(username)
 	if trimmed == "" {
 		return result, nil
 	}
+	spanCtx, span := startPendingSpan(ctx, "pending_memory_observe")
+	if spanCtx != nil {
+		ctx = spanCtx
+	}
+	status := "success"
+	code := "0"
+	details := map[string]interface{}{"backend": "memory", "username": trimmed}
+	trace.AddRequestTag(ctx, "pending_backend", "memory")
+	trace.AddRequestTag(ctx, "pending_username", trimmed)
+	defer func() {
+		if err != nil {
+			status = "error"
+			code = err.Error()
+		}
+		finishPendingSpan(span, status, code, details)
+	}()
 
 	now := time.Now().UTC()
 	shard := m.shardFor(trimmed)
@@ -285,17 +372,38 @@ func (m *memoryPendingCoordinator) Observe(_ context.Context, username string) (
 		return result, nil
 	}
 
-	return m.buildStateLocked(trimmed, entry, now), nil
+	built := m.buildStateLocked(trimmed, entry, now)
+	details["queue_depth"] = built.QueueDepth
+	if built.Backpressure != "" {
+		details["backpressure"] = built.Backpressure
+	}
+	return built, nil
 }
 
 // SampleQueueDepth 返回当前实例的待审批队列深度及对应的背压等级。
 
-func (m *memoryPendingCoordinator) SampleQueueDepth(_ context.Context) (int64, BackpressureLevel, error) {
+func (m *memoryPendingCoordinator) SampleQueueDepth(ctx context.Context) (depth int64, level BackpressureLevel, err error) {
+	spanCtx, span := startPendingSpan(ctx, "pending_memory_sample_depth")
+	if spanCtx != nil {
+		ctx = spanCtx
+	}
+	status := "success"
+	code := "0"
+	details := map[string]interface{}{"backend": "memory"}
+	trace.AddRequestTag(ctx, "pending_backend", "memory")
+	defer func() {
+		if err != nil {
+			status = "error"
+			code = err.Error()
+		}
+		finishPendingSpan(span, status, code, details)
+	}()
+
 	now := time.Now().UTC()
 
 	m.pruneAllShards(now)
-	depth := m.activeCount.Load()
-	level := m.classifyBackpressure(depth)
+	depth = m.activeCount.Load()
+	level = m.classifyBackpressure(depth)
 	m.emitActiveGauge()
 	if metrics.PendingLeaseQueueDepth != nil {
 		metrics.PendingLeaseQueueDepth.WithLabelValues(m.component).Set(float64(depth))
@@ -303,14 +411,35 @@ func (m *memoryPendingCoordinator) SampleQueueDepth(_ context.Context) (int64, B
 	if metrics.PendingLeaseBackpressureLevel != nil {
 		metrics.PendingLeaseBackpressureLevel.WithLabelValues(m.component).Set(backpressureValue(level))
 	}
+	details["queue_depth"] = depth
+	if level != "" {
+		details["backpressure"] = level
+		trace.AddRequestTag(ctx, "pending_backpressure_level", string(level))
+	}
 	return depth, level, nil
 }
 
-func (m *memoryPendingCoordinator) SampleUserQueueDepth(_ context.Context, username string) (int64, BackpressureLevel, error) {
+func (m *memoryPendingCoordinator) SampleUserQueueDepth(ctx context.Context, username string) (depth int64, level BackpressureLevel, err error) {
 	trimmed := strings.TrimSpace(username)
 	if trimmed == "" {
 		return 0, BackpressureNone, nil
 	}
+	spanCtx, span := startPendingSpan(ctx, "pending_memory_sample_user_depth")
+	if spanCtx != nil {
+		ctx = spanCtx
+	}
+	status := "success"
+	code := "0"
+	details := map[string]interface{}{"backend": "memory", "username": trimmed}
+	trace.AddRequestTag(ctx, "pending_backend", "memory")
+	trace.AddRequestTag(ctx, "pending_username", trimmed)
+	defer func() {
+		if err != nil {
+			status = "error"
+			code = err.Error()
+		}
+		finishPendingSpan(span, status, code, details)
+	}()
 
 	now := time.Now().UTC()
 	shard := m.shardFor(trimmed)
@@ -326,7 +455,14 @@ func (m *memoryPendingCoordinator) SampleUserQueueDepth(_ context.Context, usern
 	if !exists || entry.state != PendingStateLease {
 		return 0, BackpressureNone, nil
 	}
-	return 1, m.classifyUserBackpressure(1), nil
+	depth = 1
+	level = m.classifyUserBackpressure(1)
+	details["queue_depth"] = depth
+	if level != "" {
+		details["backpressure"] = level
+		trace.AddRequestTag(ctx, "pending_backpressure_level", string(level))
+	}
+	return depth, level, nil
 }
 
 func (m *memoryPendingCoordinator) ListExpired(_ context.Context, limit int) ([]*PendingState, error) {

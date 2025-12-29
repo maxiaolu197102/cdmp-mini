@@ -82,6 +82,13 @@ func (u *UserService) BatchPatch(ctx context.Context, update *v1.User, opt *opti
 		return err
 	}
 
+	// 队列进入降级态时，直接拒绝入队，让调用方按批量操作的幂等语义进行重试。
+	if u.isRedisDegradeActive() {
+		log.Errorw("批量更新操作队列处于降级状态，拒绝入队", "operation", opID)
+		err = errors.WithCode(code.ErrServerBusy, "批量更新队列暂不可用，请稍后重试")
+		return err
+	}
+
 	ticket, submitErr := u.operationPipeline.Submit(ctx, env)
 	if submitErr != nil {
 		log.Errorw("提交批量更新操作失败", "operation", opID, "error", submitErr)

@@ -19,6 +19,8 @@ import (
 
 // 查询当前限流配置
 func RegisterRateLimitAdminHandlers(rg *gin.RouterGroup, redisCluster *storage.RedisCluster, opts *apiserveropts.Options) {
+	// /ratelimit/write 管理接口：读写的是「写限流 per-identifier 基础阈值的全局覆盖值」，而不是 Redis 计数桶。
+	// 该值会被 WriteRateLimiter 读取，用来覆盖每次请求的 limit（从而间接影响路径级全局阈值 effectiveGlobal）。
 	rg.GET("/ratelimit/write", func(c *gin.Context) {
 		if !isLocalOrDebug(c, opts) {
 			c.AbortWithStatus(http.StatusForbidden)
@@ -71,7 +73,7 @@ func RegisterRateLimitAdminHandlers(rg *gin.RouterGroup, redisCluster *storage.R
 		Value int `json:"value" binding:"required,min=1"`
 		TTL   int `json:"ttl_seconds" binding:"omitempty,min=1"`
 	}
-	//删除限流配置
+	// 设置写限流基础阈值覆盖（全局配置），影响所有 token/IP + path 的 per-identifier limit
 	rg.POST("/ratelimit/write", func(c *gin.Context) {
 		// If AdminToken is set, require it. Otherwise fall back to local/debug only.
 		if opts.ServerRunOptions.AdminToken != "" {
@@ -132,7 +134,7 @@ func RegisterRateLimitAdminHandlers(rg *gin.RouterGroup, redisCluster *storage.R
 		core.WriteResponse(c, nil, gin.H{"result": "ok"})
 	})
 
-	// DELETE handler to remove the global limit key
+	// DELETE handler to remove the写限流基础阈值覆盖 key，让系统回退到配置文件中的默认 limit
 	rg.DELETE("/ratelimit/write", func(c *gin.Context) {
 		// auth same as POST
 		if opts.ServerRunOptions.AdminToken != "" {

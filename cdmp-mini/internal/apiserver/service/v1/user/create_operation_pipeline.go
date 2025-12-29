@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -252,7 +253,8 @@ func (u *UserService) startOperationWorkers() error {
 
 	for i := 0; i < workerCount; i++ {
 		workerID := i + 1
-		go u.runOperationWorker(ctx, workerID)
+		workerCtx := operation.ContextWithWorkerID(ctx, workerID)
+		go u.runOperationWorker(workerCtx, workerID)
 	}
 
 	log.Infow("user operation workers started", "component", "user_service", "workers", workerCount)
@@ -657,6 +659,9 @@ func classifyCreateError(err error) bool {
 func (e *userCreateOperationExecutor) Compensate(ctx context.Context, env *operation.OperationEnvelope) (*operation.OperationResult, error) {
 	start := time.Now()
 	outcome := "success"
+	releaseOutcome := "skipped"
+	compDetails := map[string]interface{}{}
+	var errs []error
 
 	result := &operation.OperationResult{
 		OperationID: "",
@@ -666,6 +671,26 @@ func (e *userCreateOperationExecutor) Compensate(ctx context.Context, env *opera
 	if env != nil {
 		result.OperationID = env.ID
 	}
+
+	compCtxRoot, compRootSpan := trace.StartSpan(ctx, "user-service", "compensate_create")
+	if compCtxRoot != nil {
+		ctx = compCtxRoot
+	}
+	defer func() {
+		status := "success"
+		codeStr := strconv.Itoa(code.ErrSuccess)
+		if outcome != "success" {
+			status = "error"
+			codeStr = outcome
+		}
+		compDetails["release_outcome"] = releaseOutcome
+		compDetails["error_count"] = len(errs)
+		compDetails["duration_ms"] = time.Since(start).Milliseconds()
+		if result != nil && result.OperationID != "" {
+			compDetails["operation_id"] = result.OperationID
+		}
+		trace.EndSpan(compRootSpan, status, codeStr, compDetails)
+	}()
 
 	defer func() {
 		metrics.ObserveOperationCompensation(operationResourceUsers, outcome, time.Since(start))
@@ -701,6 +726,9 @@ func (e *userCreateOperationExecutor) Compensate(ctx context.Context, env *opera
 		ownerID = strings.TrimSpace(env.Headers[pendingOwnerHeader])
 		backendHint = strings.TrimSpace(env.Headers[pendingBackendHeader])
 	}
+	compDetails["username"] = username
+	compDetails["owner"] = ownerID
+	compDetails["backend_hint"] = backendHint
 
 	userSnapshot := &v1.User{}
 	userSnapshot.Name = username
@@ -715,10 +743,30 @@ func (e *userCreateOperationExecutor) Compensate(ctx context.Context, env *opera
 		}
 	}
 
-	var errs []error
-
+	compCtx, compSpan := trace.StartSpan(ctx, "user-service", "compensate_pending_lease")
+	if compCtx != nil {
+		ctx = compCtx
+	}
+	releaseStart := time.Now()
 	if _, releaseErr := e.service.releasePendingLease(ctx, username, ownerID, backendHint); releaseErr != nil {
+		releaseOutcome = "error"
 		errs = append(errs, fmt.Errorf("release pending lease: %w", releaseErr))
+		trace.EndSpan(compSpan, "error", strconv.Itoa(code.ErrUnknown), map[string]interface{}{
+			"username":      username,
+			"owner":         ownerID,
+			"backend_hint":  backendHint,
+			"duration_ms":   time.Since(releaseStart).Milliseconds(),
+			"retry_attempt": 0,
+		})
+	} else {
+		releaseOutcome = "released"
+		trace.EndSpan(compSpan, "success", strconv.Itoa(code.ErrSuccess), map[string]interface{}{
+			"username":      username,
+			"owner":         ownerID,
+			"backend_hint":  backendHint,
+			"duration_ms":   time.Since(releaseStart).Milliseconds(),
+			"retry_attempt": 0,
+		})
 	}
 
 	if (strings.TrimSpace(userSnapshot.Email) == "" && strings.TrimSpace(userSnapshot.Phone) == "") || strings.TrimSpace(userSnapshot.Name) == "" {

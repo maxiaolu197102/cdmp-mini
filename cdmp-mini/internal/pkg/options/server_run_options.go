@@ -70,6 +70,10 @@ type ServerRunOptions struct {
 	LoginCredentialCacheSize int           `json:"loginCredentialCacheSize" mapstructure:"loginCredentialCacheSize"` // 凭证缓存最大条目，>=1。
 	// WriteRateLimit: 默认的写操作限流阈值（当 Redis 未配置 override 时使用）
 	WriteRateLimit int `json:"writeRateLimit"   mapstructure:"writeRateLimit"` // 全局写接口限流阈值，>=0。
+	// WriteRateLimitGlobal: 写接口全局兜底限流阈值（按路径聚合），0 表示关闭。
+	WriteRateLimitGlobal int `json:"writeRateLimitGlobal" mapstructure:"writeRateLimitGlobal"`
+	// WriteRateLimitGlobalFactor: 当未显式配置 WriteRateLimitGlobal 时，可用该倍率乘以 WriteRateLimit 作为兜底阈值；<=0 表示禁用。
+	WriteRateLimitGlobalFactor float64 `json:"writeRateLimitGlobalFactor" mapstructure:"writeRateLimitGlobalFactor"`
 	// AdminToken: 简单的管理API访问令牌（如果为空，只允许本地或 debug 访问）
 	AdminToken string `json:"adminToken" mapstructure:"adminToken"` // 管理端共享令牌，空串表示关闭远程访问。
 	// 新增：生产端限流器开关
@@ -172,6 +176,10 @@ func NewServerRunOptions() *ServerRunOptions {
 		LoginCredentialCacheSize: 1024,
 		// WriteRateLimit 是写接口限流阈值，router.installApiRoutes() 创建 WriteRateLimiter 时使用。
 		WriteRateLimit: 500000,
+		// WriteRateLimitGlobal 是按路径聚合的全局兜底限流阈值，0 表示关闭。
+		WriteRateLimitGlobal: 0,
+		// WriteRateLimitGlobalFactor 为全局兜底阈值倍率（基于 WriteRateLimit），仅在 WriteRateLimitGlobal 未显式配置时生效。
+		WriteRateLimitGlobalFactor: 2,
 		// AdminToken 为管理端 API 的共享令牌，server/audit_admin.go 及 server/ratelimit_admin.go 在校验 Header 时读取。
 		AdminToken: "",
 		// EnableRateLimiter 控制 Kafka 生产端限流器是否启用，genericapiserver.go 中的 producer 初始化会按该值配置。
@@ -306,6 +314,15 @@ func (s *ServerRunOptions) Complete() {
 
 	if s.WriteRateLimit == 0 {
 		s.WriteRateLimit = 1000
+	}
+	if s.WriteRateLimit < 0 {
+		s.WriteRateLimit = 0
+	}
+	if s.WriteRateLimitGlobal < 0 {
+		s.WriteRateLimitGlobal = 0
+	}
+	if s.WriteRateLimitGlobal == 0 && s.WriteRateLimitGlobalFactor < 0 {
+		s.WriteRateLimitGlobalFactor = 0
 	}
 
 	if s.LoginWindow == 0 {
@@ -573,6 +590,21 @@ func (s *ServerRunOptions) Validate() []error {
 		}
 	}
 
+	if s.WriteRateLimitGlobal < 0 {
+		errs = append(errs, field.Invalid(
+			path.Child("writeRateLimitGlobal"),
+			s.WriteRateLimitGlobal,
+			"写全局兜底阈值不能小于0",
+		))
+	}
+	if s.WriteRateLimitGlobalFactor < 0 {
+		errs = append(errs, field.Invalid(
+			path.Child("writeRateLimitGlobalFactor"),
+			s.WriteRateLimitGlobalFactor,
+			"写全局兜底倍率不能小于0",
+		))
+	}
+
 	if s.UserPendingCreateTTL <= 0 {
 		errs = append(errs, field.Invalid(
 			path.Child("userPendingCreateTTL"),
@@ -677,6 +709,8 @@ func (s *ServerRunOptions) AddFlags(fs *pflag.FlagSet) {
 	fs.IntVar(&s.ContactDegradeCacheMaxEntries, "server.contact-degrade-cache-max-entries", s.ContactDegradeCacheMaxEntries, "联系人唯一性降级模式下本地缓存的最大条目数")
 	fs.StringVar(&s.AdminToken, "server.admin-token", s.AdminToken,
 		"管理API的简单访问令牌（默认为空，仅允许本地访问）")
+	fs.IntVar(&s.WriteRateLimitGlobal, "server.write-rate-limit-global", s.WriteRateLimitGlobal, "写接口路径级全局兜底阈值，0 表示关闭")
+	fs.Float64Var(&s.WriteRateLimitGlobalFactor, "server.write-rate-limit-global-factor", s.WriteRateLimitGlobalFactor, "写接口全局兜底倍率（基于 writeRateLimit），仅在未显式配置全局阈值时生效，<=0 表示关闭")
 	fs.BoolVar(&s.FastDebugStartup, "server.fast-debug-startup", s.FastDebugStartup, "调试模式下是否跳过耗时的依赖等待，加速本地调试启动")
 	fs.StringVar(&s.ProducerFallbackDir, "server.producer-fallback-dir", s.ProducerFallbackDir, "Directory to store failed Kafka producer messages as a fallback.")
 	fs.IntVar(&s.PasswordHashCost, "server.password-hash-cost", s.PasswordHashCost, "设置bcrypt密码哈希成本（范围 4-31，默认10，压测可适当降低）")

@@ -64,9 +64,16 @@ gin-jwt: 基于appleboy/gin-jwt.v2库实现核心JWT功能
 package auth
 
 import (
+	"strconv"
+	"time"
+
 	ginjwt "github.com/appleboy/gin-jwt/v2"
 	"github.com/gin-gonic/gin"
+
+	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/code"
 	middleware "github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/middleware/business"
+	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/trace"
+	"github.com/maxiaolu1981/cretem/nexuscore/errors"
 )
 
 const AuthzAudience = "https://github.com/maxiaolu1981/cretem"
@@ -78,7 +85,35 @@ type JWTStrategy struct {
 var _ middleware.AuthStrategy = &JWTStrategy{}
 
 func NewJWTStrategy(gjwt ginjwt.GinJWTMiddleware) JWTStrategy {
-	return JWTStrategy{gjwt}
+	wrapped := gjwt
+	originalAuthenticator := gjwt.Authenticator
+	wrapped.Authenticator = func(c *gin.Context) (interface{}, error) {
+		ctx := c.Request.Context()
+		spanCtx, span := trace.StartSpan(ctx, "auth-middleware", "check_permission")
+		start := time.Now()
+		resp, err := originalAuthenticator(c)
+		dur := time.Since(start)
+		if shouldRecordAuthSpan(err, dur, 50*time.Millisecond, 0.1) {
+			status := "success"
+			codeStr := strconv.Itoa(code.ErrSuccess)
+			if err != nil {
+				status = "error"
+				if c := errors.GetCode(err); c != 0 {
+					codeStr = strconv.Itoa(c)
+				} else {
+					codeStr = strconv.Itoa(code.ErrUnknown)
+				}
+			}
+			trace.EndSpanAt(span, start.Add(dur), status, codeStr, map[string]interface{}{
+				"path":        c.FullPath(),
+				"method":      c.Request.Method,
+				"duration_ms": dur.Milliseconds(),
+			})
+		}
+		c.Request = c.Request.WithContext(spanCtx)
+		return resp, err
+	}
+	return JWTStrategy{wrapped}
 }
 
 func (j JWTStrategy) AuthFunc() gin.HandlerFunc {

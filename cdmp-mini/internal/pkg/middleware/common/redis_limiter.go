@@ -23,6 +23,7 @@ type localRateLimiter struct {
 
 type localCounter struct {
 	count    int64
+	windowID int64
 	lastTime time.Time
 }
 
@@ -50,6 +51,17 @@ func cleanupExpiredCounters() {
 		}
 		localLimiter.Unlock()
 	}
+}
+
+// windowIDForTime 计算给定时间点所在的固定窗口编号：
+// windowID = floor(unixSeconds / windowSeconds)。
+// 当 window 无效时（<=0），统一返回 0，调用方应自行处理。
+func windowIDForTime(t time.Time, window time.Duration) int64 {
+	windowSec := int64(window.Seconds())
+	if windowSec <= 0 {
+		return 0
+	}
+	return t.Unix() / windowSec
 }
 
 // 优化的Lua脚本 - 使用INCR和EXPIRE组合
@@ -106,12 +118,14 @@ func loginRateLimiter(redisCluster *storage.RedisCluster, provider func() (int, 
 			window = time.Minute
 		}
 		windowSec := int64(window.Seconds())
+		now := time.Now()
+		wid := windowIDForTime(now, window)
 
 		identifier := "ip:" + c.ClientIP()
-		rateLimitKey := buildRedisKey(redisCluster, "ratelimit:login:"+identifier)
+		rateLimitKey := buildRedisKey(redisCluster, fmt.Sprintf("ratelimit:login:%s:%d", identifier, wid))
 
-		// 第一层：本地内存限流（按IP）
-		if !localRateCheck(identifier, limit, window) {
+		// 第一层：本地内存限流（按IP），与 Redis 使用相同的 windowID 分桶
+		if !localRateCheckWithWindowID(identifier, limit, window, wid) {
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
 				"code":    100209,
 				"message": "请求过于频繁，请稍后再试（本地限流）",
@@ -126,7 +140,7 @@ func loginRateLimiter(redisCluster *storage.RedisCluster, provider func() (int, 
 
 		result, err := redisCluster.GetClient().Eval(ctx, optimizedLuaScript,
 			[]string{rateLimitKey},
-			limit, windowSec,
+			limit, windowSec*2, // TTL 采用 2*window，仅用于 GC，不再承载精确窗口边界
 		).Result()
 
 		if err != nil {
@@ -163,37 +177,39 @@ func loginRateLimiter(redisCluster *storage.RedisCluster, provider func() (int, 
 	}
 }
 
-// 本地限流检查
+// 本地限流检查（通用入口），按当前时间计算 windowID 并委托给 localRateCheckWithWindowID。
 func localRateCheck(identifier string, limit int, window time.Duration) bool {
+	now := time.Now()
+	wid := windowIDForTime(now, window)
+	return localRateCheckWithWindowID(identifier, limit, window, wid)
+}
+
+// localRateCheckWithWindowID 在给定的 windowID 桶内进行本地计数。
+// 仅在相同 windowID 的请求之间累加计数；一旦 windowID 变化，自动视为新窗口并重置计数。
+// lastTime 仍用于后台清理长期未访问的 key。
+func localRateCheckWithWindowID(identifier string, limit int, window time.Duration, windowID int64) bool {
 	localLimiter.Lock()
 	defer localLimiter.Unlock()
 
 	now := time.Now()
 	counter, exists := localLimiter.counters[identifier]
 
-	if !exists {
+	if !exists || counter.windowID != windowID {
 		localLimiter.counters[identifier] = &localCounter{
 			count:    1,
+			windowID: windowID,
 			lastTime: now,
 		}
 		return true
 	}
 
-	// 检查时间窗口
-	if now.Sub(counter.lastTime) > window {
-		// 重置计数器
-		counter.count = 1
-		counter.lastTime = now
-		return true
-	}
-
-	// 增加计数
+	// 同一 windowID 内累加计数
 	counter.count++
 	counter.lastTime = now
 
-	// 本地限制可以比Redis宽松一些，避免误限流
-	localLimit := limit * 2
-	return counter.count <= int64(localLimit)
+	// 本地限流仅作为 Redis 前置保护：与 Redis 使用相同的 limit，
+	// 并按统一的 windowID 分桶，避免窗口边界抖动导致两边计数认知不一致。
+	return counter.count <= int64(limit)
 }
 
 // 统一的Redis错误处理
@@ -258,8 +274,6 @@ func lenientLocalRateCheck(identifier string, limit int) bool {
 
 // LoginRateLimiterByUser 按用户ID限流的优化版本
 func LoginRateLimiterByUser(redisCluster *storage.RedisCluster, limit int, window time.Duration) gin.HandlerFunc {
-	windowSec := int64(window.Seconds())
-
 	return func(c *gin.Context) {
 		// 从上下文中获取用户ID
 		userID, exists := c.Get("userID")
@@ -272,11 +286,18 @@ func LoginRateLimiterByUser(redisCluster *storage.RedisCluster, limit int, windo
 			return
 		}
 
-		identifier := buildUserIdentifier(userID)
-		rateLimitKey := buildRedisKey(redisCluster, "ratelimit:login:"+identifier)
+		if window <= 0 {
+			window = time.Minute
+		}
+		windowSec := int64(window.Seconds())
+		now := time.Now()
+		wid := windowIDForTime(now, window)
 
-		// 本地限流检查
-		if !localRateCheck(identifier, limit, window) {
+		identifier := buildUserIdentifier(userID)
+		rateLimitKey := buildRedisKey(redisCluster, fmt.Sprintf("ratelimit:login:%s:%d", identifier, wid))
+
+		// 本地限流检查（按用户 ID + windowID）
+		if !localRateCheckWithWindowID(identifier, limit, window, wid) {
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
 				"code":    100209,
 				"message": "操作过于频繁，请稍后再试",
@@ -290,7 +311,7 @@ func LoginRateLimiterByUser(redisCluster *storage.RedisCluster, limit int, windo
 
 		result, err := redisCluster.GetClient().Eval(ctx, optimizedLuaScript,
 			[]string{rateLimitKey},
-			limit, windowSec,
+			limit, windowSec*2,
 		).Result()
 
 		if err != nil {

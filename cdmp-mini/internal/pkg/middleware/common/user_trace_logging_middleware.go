@@ -82,6 +82,11 @@ func UserTraceLoggingMiddleware(cfg UserTraceConfig) gin.HandlerFunc {
 			},
 		)
 
+		spanCtx, httpSpan := trace.StartSpan(traceCtx, "user-api", "http_request")
+		if spanCtx != nil {
+			traceCtx = spanCtx
+		}
+
 		trace.AddRequestTag(traceCtx, "hostname", hostname)
 		trace.AddRequestTag(traceCtx, "env", cfg.Env)
 		trace.AddRequestTag(traceCtx, "build_version", buildInfo.GitVersion)
@@ -97,6 +102,19 @@ func UserTraceLoggingMiddleware(cfg UserTraceConfig) gin.HandlerFunc {
 		duration := time.Since(start)
 		statusCode := c.Writer.Status()
 		trace.UpdateHTTPStatus(traceCtx, statusCode)
+		if httpSpan != nil {
+			status := "success"
+			if statusCode >= http.StatusBadRequest {
+				status = "error"
+			}
+			trace.EndSpan(httpSpan, status, strconv.Itoa(statusCode), map[string]interface{}{
+				"method":       c.Request.Method,
+				"path":         path,
+				"status":       statusCode,
+				"duration_ms":  duration.Milliseconds(),
+				"content_type": c.ContentType(),
+			})
+		}
 
 		operator := extractTraceUserID(c)
 		if operator != "" {

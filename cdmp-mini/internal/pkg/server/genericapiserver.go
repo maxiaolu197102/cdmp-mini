@@ -565,7 +565,7 @@ func monitorClusterHealth(datastore *mysql.Datastore, interval time.Duration) {
 			currentStatus.HealthyReplicas != lastStatus.HealthyReplicas {
 
 			if currentStatus.PrimaryHealthy && currentStatus.HealthyReplicas > 0 {
-				log.Warnf("📊 集群状态: 主节点健康，%d/%d 副本可用",
+				log.Infof("📊 集群状态: 主节点健康，%d/%d 副本可用",
 					currentStatus.HealthyReplicas, currentStatus.ReplicaCount)
 				unhealthyCount = 0
 			} else if !currentStatus.PrimaryHealthy {
@@ -1480,11 +1480,29 @@ func (g *GenericAPIServer) initRedisStore() error {
 		log.Warn("⚠️ 调试模式降级: Redis尚未完全就绪，相关功能可能受限，后台重连成功后会自动恢复")
 	}
 
-	// 启动监控
-	go g.monitorRedisConnection(ctx)
-	g.setupRedisClusterMonitoring()
+	// 启动监控线程：仅在Redis基础连接真正可用后再启动，避免未就绪阶段刷告警
+	g.startRedisMonitoringWhenReady(ctx)
 
 	return nil
+}
+
+func (g *GenericAPIServer) startRedisMonitoringWhenReady(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for {
+			if ctx.Err() != nil {
+				return
+			}
+			if g.redis != nil && storage.Connected() && g.redis.GetClient() != nil {
+				log.Info("Redis已就绪，启动监控线程")
+				go g.monitorRedisConnection(ctx)
+				g.setupRedisClusterMonitoring()
+				return
+			}
+			<-ticker.C
+		}
+	}()
 }
 
 // 等待集群健康状态 - 添加 nil 检查

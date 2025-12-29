@@ -73,6 +73,13 @@ func (u *UserController) Create(ctx *gin.Context) {
 
 	//建立审计闭包
 	auditBase := func(outcome, message string) {
+		auditCtx, auditSpan := trace.StartSpan(controllerCtx, "audit", "audit_create_user")
+		auditStatus := "success"
+		auditCode := strconv.Itoa(code.ErrSuccess)
+		auditDetails := map[string]interface{}{"actor": operator, "action": "user.create"}
+		if auditCtx != nil {
+			controllerCtx = auditCtx
+		}
 		event := audit.BuildEventFromRequest(ctx.Request)
 		event.Action = "user.create"
 		event.ResourceType = "user"
@@ -82,8 +89,13 @@ func (u *UserController) Create(ctx *gin.Context) {
 			event.ErrorMessage = message
 		}
 		submitAudit(ctx, event)
+		if outcome != "success" {
+			auditStatus = "error"
+			auditCode = outcome
+		}
+		trace.EndSpan(auditSpan, auditStatus, auditCode, auditDetails)
 	}
-	//建立联系人唯一性校验计划(用户名 手机 email)
+	//获取创建处理器
 	handler := u.ensureCreateHandler()
 
 	if handler == nil {

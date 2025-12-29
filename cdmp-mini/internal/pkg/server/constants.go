@@ -46,6 +46,8 @@ const (
 	HeaderDeadLetterReason  = "deadletter-reason"
 	HeaderDeadLetterTS      = "deadletter-timestamp"
 	HeaderTraceID           = "trace-id"
+	HeaderRequestID         = "request-id"
+	HeaderParentSpanID      = "parent-span-id"
 	HeaderConsumerLag       = "consumer-fetch-lag"
 	HeaderConsumerRecordAge = "consumer-record-age-ms"
 

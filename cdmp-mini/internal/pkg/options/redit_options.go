@@ -41,7 +41,7 @@ func NewRedisOptions() *RedisOptions {
 		Password:              "",
 		Database:              0,
 		MasterName:            "",
-		MaxIdle:               600,              // 空闲连接上限（0 表示不限制）
+		MaxIdle:               0,                // 0 表示不限制，交由 go-redis 控制
 		Timeout:               60 * time.Second, // 连接超时
 		EnableCluster:         true,             // 集群模式
 		UseSSL:                false,
@@ -49,8 +49,8 @@ func NewRedisOptions() *RedisOptions {
 		IdleTimeout:           120 * time.Second,  // 空闲超时2分钟
 		MaxConnLifetime:       1800 * time.Second, // 连接生命周期30分钟
 		Wait:                  true,               // 池耗尽时等待
-		PoolSize:              1200,               // 默认每节点 1200 个连接
-		MinIdleConns:          480,                // 默认保持 480 个空闲连接
+		PoolSize:              512,                // 默认每节点 512 个连接（压测基线）
+		MinIdleConns:          192,                // 默认保持 192 个空闲连接
 		MaxRetries:            1,
 		MaxRetryDelay:         30 * time.Second,
 	}
@@ -76,9 +76,6 @@ func (r *RedisOptions) Complete() {
 	// 连接池配置默认值
 	if r.MaxIdle <= 0 {
 		r.MaxIdle = 0 // 0 表示交由 go-redis 自行控制
-	}
-	if r.MaxActive <= 0 {
-		r.MaxActive = 100 // 默认最大活跃连接数
 	}
 
 	// 超时相关默认值
@@ -115,6 +112,12 @@ func (r *RedisOptions) Complete() {
 			r.MinIdleConns = 32
 		}
 	}
+	if r.MaxActive <= 0 {
+		r.MaxActive = r.PoolSize
+	}
+	if r.MaxActive > 0 && r.MinIdleConns > 0 && r.MaxActive < r.MinIdleConns {
+		r.MaxActive = r.MinIdleConns
+	}
 
 	// 等待策略默认值（高并发推荐设置为true）
 	// Wait字段是bool类型，默认值为false，这里不强制设置
@@ -124,9 +127,9 @@ func (r *RedisOptions) Complete() {
 		r.SSLInsecureSkipVerify = false // 非SSL模式不跳过验证
 	}
 
-	// 哨兵模式默认主节点名称
-	if r.EnableCluster && r.MasterName == "" {
-		r.MasterName = "mymaster" // 默认主节点名称
+	// 哨兵模式才需要 master 名称；启用集群模式时应保持为空以避免误走 failover 客户端
+	if r.EnableCluster {
+		r.MasterName = ""
 	}
 
 	// 数据库索引有效性检查

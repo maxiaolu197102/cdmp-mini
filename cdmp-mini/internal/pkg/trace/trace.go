@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -350,7 +351,26 @@ func EndSpan(span *Span, status, businessCode string, details map[string]interfa
 	if span == nil {
 		return
 	}
-	span.EndTime = time.Now()
+	end := time.Now()
+	finalizeSpan(span, end, status, businessCode, details, metricsLabels...)
+}
+
+// EndSpanAt finalizes a span using a provided end time (defaults to now when zero).
+func EndSpanAt(span *Span, end time.Time, status, businessCode string, details map[string]interface{}, metricsLabels ...string) {
+	if span == nil {
+		return
+	}
+	if end.IsZero() {
+		end = time.Now()
+	}
+	finalizeSpan(span, end, status, businessCode, details, metricsLabels...)
+}
+
+func finalizeSpan(span *Span, end time.Time, status, businessCode string, details map[string]interface{}, metricsLabels ...string) {
+	span.EndTime = end
+	if span.StartTime.IsZero() {
+		span.StartTime = end
+	}
 	span.DurationMs = float64(span.EndTime.Sub(span.StartTime)) / float64(time.Millisecond)
 	if status != "" {
 		span.Status = status
@@ -542,7 +562,9 @@ func (t *Trace) ToLogPayload(asyncSpans []*Span) traceLogPayload {
 		})
 	}
 
-	spanPayload := make([]spanLogEntry, 0, len(spans))
+	spanEntries := make(map[string]spanLogEntry, len(spans))
+	childIndex := make(map[string][]string)
+	spanStart := make(map[string]time.Time, len(spans))
 	errorCategories := map[string]int{
 		"validation": 0,
 		"database":   0,
@@ -589,13 +611,66 @@ func (t *Trace) ToLogPayload(asyncSpans []*Span) traceLogPayload {
 			entry.Details = span.Details
 			categorizeError(span, errorCategories)
 		}
-		spanPayload = append(spanPayload, entry)
+
+		spanEntries[span.ID] = entry
+		parentID := strings.TrimSpace(span.ParentID)
+		childIndex[parentID] = append(childIndex[parentID], span.ID)
+		spanStart[span.ID] = span.StartTime
+
 		if span.Status == "error" {
 			if _, hasErrorChild := errorParentIDs[span.ID]; !hasErrorChild {
 				errors++
 			}
 		} else if span.Status == "degraded" {
 			degraded++
+		}
+	}
+
+	// 根据父子关系排序，尽量贴合调用栈展示
+	for parent, children := range childIndex {
+		sort.Slice(children, func(i, j int) bool {
+			si := childIndex[parent][i]
+			sj := childIndex[parent][j]
+			ti := spanStart[si]
+			tj := spanStart[sj]
+			return ti.Before(tj)
+		})
+	}
+
+	roots := make([]string, 0)
+	for id, entry := range spanEntries {
+		parent := strings.TrimSpace(entry.ParentID)
+		if parent == "" || spanEntries[parent].SpanID == "" {
+			roots = append(roots, id)
+		}
+	}
+	sort.Slice(roots, func(i, j int) bool {
+		return spanStart[roots[i]].Before(spanStart[roots[j]])
+	})
+
+	ordered := make([]spanLogEntry, 0, len(spanEntries))
+	visited := make(map[string]bool, len(spanEntries))
+	var walk func(id string)
+	walk = func(id string) {
+		if visited[id] {
+			return
+		}
+		visited[id] = true
+		if entry, ok := spanEntries[id]; ok {
+			ordered = append(ordered, entry)
+		}
+		for _, child := range childIndex[id] {
+			walk(child)
+		}
+	}
+
+	for _, root := range roots {
+		walk(root)
+	}
+	// 兜底：如果存在未被遍历的孤立节点（例如缺失父节点），也保证输出
+	for id := range spanEntries {
+		if !visited[id] {
+			walk(id)
 		}
 	}
 
@@ -611,8 +686,27 @@ func (t *Trace) ToLogPayload(asyncSpans []*Span) traceLogPayload {
 		KafkaProductionMs:  estimateComponentDuration(spans, "kafka-producer"),
 		KafkaConsumptionMs: estimateComponentDuration(spans, "kafka-consumer"),
 	}
+
+	additional := map[string]interface{}{}
 	if len(t.BusinessMetrics.Summary) > 0 {
-		performance.AdditionalSummaries = t.BusinessMetrics.Summary
+		for k, v := range t.BusinessMetrics.Summary {
+			additional[k] = v
+		}
+	}
+	if strings.EqualFold(t.Operation, "POST /v1/users") {
+		additional["redis_total_ms"] = estimateComponentDuration(spans, "redis-client")
+		additional["kafka_total_ms"] = estimateComponentDuration(spans, "kafka-producer")
+		additional["db_total_ms"] = estimateComponentDuration(spans, "mysql-client")
+		additional["preflight_total_ms"] = estimateOperationDuration(spans,
+			"preflight_limiter_wait",
+			"preflight_conflicts",
+			"ensure_contact_uniqueness",
+			"ensure_contacts_unique",
+			"ensure_contact_cache_ready",
+		)
+	}
+	if len(additional) > 0 {
+		performance.AdditionalSummaries = additional
 	}
 
 	errorSummary := errorCategorySummary{
@@ -644,7 +738,7 @@ func (t *Trace) ToLogPayload(asyncSpans []*Span) traceLogPayload {
 			RootOperation: t.Operation,
 			StartTimeMs:   t.Start.UnixNano() / int64(time.Millisecond),
 			EndTimeMs:     t.End.UnixNano() / int64(time.Millisecond),
-			Spans:         spanPayload,
+			Spans:         ordered,
 		},
 		RequestContext: t.RequestContext,
 		Business: businessMetricsPayload{
@@ -729,6 +823,29 @@ func estimateComponentDuration(spans []*Span, component string) float64 {
 	var total float64
 	for _, span := range spans {
 		if span.Component == component {
+			total += span.DurationMs
+		}
+	}
+	return total
+}
+
+func estimateOperationDuration(spans []*Span, operations ...string) float64 {
+	if len(operations) == 0 {
+		return 0
+	}
+	lookup := make(map[string]struct{}, len(operations))
+	for _, op := range operations {
+		if op == "" {
+			continue
+		}
+		lookup[op] = struct{}{}
+	}
+	var total float64
+	for _, span := range spans {
+		if span == nil {
+			continue
+		}
+		if _, ok := lookup[span.Operation]; ok {
 			total += span.DurationMs
 		}
 	}
@@ -849,6 +966,16 @@ func (c *Collector) mergeAsync(t *Trace) {
 		delete(c.traces, t.ID)
 		c.mu.Unlock()
 		httpTrace.Log(async)
+		c.mu.Lock()
+		return
+	}
+
+	// 如果异步链路先到或 HTTP 已经超时清理，避免异步 Trace 永久滞留；直接输出异步段落
+	if entry.httpTrace == nil && entry.asyncReady {
+		async := entry.asyncSpans
+		delete(c.traces, t.ID)
+		c.mu.Unlock()
+		t.Log(async)
 		c.mu.Lock()
 	}
 }

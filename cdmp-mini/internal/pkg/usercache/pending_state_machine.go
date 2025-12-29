@@ -20,6 +20,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/metrics"
+	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/trace"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/pkg/log"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/pkg/storage"
 )
@@ -32,6 +33,21 @@ const (
 	PendingStateReleased PendingStateValue = "released"
 	PendingStateExpired  PendingStateValue = "expired"
 )
+
+func startPendingSpan(ctx context.Context, operation string) (context.Context, *trace.Span) {
+	spanCtx, span := trace.StartSpan(ctx, "pending-coordinator", operation)
+	if spanCtx != nil {
+		ctx = spanCtx
+	}
+	return ctx, span
+}
+
+func finishPendingSpan(span *trace.Span, status, code string, details map[string]interface{}) {
+	if span == nil {
+		return
+	}
+	trace.EndSpan(span, status, code, details)
+}
 
 type BackpressureLevel string
 
@@ -48,6 +64,59 @@ var backpressureGaugeValues = map[BackpressureLevel]float64{
 	BackpressureNone:     0,
 	BackpressureElevated: 1,
 	BackpressureSevere:   2,
+}
+
+// BackpressureSample captures a point-in-time view of queue depths and levels.
+// AggregateLevel merges global/user/instance to the highest severity.
+type BackpressureSample struct {
+	Username       string
+	GlobalDepth    int64
+	GlobalLevel    BackpressureLevel
+	GlobalErr      error
+	UserDepth      int64
+	UserLevel      BackpressureLevel
+	UserErr        error
+	InstanceDepth  int64
+	InstanceLevel  BackpressureLevel
+	AggregateLevel BackpressureLevel
+	SampledAt      time.Time
+	Source         string
+}
+
+type backpressureSampleKey struct{}
+
+func (s BackpressureSample) MaxDepth() int64 {
+	maxDepth := s.GlobalDepth
+	if s.UserDepth > maxDepth {
+		maxDepth = s.UserDepth
+	}
+	if s.InstanceDepth > maxDepth {
+		maxDepth = s.InstanceDepth
+	}
+	return maxDepth
+}
+
+func (s BackpressureSample) ShouldReject(threshold BackpressureLevel) bool {
+	return backpressureRank(s.AggregateLevel) >= backpressureRank(threshold)
+}
+
+// ContextWithBackpressureSample attaches a sampled backpressure snapshot to the context.
+func ContextWithBackpressureSample(ctx context.Context, sample BackpressureSample) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, backpressureSampleKey{}, sample)
+}
+
+// BackpressureSampleFromContext fetches a cached backpressure sample if present.
+func BackpressureSampleFromContext(ctx context.Context) (BackpressureSample, bool) {
+	if ctx == nil {
+		return BackpressureSample{}, false
+	}
+	if sample, ok := ctx.Value(backpressureSampleKey{}).(BackpressureSample); ok {
+		return sample, true
+	}
+	return BackpressureSample{}, false
 }
 
 const (
@@ -200,23 +269,27 @@ BackpressureDelayProfile 是背压延迟策略的 “配置中心”：
 4.MaxDepth 要和桶的最大深度匹配：
 比如 ElevatedMaxDepth=300，则轻度背压最后一个桶的 MaxDepth 必须是 300，否则会出现 “深度 250 属于轻度，但深度 350 未匹配到严重桶” 的漏洞。
 
-delayProfile := BackpressureDelayProfile{
-    // 轻度背压配置
-    ElevatedBucketCount: 3,
-    ElevatedMaxDepth:    300,
+BackpressureDelayProfile{
+    // 轻度背压（Elevated）延迟桶：队列深度 1000~1500 分5个区间，延迟 20~45ms 线性递增
     Elevated: []BackpressureDelayBucket{
-        {MinDepth: 0,  MaxDepth: 100, Delay: 5 * time.Millisecond},  // 深度0-100 → 延迟5ms
-        {MinDepth: 100, MaxDepth: 200, Delay: 10 * time.Millisecond}, // 深度100-200 → 延迟10ms
-        {MinDepth: 200, MaxDepth: 300, Delay: 20 * time.Millisecond}, // 深度200-300 → 延迟20ms
+        {MinDepth: 1000, MaxDepth: 1100, Delay: 20 * time.Millisecond}, // 深度1000-1100 → 延迟20ms
+        {MinDepth: 1100, MaxDepth: 1200, Delay: 26 * time.Millisecond}, // 深度1100-1200 → 延迟26ms
+        {MinDepth: 1200, MaxDepth: 1300, Delay: 32 * time.Millisecond}, // 深度1200-1300 → 延迟32ms
+        {MinDepth: 1300, MaxDepth: 1400, Delay: 38 * time.Millisecond}, // 深度1300-1400 → 延迟38ms
+        {MinDepth: 1400, MaxDepth: 1500, Delay: 45 * time.Millisecond}, // 深度1400-1500 → 延迟45ms
     },
-    // 严重背压配置
-    SevereBucketCount: 3,
-    SevereMaxDepth:    1000,
+    // 严重背压（Severe）延迟桶：队列深度 1500~2000 分5个区间，延迟 80~150ms 线性递增
     Severe: []BackpressureDelayBucket{
-        {MinDepth: 300, MaxDepth: 500, Delay: 50 * time.Millisecond},  // 深度300-500 → 延迟50ms
-        {MinDepth: 500, MaxDepth: 800, Delay: 100 * time.Millisecond}, // 深度500-800 → 延迟100ms
-        {MinDepth: 800, MaxDepth: 1000, Delay: 200 * time.Millisecond}, // 深度800-1000 → 延迟200ms
+        {MinDepth: 1500, MaxDepth: 1600, Delay: 80 * time.Millisecond},  // 深度1500-1600 → 延迟80ms
+        {MinDepth: 1600, MaxDepth: 1700, Delay: 97 * time.Millisecond},  // 深度1600-1700 → 延迟97ms
+        {MinDepth: 1700, MaxDepth: 1800, Delay: 114 * time.Millisecond}, // 深度1700-1800 → 延迟114ms
+        {MinDepth: 1800, MaxDepth: 1900, Delay: 131 * time.Millisecond}, // 深度1800-1900 → 延迟131ms
+        {MinDepth: 1900, MaxDepth: 2000, Delay: 150 * time.Millisecond}, // 深度1900-2000 → 延迟150ms
     },
+    ElevatedBucketCount: 5,    // 轻度桶数量=5
+    SevereBucketCount:   5,    // 严重桶数量=5
+    ElevatedMaxDepth:    1500, // 轻度背压最大深度=1500（全局硬阈值）
+    SevereMaxDepth:      2000, // 严重背压最大深度=2000（兜底值）
 }
 */
 type BackpressureDelayProfile struct {
@@ -234,6 +307,7 @@ type BackpressureDelayProfile struct {
 	SevereMaxDepth int
 }
 
+// ensureDefaults 校验并填充延迟配置的默认值，确保配置的完整性和合理性。
 func (p *BackpressureDelayProfile) ensureDefaults(soft, hard int, elevatedBase, elevatedMax, severeBase, severeMax time.Duration) {
 	if soft <= 0 {
 		soft = 1
@@ -397,6 +471,17 @@ func clampDepth(depth int) int {
 		return maxBackpressureDepthCap
 	}
 	return depth
+}
+
+func backpressureRank(level BackpressureLevel) int {
+	switch level {
+	case BackpressureSevere:
+		return 2
+	case BackpressureElevated:
+		return 1
+	default:
+		return 0
+	}
 }
 
 func ceilDuration(value, quantum time.Duration) time.Duration {
@@ -584,7 +669,7 @@ type PendingCoordinatorConfig struct {
 	ObserveTimeout        time.Duration              //观察超时时间（控制读取当前状态的最大等待时间）
 	CommandTimeout        time.Duration              //单次Redis命令的最大执行时间
 	DegradeActive         func(context.Context) bool //全局降级检测，返回 true 时直接走内存兜底
-	BackpressureWindow    time.Duration              //背压评估窗口
+	BackpressureWindow    time.Duration              //窗口用于控制“活跃计数的保鲜期”（过期即清零）
 	BackpressureSoftLimit int                        //软限制（达到该值开始应用背压）
 	BackpressureHardLimit int                        //硬限制（达到该值触发严重背压429）
 	MetricsKey            string                     //指标键
@@ -602,7 +687,7 @@ type PendingCoordinatorConfig struct {
 	InstanceTokenBucketRate       float64                  //实例级令牌桶速率（req/s），0 表示关闭
 	InstanceTokenBucketBurst      int                      //实例级令牌桶突发容量
 	UserMetricsPrefix             string                   //用户局部深度指标前缀
-	UserBackpressureWindow        time.Duration            //用户级队列采样窗口
+	UserBackpressureWindow        time.Duration            //用户级队列采样窗口,用于控制“活跃计数的保鲜期”（过期即清零）
 	UserBackpressureSoftLimit     int                      //用户级软阈值
 	UserBackpressureHardLimit     int                      //用户级硬阈值
 	InstanceBackpressureSoftLimit int                      //实例级软阈值
@@ -610,6 +695,24 @@ type PendingCoordinatorConfig struct {
 	FallbackDelay                 time.Duration            //采样失败时的保守延迟
 	CalibrationInterval           time.Duration            //全量校准执行间隔
 	CalibrationTimeout            time.Duration            //单次全量校准超时
+	BackpressureAntiShakeInterval time.Duration            //背压等级防抖时间窗口，>0 时等级切换需持续超过该时间才生效
+	IsolateInstanceSevere         bool                     //仅实例级为 severe 且全局/用户非 severe 时，是否降级为 elevated（避免单实例拖累全局）
+	IsolateUserSevere             bool                     //仅用户级为 severe 且全局/实例非 severe 时，是否降级为 elevated（避免单租户误伤全局）
+}
+
+// DefaultPendingCoordinatorConfig 提供按组件名称初始化的通用模板，便于不同服务复用并保持 key 前缀隔离。
+// 调用方可在返回值上按需覆盖阈值、窗口等字段。
+func DefaultPendingCoordinatorConfig(component string) PendingCoordinatorConfig {
+	trimmed := strings.TrimSpace(component)
+	if trimmed == "" {
+		trimmed = "pending_coordinator"
+	}
+
+	return PendingCoordinatorConfig{
+		Component:         trimmed,
+		MetricsKey:        fmt.Sprintf("%s:pending:active", trimmed),
+		UserMetricsPrefix: fmt.Sprintf("%s:pending:depth:", trimmed),
+	}
 }
 
 /*
@@ -653,6 +756,12 @@ type PendingCoordinator struct {
 	scriptLoader              func(ctx context.Context, script string) (string, error)                                      // Lua 脚本加载回调，需返回 SHA；为 nil 时使用默认加载器
 	luaExecutor               func(ctx context.Context, sha string, keys []string, args []interface{}) (interface{}, error) // 执行 Redis Lua 的回调，nil 使用默认客户端执行
 	scriptReloadGroup         singleflight.Group                                                                            // 控制脚本加载的单航班组，确保并发只加载一次
+
+	decisionMu            sync.Mutex        //保护防抖状态
+	lastAggregateLevel    BackpressureLevel //最近输出的聚合等级
+	lastAggregateAt       time.Time         //最近输出的时间
+	pendingAggregateLevel BackpressureLevel //待切换的聚合等级（防抖期间缓存）
+	pendingAggregateSince time.Time         //待切换等级首次观测时间
 }
 
 // 用户令牌桶条目，包含令牌桶和最后使用时间
@@ -731,6 +840,7 @@ func (p *scopedLimiterPool) compactLocked(now time.Time) {
 	}
 }
 
+// 根据速率和请求的突发量解析令牌桶的突发容量
 func resolveTokenBucketBurst(rateValue float64, requested int) int {
 	if rateValue <= 0 {
 		return 0
@@ -1015,6 +1125,10 @@ func NewPendingCoordinator(redis *storage.RedisCluster, cfg PendingCoordinatorCo
 	if cfg.SevereDelayMax <= 0 {
 		cfg.SevereDelayMax = 150 * time.Millisecond
 	}
+	// 防抖/隔离开关默认关闭，保持向后兼容；调用方显式配置后生效。
+	if cfg.BackpressureAntiShakeInterval < 0 {
+		cfg.BackpressureAntiShakeInterval = 0
+	}
 
 	applyCoordinatorEnvOverrides(&cfg)
 	cfg.MetricsKey = ensurePendingMetricsKey(cfg.MetricsKey)
@@ -1105,19 +1219,21 @@ func NewPendingCoordinator(redis *storage.RedisCluster, cfg PendingCoordinatorCo
 	tokenLimiter := newRateLimiter(cfg.TokenBucketRate, cfg.TokenBucketBurst)
 	instanceLimiter := newRateLimiter(cfg.InstanceTokenBucketRate, cfg.InstanceTokenBucketBurst)
 	userTokenBuckets := newScopedLimiterPool(cfg.UserTokenBucketRate, cfg.UserTokenBucketBurst)
-
+	//确保随机数生成器线程安 随机数生成器是背压协调器实现「平滑削峰、避免系统抖动」的关键组件，核心作用是在预设的延迟区间内生成随机延迟时间全.
 	random := rand.New(rand.NewSource(time.Now().UnixNano()))
 
 	coordinator := &PendingCoordinator{
-		redis:               redis,
-		cfg:                 cfg,
-		component:           component,
-		mode:                mode,
-		tokenLimiter:        tokenLimiter,
-		instanceLimiter:     instanceLimiter,
-		userTokenBuckets:    userTokenBuckets,
-		random:              random,
-		fallbackDelay:       cfg.FallbackDelay,
+		redis:            redis,
+		cfg:              cfg,
+		component:        component,
+		mode:             mode,
+		tokenLimiter:     tokenLimiter,
+		instanceLimiter:  instanceLimiter,
+		userTokenBuckets: userTokenBuckets,
+		random:           random,
+		//fallbackDelay 是背压协调器的容错兜底延迟（也叫 “降级延迟”），核心作用是：当协调器无法正常获取 Redis 中的背压计数（比如 Redis 集群故障、网络抖动、超时）时，使用这个预设的延迟值对请求做 “保守限流”—— 既避免无延迟放行导致系统过载，又保证服务不直接报错，是「优雅降级」的关键配置。
+		fallbackDelay: cfg.FallbackDelay,
+		//租约计数校准协程的 “控制信号器”.calibrationUpdateCh 负责 “触发校准规则更新”
 		calibrationStop:     make(chan struct{}),
 		calibrationUpdateCh: make(chan struct{}, 1),
 	}
@@ -1630,7 +1746,8 @@ func (c *PendingCoordinator) pendingAcquireViaLua(ctx context.Context, username,
 	userDepth := luaToInt(arr[2])
 	globalLevel := BackpressureLevel(luaToString(arr[3]))
 	userLevel := BackpressureLevel(luaToString(arr[4]))
-	aggregateLevel := BackpressureLevel(luaToString(arr[5]))
+	// Lua 返回的聚合等级基于旧规则，这里重新应用新决策以支持隔离/防抖
+	aggregateLevel := c.decideAggregateLevel(globalLevel, userLevel, instanceLevel, time.Now())
 	finalPayload := luaToString(arr[6])
 	snapshot.QueueDepth = queueDepth
 	snapshot.UserQueueDepth = userDepth
@@ -1689,7 +1806,7 @@ func (c *PendingCoordinator) pendingAcquireLegacy(ctx context.Context, username,
 	userLevel := c.classifyUserBackpressure(userQueueDepth)
 	instanceDepth := c.incInstanceActive()
 	instanceLevel := c.classifyInstanceBackpressure(instanceDepth)
-	aggregateLevel := mergeBackpressureLevels(level, userLevel, instanceLevel)
+	aggregateLevel := c.decideAggregateLevel(level, userLevel, instanceLevel, time.Now())
 	if userDepthErr != nil {
 		aggregateLevel = mergeBackpressureLevels(aggregateLevel, BackpressureElevated)
 		c.fallbackThrottle("user_counter")
@@ -1738,31 +1855,60 @@ const releasedStateRetryLimit = 3
 
 // 大量请求 → 令牌桶过滤（剩80%）→ 柔性延迟过滤（剩60%）
 // → 租约抢占过滤（剩10%）→ 执行核心业务
-func (c *PendingCoordinator) Acquire(ctx context.Context, username string, meta LeaseMetadata) (*AcquireResult, error) {
+func (c *PendingCoordinator) Acquire(ctx context.Context, username string, meta LeaseMetadata) (res *AcquireResult, err error) {
 	if c == nil {
 		return nil, nil
 	}
+	ctx, span := startPendingSpan(ctx, "pending_acquire")
+	status := "success"
+	code := "0"
+	var finalDetails map[string]interface{}
+	defer func() {
+		if err != nil {
+			status = "error"
+			code = err.Error()
+		}
+		finishPendingSpan(span, status, code, finalDetails)
+	}()
 	trimmed := strings.TrimSpace(username)
 	if trimmed == "" {
-		return nil, errors.New("username required")
+		err = errors.New("username required")
+		return nil, err
 	}
 	if err := c.guardTokenBucket(ctx, trimmed); err != nil {
 		if metrics.PendingLeaseEvents != nil {
 			metrics.PendingLeaseEvents.WithLabelValues(c.component, "token_bucket_block").Inc()
 		}
-		return nil, &AcquireError{Reason: AcquireFailureBackpressure, QueueDepth: 0}
+		err = &AcquireError{Reason: AcquireFailureBackpressure, QueueDepth: 0}
+		finalDetails = map[string]interface{}{
+			"username":            trimmed,
+			"acquire_result":      "token_bucket_block",
+			"acquire_fail_reason": "token_bucket_block",
+			"fallback_strategy":   "none",
+		}
+		trace.AddRequestTag(ctx, "acquire_fail_reason", "token_bucket_block")
+		trace.AddRequestTag(ctx, "fallback_strategy", "none")
+		return nil, err
 	}
 	if c.degradeActive(ctx) {
 		c.recordDegradeFallback("acquire", trimmed)
 		if fallback := c.ensureFallback(); fallback != nil {
+			trace.AddRequestTag(ctx, "acquire_fail_reason", "degrade_active")
+			trace.AddRequestTag(ctx, "fallback_strategy", "delegate")
 			return fallback.Acquire(ctx, trimmed, meta)
 		}
+		trace.AddRequestTag(ctx, "acquire_fail_reason", "degrade_active")
+		trace.AddRequestTag(ctx, "fallback_strategy", "none")
 		return nil, nil
 	}
 	if c.redis == nil {
 		if c.fallback != nil {
+			trace.AddRequestTag(ctx, "acquire_fail_reason", "backend_unavailable")
+			trace.AddRequestTag(ctx, "fallback_strategy", "delegate")
 			return c.fallback.Acquire(ctx, trimmed, meta)
 		}
+		trace.AddRequestTag(ctx, "acquire_fail_reason", "backend_unavailable")
+		trace.AddRequestTag(ctx, "fallback_strategy", "none")
 		return nil, nil
 	}
 	// 格式:user:pending:{username}
@@ -1774,38 +1920,72 @@ func (c *PendingCoordinator) Acquire(ctx context.Context, username string, meta 
 	// 场景：多个并发请求同时尝试获取同一用户名的租约
 	// 目标：确保 Released 状态被正确清理，避免冲突
 	//比如前一个请求刚释放租约，Redis 里的快照还没过期（5 秒 TTL），此时新请求来了，可能误判为 “仍被占用”。重试几次能等快照过期 / 被清理，提高抢占成功率。
+	var promoteExpired bool
+	var leaseTTLMS int64
+	if c.cfg.LeaseTTL > 0 {
+		leaseTTLMS = c.cfg.LeaseTTL.Milliseconds()
+	}
+	var aggregateLevel BackpressureLevel
+	var globalDepth, userDepth, instanceDepth int64
+	var globalLevel, userLevel, instanceLevel BackpressureLevel
+	var ownerID string
 	for attempt := 0; attempt < releasedStateRetryLimit+1; attempt++ {
-		//全局队列深度背压检查
-		globalDepth, globalLevel, globalErr := c.SampleQueueDepth(ctx)
-		if globalErr != nil {
-			c.logLeaseEvent("warn", "pending lease global depth sample failed", "username", trimmed, "error", globalErr)
+		ctxSample, hasCtxSample := BackpressureSampleFromContext(ctx)
+		sample := ctxSample
+		if !hasCtxSample || (sample.Username != "" && sample.Username != trimmed) {
+			sample = c.SampleBackpressure(ctx, trimmed)
+			ctx = ContextWithBackpressureSample(ctx, sample)
+		} else if sample.Username == "" && trimmed != "" && sample.UserLevel == "" {
+			// Reuse global sample from middleware but add user dimension when available.
+			userDepth, userLevel, userErr := c.SampleUserQueueDepth(ctx, trimmed)
+			sample.Username = trimmed
+			sample.UserDepth = userDepth
+			sample.UserLevel = userLevel
+			sample.UserErr = userErr
+			sample.AggregateLevel = c.decideAggregateLevel(sample.GlobalLevel, sample.UserLevel, sample.InstanceLevel, time.Now())
+			sample.Source = "augmented"
+			ctx = ContextWithBackpressureSample(ctx, sample)
 		}
-		//用户队列深度背压检查
-		userDepth, userLevel, userErr := c.SampleUserQueueDepth(ctx, trimmed)
-		if userErr != nil {
-			c.logLeaseEvent("warn", "pending lease user depth sample failed", "username", trimmed, "error", userErr)
-		}
-		//实例队列深度背压检查
-		instanceDepth, instanceLevel := c.sampleInstanceBackpressure()
-		aggregateLevel := mergeBackpressureLevels(globalLevel, userLevel, instanceLevel)
+
+		globalDepth, userDepth, instanceDepth = sample.GlobalDepth, sample.UserDepth, sample.InstanceDepth
+		globalLevel, userLevel, instanceLevel = sample.GlobalLevel, sample.UserLevel, sample.InstanceLevel
+		aggregateLevel = sample.AggregateLevel
 		fallbackSampling := false
-		if globalErr != nil || userErr != nil {
+		if sample.GlobalErr != nil || sample.UserErr != nil {
 			aggregateLevel = mergeBackpressureLevels(aggregateLevel, BackpressureElevated)
 			fallbackSampling = true
 		}
-		maxDepth := globalDepth
-		if userDepth > maxDepth {
-			maxDepth = userDepth
+		if sample.GlobalErr != nil {
+			c.logLeaseEvent("warn", "pending lease global depth sample failed", "username", trimmed, "error", sample.GlobalErr)
 		}
-		if instanceDepth > maxDepth {
-			maxDepth = instanceDepth
+		if sample.UserErr != nil {
+			c.logLeaseEvent("warn", "pending lease user depth sample failed", "username", trimmed, "error", sample.UserErr)
 		}
+
+		trace.AddRequestTag(ctx, "queue_depth_global", globalDepth)
+		trace.AddRequestTag(ctx, "queue_depth_user", userDepth)
+		trace.AddRequestTag(ctx, "queue_depth_instance", instanceDepth)
+		trace.AddRequestTag(ctx, "backpressure_level", string(aggregateLevel))
+		maxDepth := sample.MaxDepth()
 		if aggregateLevel == BackpressureSevere {
 			if metrics.PendingLeaseEvents != nil {
 				metrics.PendingLeaseEvents.WithLabelValues(c.component, "precheck_backpressure_reject").Inc()
 			}
 			c.logLeaseEvent("warn", "pending lease precheck rejected by severe backpressure", "username", trimmed, "queue_depth", maxDepth, "global_level", string(globalLevel), "user_level", string(userLevel), "instance_level", string(instanceLevel))
-			return nil, &AcquireError{Reason: AcquireFailureBackpressure, QueueDepth: maxDepth}
+			finalDetails = map[string]interface{}{
+				"username":             trimmed,
+				"acquire_result":       "backpressure_reject",
+				"queue_depth_global":   globalDepth,
+				"queue_depth_user":     userDepth,
+				"queue_depth_instance": instanceDepth,
+				"backpressure_level":   string(aggregateLevel),
+				"acquire_fail_reason":  "backpressure_reject",
+				"fallback_strategy":    "precheck_block",
+			}
+			trace.AddRequestTag(ctx, "acquire_fail_reason", "backpressure_reject")
+			trace.AddRequestTag(ctx, "fallback_strategy", "precheck_block")
+			err = &AcquireError{Reason: AcquireFailureBackpressure, QueueDepth: maxDepth}
+			return nil, err
 		}
 		if fallbackSampling {
 			c.fallbackThrottle("sample")
@@ -1815,7 +1995,7 @@ func (c *PendingCoordinator) Acquire(ctx context.Context, username string, meta 
 		}
 
 		now := time.Now().UTC()
-		ownerID := uuid.New().String()
+		ownerID = uuid.New().String()
 		expiresAt := now.Add(c.cfg.LeaseTTL)
 		heartbeatStamp := now.Format(time.RFC3339Nano)
 		snapshot := pendingLeaseSnapshot{
@@ -1846,6 +2026,8 @@ func (c *PendingCoordinator) Acquire(ctx context.Context, username string, meta 
 				metrics.PendingLeaseEvents.WithLabelValues(c.component, "acquire_error").Inc()
 			}
 			c.logLeaseEvent("error", "pending lease acquire execution failed", "username", trimmed, "error", attemptErr)
+			trace.AddRequestTag(ctx, "acquire_fail_reason", "execution_error")
+			trace.AddRequestTag(ctx, "fallback_strategy", "none")
 			return nil, attemptErr
 		}
 		setNXDuration := outcome.setDuration
@@ -1858,12 +2040,17 @@ func (c *PendingCoordinator) Acquire(ctx context.Context, username string, meta 
 					metrics.PendingLeaseEvents.WithLabelValues(c.component, "observe_error").Inc()
 				}
 				c.logLeaseEvent("error", "pending lease observe failed", "username", trimmed, "error", observeErr)
+				trace.AddRequestTag(ctx, "acquire_fail_reason", "observe_error")
+				trace.AddRequestTag(ctx, "fallback_strategy", "none")
 				return nil, observeErr
 			}
 			if c.shouldPromoteExpired(state) {
-				if _, promoteErr := c.promoteExpired(ctx, trimmed, state); promoteErr != nil {
+				promoted, promoteErr := c.promoteExpired(ctx, trimmed, state)
+				if promoteErr != nil {
+					err = promoteErr
 					return nil, promoteErr
 				}
+				promoteExpired = promoteExpired || promoted
 				updatedState, refreshedErr := c.Observe(ctx, trimmed)
 				if refreshedErr == nil {
 					state = updatedState
@@ -1897,7 +2084,18 @@ func (c *PendingCoordinator) Acquire(ctx context.Context, username string, meta 
 					fields = append(fields, "expired_reason", state.ExpiredReason)
 				}
 				c.logLeaseEvent("warn", "pending lease acquisition blocked by expired state", fields...)
-				return nil, &AcquireError{Reason: AcquireFailureConflict, State: state, QueueDepth: state.QueueDepth}
+				finalDetails = map[string]interface{}{
+					"username":            trimmed,
+					"acquire_result":      "expired_conflict",
+					"queue_depth_global":  state.QueueDepth,
+					"backpressure_level":  string(state.Backpressure),
+					"acquire_fail_reason": "expired_conflict",
+					"fallback_strategy":   "none",
+				}
+				trace.AddRequestTag(ctx, "acquire_fail_reason", "expired_conflict")
+				trace.AddRequestTag(ctx, "fallback_strategy", "none")
+				err = &AcquireError{Reason: AcquireFailureConflict, State: state, QueueDepth: state.QueueDepth}
+				return nil, err
 			}
 			if metrics.PendingLeaseEvents != nil {
 				metrics.PendingLeaseEvents.WithLabelValues(c.component, "acquire_conflict").Inc()
@@ -1914,7 +2112,19 @@ func (c *PendingCoordinator) Acquire(ctx context.Context, username string, meta 
 				c.recordQueueDepthMetrics(queueDepth, level)
 			}
 			c.logLeaseEvent("info", "pending lease acquire conflict", "username", trimmed, "owner", owner, "queue_depth", queueDepth, "backpressure", string(level))
-			return nil, &AcquireError{Reason: AcquireFailureConflict, State: state, QueueDepth: queueDepth}
+			finalDetails = map[string]interface{}{
+				"username":            trimmed,
+				"acquire_result":      "conflict",
+				"queue_depth_global":  queueDepth,
+				"lease_owner":         owner,
+				"backpressure_level":  string(level),
+				"acquire_fail_reason": "conflict",
+				"fallback_strategy":   "none",
+			}
+			trace.AddRequestTag(ctx, "acquire_fail_reason", "conflict")
+			trace.AddRequestTag(ctx, "fallback_strategy", "none")
+			err = &AcquireError{Reason: AcquireFailureConflict, State: state, QueueDepth: queueDepth}
+			return nil, err
 		}
 
 		queueDepth := outcome.queueDepth
@@ -1952,7 +2162,21 @@ func (c *PendingCoordinator) Acquire(ctx context.Context, username string, meta 
 				InstanceBackpressure: instanceLevelCurrent,
 				Raw:                  finalPayload,
 			}
-			return nil, &AcquireError{Reason: AcquireFailureBackpressure, State: state, QueueDepth: queueDepth}
+			finalDetails = map[string]interface{}{
+				"username":             trimmed,
+				"acquire_result":       "backpressure_reject_created",
+				"queue_depth_global":   queueDepth,
+				"queue_depth_user":     userQueueDepth,
+				"queue_depth_instance": instanceDepthCurrent,
+				"backpressure_level":   string(aggregateLevel),
+				"lease_owner":          ownerID,
+				"acquire_fail_reason":  "backpressure_reject",
+				"fallback_strategy":    "release_and_abort",
+			}
+			trace.AddRequestTag(ctx, "acquire_fail_reason", "backpressure_reject")
+			trace.AddRequestTag(ctx, "fallback_strategy", "release_and_abort")
+			err = &AcquireError{Reason: AcquireFailureBackpressure, State: state, QueueDepth: queueDepth}
+			return nil, err
 		}
 
 		fields := []interface{}{"username", trimmed, "owner", ownerID, "queue_depth", queueDepth, "backpressure", string(aggregateLevel), "global_backpressure", string(level), "lease_ttl_ms", c.cfg.LeaseTTL.Milliseconds(), "user_queue_depth", userQueueDepth, "user_backpressure", string(userLevelCurrent), "instance_queue_depth", instanceDepthCurrent, "instance_backpressure", string(instanceLevelCurrent)}
@@ -1991,27 +2215,61 @@ func (c *PendingCoordinator) Acquire(ctx context.Context, username string, meta 
 			Backpressure:   aggregateLevel,
 			Metadata:       meta,
 		}
-
+		finalDetails = map[string]interface{}{
+			"username":             trimmed,
+			"acquire_result":       "acquired",
+			"queue_depth_global":   queueDepth,
+			"queue_depth_user":     userQueueDepth,
+			"queue_depth_instance": instanceDepthCurrent,
+			"backpressure_level":   string(aggregateLevel),
+			"lease_owner":          ownerID,
+			"lease_ttl_ms":         leaseTTLMS,
+			"promote_expired":      promoteExpired,
+		}
+		trace.AddRequestTag(ctx, "pending_lease_id", ownerID)
+		if leaseTTLMS > 0 {
+			trace.AddRequestTag(ctx, "pending_lease_ttl_ms", leaseTTLMS)
+		}
 		return &AcquireResult{Lease: lease, SetNXDuration: setNXDuration}, nil
 	}
 
 	return nil, errors.New("pending lease acquisition retries exhausted")
 }
 
-func (c *PendingCoordinator) Release(ctx context.Context, username string, ownerID string) (time.Duration, error) {
+func (c *PendingCoordinator) Release(ctx context.Context, username string, ownerID string) (duration time.Duration, err error) {
 	if c == nil {
 		return 0, nil
 	}
+	ctx, span := startPendingSpan(ctx, "pending_release")
+	status := "success"
+	code := "0"
+	var details map[string]interface{}
+	releaseKey := PendingCreateKey(strings.TrimSpace(username))
+	defer func() {
+		if err != nil {
+			status = "error"
+			code = err.Error()
+		}
+		if details == nil {
+			details = make(map[string]interface{})
+		}
+		if releaseKey != "" {
+			details["lease_key"] = releaseKey
+		}
+		finishPendingSpan(span, status, code, details)
+	}()
 	if c.degradeActive(ctx) {
 		c.recordDegradeFallback("release", username)
 		if fallback := c.ensureFallback(); fallback != nil {
-			return fallback.Release(ctx, username, ownerID)
+			duration, err = fallback.Release(ctx, username, ownerID)
+			return duration, err
 		}
 		return 0, nil
 	}
 	if c.redis == nil {
 		if c.fallback != nil {
-			return c.fallback.Release(ctx, username, ownerID)
+			duration, err = c.fallback.Release(ctx, username, ownerID)
+			return duration, err
 		}
 		return 0, nil
 	}
@@ -2019,26 +2277,37 @@ func (c *PendingCoordinator) Release(ctx context.Context, username string, owner
 	if trimmed == "" {
 		return 0, nil
 	}
-	key := PendingCreateKey(trimmed)
-	if key == "" {
+	if releaseKey == "" {
 		return 0, nil
 	}
 
 	deleteCtx, cancel := c.newOpContext(ctx)
 	deleteStart := time.Now()
-	deleted, snapshot, err := c.deleteKeyWithOwner(deleteCtx, key, ownerID)
+	var deleted bool
+	var snapshot *pendingLeaseSnapshot
+	deleted, snapshot, err = c.deleteKeyWithOwner(deleteCtx, releaseKey, ownerID)
 	cancel()
-	deleteDuration := time.Since(deleteStart)
+	duration = time.Since(deleteStart)
 	metricErr := err
 	if errors.Is(err, redis.Nil) {
 		metricErr = nil
 	}
-	metrics.RecordRedisOperation("pending_lease_delete", deleteDuration.Seconds(), metricErr)
+	metrics.RecordRedisOperation("pending_lease_delete", duration.Seconds(), metricErr)
 	if errors.Is(err, redis.Nil) {
 		err = nil
 	}
 	if err != nil {
-		return deleteDuration, err
+		return duration, err
+	}
+
+	if details == nil {
+		details = make(map[string]interface{})
+	}
+	details["release_result"] = "deleted"
+	details["release_ms"] = duration.Milliseconds()
+	details["lease_owner"] = ownerID
+	if !deleted {
+		details["release_result"] = "missing"
 	}
 
 	var holdDuration time.Duration
@@ -2052,6 +2321,12 @@ func (c *PendingCoordinator) Release(ctx context.Context, username string, owner
 			c.logLeaseEvent("debug", "failed to parse pending lease acquire timestamp", "username", trimmed, "owner", ownerID, "error", parseErr)
 		}
 	}
+	fallbackDepth := int64(0)
+	fallbackUserDepth := int64(0)
+	if snapshot != nil {
+		fallbackDepth = snapshot.QueueDepth
+		fallbackUserDepth = snapshot.UserQueueDepth
+	}
 
 	if !deleted {
 		if snapshot != nil && snapshot.OwnerID != "" && ownerID != "" && snapshot.OwnerID != ownerID {
@@ -2059,30 +2334,40 @@ func (c *PendingCoordinator) Release(ctx context.Context, username string, owner
 				metrics.PendingLeaseEvents.WithLabelValues(c.component, "release_owner_mismatch").Inc()
 			}
 			c.logLeaseEvent("warn", "pending lease release skipped due to owner mismatch", "username", trimmed, "owner", ownerID, "current_owner", snapshot.OwnerID)
-			return deleteDuration, ErrPendingLeaseOwnerMismatch
+			err = ErrPendingLeaseOwnerMismatch
+			return duration, err
 		}
 		if metrics.PendingLeaseEvents != nil {
 			metrics.PendingLeaseEvents.WithLabelValues(c.component, "release_miss").Inc()
 		}
 		c.logLeaseEvent("debug", "pending lease release no-op", "username", trimmed, "owner", ownerID)
-		return deleteDuration, nil
+		details = map[string]interface{}{
+			"username":           trimmed,
+			"lease_owner":        ownerID,
+			"acquire_result":     "release_miss",
+			"queue_depth_global": fallbackDepth,
+		}
+		return duration, nil
 	}
 
 	if metrics.PendingLeaseActiveGauge != nil {
 		metrics.PendingLeaseActiveGauge.WithLabelValues(c.component).Dec()
 	}
-	fallbackDepth := int64(0)
-	fallbackUserDepth := int64(0)
-	if snapshot != nil {
-		fallbackDepth = snapshot.QueueDepth
-		fallbackUserDepth = snapshot.UserQueueDepth
+	details = map[string]interface{}{
+		"username":           trimmed,
+		"lease_owner":        ownerID,
+		"release_result":     "released",
+		"queue_depth_global": fallbackDepth,
+		"queue_depth_user":   fallbackUserDepth,
+		"hold_duration_ms":   holdDuration.Milliseconds(),
 	}
 	remaining, decErr := c.decrementCounterWithRetry(ctx, c.cfg.MetricsKey, "release", fallbackDepth, "username", trimmed, "owner", ownerID)
 	if decErr != nil {
 		if metrics.PendingLeaseActiveGauge != nil {
 			metrics.PendingLeaseActiveGauge.WithLabelValues(c.component).Inc()
 		}
-		return deleteDuration, decErr
+		err = decErr
+		return duration, err
 	}
 	userRemaining, userDecErr := c.decrementUserQueueDepth(ctx, trimmed, fallbackUserDepth)
 	if userDecErr != nil {
@@ -2098,7 +2383,7 @@ func (c *PendingCoordinator) Release(ctx context.Context, username string, owner
 		c.storeUserSample(trimmed, userRemaining, userLevelAfter)
 	}
 	c.storeGlobalSample(remaining, newLevel)
-	aggregateAfterRelease := mergeBackpressureLevels(newLevel, userLevelAfter, newInstanceLevel)
+	aggregateAfterRelease := c.decideAggregateLevel(newLevel, userLevelAfter, newInstanceLevel, time.Now())
 	c.recordQueueDepthMetrics(remaining, newLevel)
 	if metrics.PendingLeaseEvents != nil {
 		metrics.PendingLeaseEvents.WithLabelValues(c.component, "release_success").Inc()
@@ -2130,8 +2415,19 @@ func (c *PendingCoordinator) Release(ctx context.Context, username string, owner
 	if err := c.writeReleaseSnapshot(ctx, trimmed, snapshot, ownerID, remaining); err != nil {
 		c.logLeaseEvent("warn", "write release snapshot failed", "username", trimmed, "error", err)
 	}
-
-	return deleteDuration, nil
+	details = map[string]interface{}{
+		"username":                 trimmed,
+		"lease_owner":              ownerID,
+		"acquire_result":           "released",
+		"queue_depth_initial":      fallbackDepth,
+		"queue_depth_remaining":    remaining,
+		"user_queue_depth_initial": fallbackUserDepth,
+		"user_queue_depth":         userRemaining,
+		"backpressure_level":       string(newLevel),
+		"aggregate_backpressure":   string(aggregateAfterRelease),
+	}
+	trace.AddRequestTag(ctx, "pending_lease_id", ownerID)
+	return duration, nil
 }
 
 func (c *PendingCoordinator) Heartbeat(ctx context.Context, username string, ownerID string) error {
@@ -2756,6 +3052,7 @@ func (c *PendingCoordinator) deleteKeyWithOwner(ctx context.Context, key, ownerI
 	return deleted, snapshotPtr, deleteErr
 }
 
+// classifyBackpressure 根据当前配置和队列深度分类全局背压等级
 func (c *PendingCoordinator) classifyBackpressure(depth int64) BackpressureLevel {
 	return classifyDepthWithProfile(depth, c.currentProfile(), c.cfg.BackpressureSoftLimit, c.cfg.BackpressureHardLimit)
 }
@@ -2995,6 +3292,16 @@ func (c *PendingCoordinator) UpdateBackpressureProfile(profile BackpressureDelay
 	if c == nil {
 		return
 	}
+	ctx := context.Background()
+	ctx, span := startPendingSpan(ctx, "pending_update_backpressure_profile")
+	status := "success"
+	code := "0"
+	defer func() {
+		finishPendingSpan(span, status, code, map[string]interface{}{
+			"elevated_buckets": len(profile.Elevated),
+			"severe_buckets":   len(profile.Severe),
+		})
+	}()
 	profile.ensureDefaults(c.cfg.BackpressureSoftLimit, c.cfg.BackpressureHardLimit, c.cfg.ElevatedDelayBase, c.cfg.ElevatedDelayMax, c.cfg.SevereDelayBase, c.cfg.SevereDelayMax)
 	cloned := profile.clone()
 	c.cfg.BackpressureDelayProfile = cloned
@@ -3261,23 +3568,71 @@ func (c *PendingCoordinator) recordQueueDepthMetrics(queueDepth int64, level Bac
 	}
 }
 
-// SampleQueueDepth 返回当前实例的瞬间队列深度与背压等级。
-func (c *PendingCoordinator) SampleQueueDepth(ctx context.Context) (int64, BackpressureLevel, error) {
+// SampleBackpressure 采样当前实例的背压状态。
+// username 可选，指定用户以采样用户级队列深度与	背压等级。
+// 返回值包含各层队列深度与背压等级，以及综合背压等级。
+/*
+采样频率是按请求触发的，但有一个很短的缓存窗口：
+• SampleBackpressure 每次请求都会走采样逻辑。
+• 不过全局/用户深度有 sampleCacheTTL（默认约 BackpressureWindow/50，最小 50ms、最大 150ms），在 TTL 内如果缓存是非背压（none）则直接复用，不会再打 Redis；有背压或过期则立刻重新采样。
+• 配置入口：BackpressureWindow 决定 sampleCacheTTL，不能直接配置更大/更小；如果要完全每次采样，可以把 BackpressureWindow 设置得更小让 TTL 逼近 50ms；如果想放大缓存，目前没有独立开关，需要改代码或放宽 BackpressureWindow（不推荐）。
+
+*/
+func (c *PendingCoordinator) SampleBackpressure(ctx context.Context, username string) BackpressureSample {
+	trimmed := strings.TrimSpace(username)
+	sample := BackpressureSample{Username: trimmed, SampledAt: time.Now(), Source: "live"}
+	//获取各层队列深度与背压等级(全局)
+	sample.GlobalDepth, sample.GlobalLevel, sample.GlobalErr = c.SampleQueueDepth(ctx)
+	//获取各层队列深度与背压等级(用户)
+	if trimmed != "" {
+		sample.UserDepth, sample.UserLevel, sample.UserErr = c.SampleUserQueueDepth(ctx, trimmed)
+	}
+	//获取各层队列深度与背压等级(实例)
+	sample.InstanceDepth, sample.InstanceLevel = c.sampleInstanceBackpressure()
+	sample.AggregateLevel = c.decideAggregateLevel(sample.GlobalLevel, sample.UserLevel, sample.InstanceLevel, sample.SampledAt)
+	if sample.GlobalErr != nil || sample.UserErr != nil {
+		sample.AggregateLevel = mergeBackpressureLevels(sample.AggregateLevel, BackpressureElevated)
+		sample.Source = "partial"
+	}
+	return sample
+}
+
+// SampleQueueDepth 采样当前全局队列深度与背压等级。
+func (c *PendingCoordinator) SampleQueueDepth(ctx context.Context) (depth int64, level BackpressureLevel, err error) {
 	if c == nil {
 		return 0, BackpressureNone, nil
 	}
+	ctx, span := startPendingSpan(ctx, "pending_sample_queue_depth")
+	status := "success"
+	code := "0"
+	defer func() {
+		if err != nil {
+			status = "error"
+			code = err.Error()
+		}
+		finishPendingSpan(span, status, code, map[string]interface{}{
+			"queue_depth":        depth,
+			"backpressure_level": string(level),
+		})
+	}()
 	//如果降级模式激活，则直接走降级逻辑
 	if c.degradeActive(ctx) {
 		c.recordDegradeFallback("sample_queue_depth", "")
 		if fallback := c.ensureFallback(); fallback != nil {
-			return fallback.SampleQueueDepth(ctx)
+			depth, level, err = fallback.SampleQueueDepth(ctx)
+			trace.AddRequestTag(ctx, "queue_depth_global", depth)
+			trace.AddRequestTag(ctx, "backpressure_level", string(level))
+			return depth, level, err
 		}
 		return 0, BackpressureNone, nil
 	}
 	//如果没有redis客户端，则直接走降级逻辑
 	if c.redis == nil {
 		if c.fallback != nil {
-			return c.fallback.SampleQueueDepth(ctx)
+			depth, level, err = c.fallback.SampleQueueDepth(ctx)
+			trace.AddRequestTag(ctx, "queue_depth_global", depth)
+			trace.AddRequestTag(ctx, "backpressure_level", string(level))
+			return depth, level, err
 		}
 		return 0, BackpressureNone, nil
 	}
@@ -3288,11 +3643,13 @@ func (c *PendingCoordinator) SampleQueueDepth(ctx context.Context) (int64, Backp
 	if c.sampleCacheTTL > 0 {
 		if cached, ok := c.loadGlobalSample(); ok && cached != nil {
 			now := time.Now()
+			//如果缓存未过期且无背压，则直接返回缓存值
 			if cached.level == BackpressureNone && cached.expiresAt.After(now) {
 				return cached.depth, cached.level, nil
 			}
 		}
 	}
+
 	sampleCtx, cancel := c.newOpContext(ctx)
 	defer cancel()
 	start := time.Now()
@@ -3301,6 +3658,7 @@ func (c *PendingCoordinator) SampleQueueDepth(ctx context.Context) (int64, Backp
 	if errors.Is(err, redis.Nil) {
 		metricErr = nil
 	}
+	//记录redis操作指标,业务打点
 	metrics.RecordRedisOperation("pending_lease_metrics_get", time.Since(start).Seconds(), metricErr)
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
@@ -3316,7 +3674,7 @@ func (c *PendingCoordinator) SampleQueueDepth(ctx context.Context) (int64, Backp
 	if depth < 0 {
 		depth = 0
 	}
-	level := c.classifyBackpressure(depth)
+	level = c.classifyBackpressure(depth)
 	c.storeGlobalSample(depth, level)
 	c.recordQueueDepthMetrics(depth, level)
 	return depth, level, nil
@@ -3474,6 +3832,59 @@ func mergeBackpressureLevels(levels ...BackpressureLevel) BackpressureLevel {
 	return result
 }
 
+// decideAggregateLevel applies optional isolation和防抖策略；未开启时行为等同 mergeBackpressureLevels。
+func (c *PendingCoordinator) decideAggregateLevel(global, user, instance BackpressureLevel, now time.Time) BackpressureLevel {
+	agg := mergeBackpressureLevels(global, user, instance)
+
+	// 实例/用户隔离：仅当全局和其它维度非 severe 时，将局部 severe 降级为 elevated。
+	if agg == BackpressureSevere {
+		if c != nil && c.cfg.IsolateInstanceSevere && global != BackpressureSevere && user != BackpressureSevere {
+			agg = BackpressureElevated
+		}
+		if c != nil && c.cfg.IsolateUserSevere && global != BackpressureSevere && instance != BackpressureSevere {
+			agg = BackpressureElevated
+		}
+	}
+
+	// 等级防抖：在窗口内切换则保留上一次等级；需观测到新等级持续超过窗口才切换。
+	hold := time.Duration(0)
+	if c != nil {
+		hold = c.cfg.BackpressureAntiShakeInterval
+	}
+	if hold <= 0 {
+		return agg
+	}
+
+	c.decisionMu.Lock()
+	defer c.decisionMu.Unlock()
+	if c.lastAggregateLevel == "" {
+		c.lastAggregateLevel = agg
+		c.lastAggregateAt = now
+		c.pendingAggregateLevel = ""
+		c.pendingAggregateSince = time.Time{}
+		return agg
+	}
+	if agg == c.lastAggregateLevel {
+		c.lastAggregateAt = now
+		c.pendingAggregateLevel = ""
+		c.pendingAggregateSince = time.Time{}
+		return agg
+	}
+	if c.pendingAggregateLevel != agg {
+		c.pendingAggregateLevel = agg
+		c.pendingAggregateSince = now
+		return c.lastAggregateLevel
+	}
+	if !c.pendingAggregateSince.IsZero() && now.Sub(c.pendingAggregateSince) >= hold {
+		c.lastAggregateLevel = agg
+		c.lastAggregateAt = now
+		c.pendingAggregateLevel = ""
+		c.pendingAggregateSince = time.Time{}
+		return agg
+	}
+	return c.lastAggregateLevel
+}
+
 func (c *PendingCoordinator) instanceQueueDepth() int64 {
 	if c == nil {
 		return 0
@@ -3543,6 +3954,7 @@ func (c *PendingCoordinator) fallbackThrottle(scope string) {
 	time.Sleep(delay)
 }
 
+// SampleUserQueueDepth 返回指定用户的瞬间队列深度与背压等级。
 func (c *PendingCoordinator) SampleUserQueueDepth(ctx context.Context, username string) (int64, BackpressureLevel, error) {
 	if c == nil {
 		return 0, BackpressureNone, nil

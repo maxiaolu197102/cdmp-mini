@@ -41,6 +41,7 @@ func (o *Options) Complete() {
 	o.MetaOptions.Complete()
 	o.KafkaOptions.Complete()
 	o.AuditOptions.Complete()
+	o.RedisOptions.Complete()
 
 }
 

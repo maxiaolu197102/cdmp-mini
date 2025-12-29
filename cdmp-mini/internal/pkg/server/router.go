@@ -156,15 +156,29 @@ func (g *GenericAPIServer) installApiRoutes() error {
 		return err
 	}
 	// 写入类接口使用分布式写限流 + 滞后保护，保护后端（可按需调整阈值）
-	writeLimit := common.WriteRateLimiter(g.redis, g.options.ServerRunOptions.WriteRateLimit, 1*time.Minute)
-
+	/*
+		限流（WriteRateLimiter/LoginRateLimiter）：按固定窗口计数（Redis INCR/EXPIRE + 本地兜底），约束“单位时间请求总量”，避免突发打爆后端。信号是请求次数。
+		PendingCoordinator：围绕“待处理租约/队列深度”做背压采样、延迟/拒绝决策，管理租约生命周期（acquire/heartbeat/release），信号是队列深度、背压等级（全局/用户/实例）。
+		Lag protect（LagProtectMiddleware）：在请求入口做“滞后保护”拦截，复用 PendingCoordinator 的样本（背压等级、队列深度），对严重背压直接拒绝/延迟；自身不产生命令，只消费 PendingCoordinator 的决策。
+		简化理解：限流管“次数”；PendingCoordinator管“队列/背压”；lag protect是“入口护栏”，用 PendingCoordinator 的结果来决定放行、延迟或拒绝。
+	*/
 	var pendingCoordinator *usercache.PendingCoordinator
 	if g.userService != nil {
 		pendingCoordinator = g.userService.PendingCoordinator()
 	}
-	lagProtect := common.LagProtectMiddleware(common.LagProtectOptions{
-		Coordinator: pendingCoordinator,
+
+	hooks := common.NewTrafficHooks(common.TrafficHookConfig{
+		Coordinator:            pendingCoordinator,
+		Redis:                  g.redis,
+		Component:              "user_service",
+		WriteLimit:             g.options.ServerRunOptions.WriteRateLimit,
+		WriteLimitGlobal:       g.options.ServerRunOptions.WriteRateLimitGlobal,
+		WriteLimitGlobalFactor: g.options.ServerRunOptions.WriteRateLimitGlobalFactor,
+		WriteWindow:            1 * time.Minute,
 	})
+	writeLimit := hooks.WriteLimit
+	lagProtect := hooks.LagProtect
+	pendingCoordinator = hooks.Coordinator
 
 	v1 := g.Group("/v1")
 	{
@@ -177,10 +191,11 @@ func (g *GenericAPIServer) installApiRoutes() error {
 		)
 
 		//userv1.DELETE(":name", userController.Delete)
-		userv1.DELETE(":name/force", lagProtect, writeLimit, userController.ForceDelete)
-		userv1.DELETE("", lagProtect, writeLimit, userController.DeleteCollection)
-		userv1.POST("", lagProtect, writeLimit, userController.Create)
-		userv1.PUT(":name", lagProtect, writeLimit, userController.Update)
+		// 先令牌/固定窗限流，再做滞后保护采样，减少高开销采样次数
+		userv1.DELETE(":name/force", writeLimit, lagProtect, userController.ForceDelete)
+		userv1.DELETE("", writeLimit, lagProtect, userController.DeleteCollection)
+		userv1.POST("", writeLimit, lagProtect, userController.Create)
+		userv1.PUT(":name", writeLimit, lagProtect, userController.Update)
 		userv1.GET(":name", userController.Get)
 		userv1.PUT(":name/change-password", userController.ChangePassword)
 		userv1.GET("", userController.List)
@@ -194,12 +209,13 @@ func (g *GenericAPIServer) installApiRoutes() error {
 			middleware.Validation(g.options),
 			business.UserServiceMiddleware(),
 		)
-		apiUsers.PUT(":name", lagProtect, writeLimit, userController.Update)
-		apiUsers.PUT(":name/profile", lagProtect, writeLimit, userController.UpdateProfile)
-		apiUsers.PATCH(":name/password", lagProtect, writeLimit, userController.PatchPassword)
-		apiUsers.PATCH(":name/email", lagProtect, writeLimit, userController.PatchEmail)
-		apiUsers.PATCH(":name/phone", lagProtect, writeLimit, userController.PatchPhone)
-		apiUsers.PATCH("", lagProtect, writeLimit, userController.PatchCollection)
+		// 写路径统一“限流优先、滞后保护其次”
+		apiUsers.PUT(":name", writeLimit, lagProtect, userController.Update)
+		apiUsers.PUT(":name/profile", writeLimit, lagProtect, userController.UpdateProfile)
+		apiUsers.PATCH(":name/password", writeLimit, lagProtect, userController.PatchPassword)
+		apiUsers.PATCH(":name/email", writeLimit, lagProtect, userController.PatchEmail)
+		apiUsers.PATCH(":name/phone", writeLimit, lagProtect, userController.PatchPhone)
+		apiUsers.PATCH("", writeLimit, lagProtect, userController.PatchCollection)
 	}
 
 	return nil

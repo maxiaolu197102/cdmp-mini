@@ -25,6 +25,8 @@ import (
 )
 
 const operationInlineProcessBudget = 150 * time.Millisecond
+const userOperationTopic = "user.operations.v1"
+const userOperationCreate = "create"
 
 // Create 处理用户创建请求的主流程
 //
@@ -105,8 +107,45 @@ func (u *UserService) Create(ctx context.Context, user *v1.User, opts metav1.Cre
 		return errors.WithCode(code.ErrInvalidParameter, "构建请求失败: %v", err)
 	}
 
-	if _, err = u.operationPipeline.Submit(ctx, env); err != nil {
-		log.Errorw("提交用户创建操作失败", "operation", env.ID, "error", err)
+	enqueueCtx, enqueueSpan := trace.StartSpan(ctx, "operation-pipeline", "operation_enqueue")
+	if enqueueCtx != nil {
+		ctx = enqueueCtx
+		trace.AddRequestTag(ctx, "queue_name", operationResourceUsers)
+		trace.AddRequestTag(ctx, "operation_id", env.ID)
+	}
+
+	// 在 Redis 队列处于降级/不可用状态时，优先直接拒绝入队，
+	// 通过清晰错误码提示调用方进行幂等重试，而不是在服务端静默切换到内存队列。
+	if u.isRedisDegradeActive() {
+		if enqueueSpan != nil {
+			trace.EndSpan(enqueueSpan, "error", strconv.Itoa(code.ErrServerBusy), map[string]interface{}{
+				"queue_name":   operationResourceUsers,
+				"operation_id": env.ID,
+				"queue_ticket": nil,
+				"degraded":     true,
+			})
+		}
+		log.Errorw("用户创建操作队列处于降级状态，拒绝入队", "operation", env.ID)
+		return errors.WithCode(code.ErrServerBusy, "创建队列暂不可用，请稍后重试")
+	}
+
+	ticket, submitErr := u.operationPipeline.Submit(ctx, env)
+	if enqueueSpan != nil {
+		status := "success"
+		codeStr := strconv.Itoa(code.ErrSuccess)
+		if submitErr != nil {
+			status = "error"
+			codeStr = submitErr.Error()
+		}
+		trace.EndSpan(enqueueSpan, status, codeStr, map[string]interface{}{
+			"queue_name":   operationResourceUsers,
+			"operation_id": env.ID,
+			"queue_ticket": safeQueueTicket(ticket),
+		})
+	}
+
+	if submitErr != nil {
+		log.Errorw("提交用户创建操作失败", "operation", env.ID, "error", submitErr)
 		return errors.WithCode(code.ErrServerBusy, "提交创建请求失败")
 	}
 
@@ -148,10 +187,11 @@ func (u *UserService) initCreatePipeline() {
 //
 // returns: 带有创建状态的新上下文及结束函数。
 func (u *UserService) createBeginHook(ctx context.Context, user *v1.User) (context.Context, func(error)) {
-	spanCtx, span := trace.StartSpan(ctx, "user-service", "create")
+	spanCtx, span := trace.StartSpan(ctx, "user-service", "create_begin_hook")
 	// createState adds a per-request degraded flag; it remains false until MarkCreateDegraded marks the request.
 	spanCtx = userctx.WithCreateState(spanCtx)
 	trace.AddRequestTag(spanCtx, "username", user.Name)
+	trace.AddRequestTag(spanCtx, "create_degraded", false)
 
 	businessCode := strconv.Itoa(code.ErrSuccess)
 	spanStatus := "success"
@@ -176,8 +216,18 @@ func (u *UserService) createBeginHook(ctx context.Context, user *v1.User) (conte
 // normalizeUserForCreate 统一规整联系方式字段。
 // 归一化邮箱、手机号，确保后续缓存键一致
 // param user: 当前待创建的用户。
-func (u *UserService) normalizeUserForCreate(user *v1.User) {
+func (u *UserService) normalizeUserForCreate(ctx context.Context, user *v1.User) {
+	ctx, span := trace.StartSpan(ctx, "user-service", "normalize_user_for_create")
+	status := "success"
+	codeStr := strconv.Itoa(code.ErrSuccess)
+	defer func() {
+		trace.EndSpan(span, status, codeStr, map[string]interface{}{
+			"username": userNameSafe(user),
+		})
+	}()
 	if user == nil {
+		status = "error"
+		codeStr = strconv.Itoa(code.ErrInvalidParameter)
 		return
 	}
 	user.Email = usercache.NormalizeEmail(user.Email)
@@ -190,7 +240,23 @@ func (u *UserService) normalizeUserForCreate(user *v1.User) {
 // param user: 当前待创建的用户。
 //
 // returns: 成功返回 nil，失败时返回 ErrEncrypt 或相关错误。
-func (u *UserService) prepareUserForCreate(ctx context.Context, user *v1.User) error {
+func (u *UserService) prepareUserForCreate(ctx context.Context, user *v1.User) (err error) {
+	ctx, span := trace.StartSpan(ctx, "user-service", "prepare_user_for_create")
+	status := "success"
+	codeStr := strconv.Itoa(code.ErrSuccess)
+	defer func(err *error) {
+		if err != nil && *err != nil {
+			status = "error"
+			if c := errors.GetCode(*err); c != 0 {
+				codeStr = strconv.Itoa(c)
+			} else {
+				codeStr = strconv.Itoa(code.ErrUnknown)
+			}
+		}
+		trace.EndSpan(span, status, codeStr, map[string]interface{}{
+			"username": userNameSafe(user),
+		})
+	}(&err)
 	if user == nil {
 		return errors.WithCode(code.ErrInvalidParameter, "用户信息为空")
 	}
@@ -201,9 +267,26 @@ func (u *UserService) prepareUserForCreate(ctx context.Context, user *v1.User) e
 		if u.Options != nil && u.Options.ServerRunOptions != nil {
 			hashCfg = u.Options.ServerRunOptions.HashConfig()
 		}
+		hashAlgo := hashCfg.Algorithm
+		if hashAlgo == "" {
+			hashAlgo = auth.AlgorithmBcrypt
+		}
+		hashSpanStart := time.Now()
+		_, hashSpan := trace.StartSpan(ctx, "user-service", "encrypt_password")
+		hashStatus := "success"
+		hashCode := strconv.Itoa(code.ErrSuccess)
+		defer func() {
+			trace.EndSpan(hashSpan, hashStatus, hashCode, map[string]interface{}{
+				"username":    userNameSafe(user),
+				"hash_algo":   hashAlgo,
+				"duration_ms": time.Since(hashSpanStart).Milliseconds(),
+			})
+		}()
 		hashed, hashErr := auth.EncryptWithConfig(user.Password, hashCfg)
 		u.recordUserCreateStep(ctx, "encrypt_password", "password", user.Name, time.Since(passwordStart), hashErr)
 		if hashErr != nil {
+			hashStatus = "error"
+			hashCode = strconv.Itoa(code.ErrEncrypt)
 			log.Errorf("用户密码加密失败: username=%s, err=%v", user.Name, hashErr)
 			return errors.WithCode(code.ErrEncrypt, "用户密码加密失败")
 		}
@@ -212,7 +295,8 @@ func (u *UserService) prepareUserForCreate(ctx context.Context, user *v1.User) e
 		u.recordUserCreateStep(ctx, "encrypt_password", "password", user.Name, time.Since(passwordStart), nil)
 	}
 	// 预热缓存
-	u.ensureContactCacheReady()
+	trace.AddRequestTag(ctx, "contact_cache_ready", u.contactCacheReady.Load())
+	u.ensureContactCacheReady(ctx)
 	return nil
 }
 
@@ -266,7 +350,25 @@ func (u *UserService) ensureUserUnique(ctx context.Context, user *v1.User) (crea
 // param preflight: 唯一性预检结果。
 //
 // returns: 若已存在返回实体指针，未命中返回 nil，异常时返回 error。
-func (u *UserService) resolveUserExistence(ctx context.Context, user *v1.User, preflight createpipeline.PreflightResult[*v1.User]) (*v1.User, error) {
+func (u *UserService) resolveUserExistence(ctx context.Context, user *v1.User, preflight createpipeline.PreflightResult[*v1.User]) (existing *v1.User, err error) {
+	ctx, span := trace.StartSpan(ctx, "user-service", "resolve_user_existence")
+	status := "success"
+	codeStr := strconv.Itoa(code.ErrSuccess)
+	defer func(err *error) {
+		if err != nil && *err != nil {
+			status = "error"
+			if c := errors.GetCode(*err); c != 0 {
+				codeStr = strconv.Itoa(c)
+			} else {
+				codeStr = strconv.Itoa(code.ErrUnknown)
+			}
+		}
+		trace.EndSpan(span, status, codeStr, map[string]interface{}{
+			"username":     userNameSafe(user),
+			"prechecked":   preflight.UsernameChecked,
+			"conflict_len": len(preflight.Conflicts),
+		})
+	}(&err)
 	if preflight.Conflicts != nil {
 		if existing := preflight.Conflicts["username"]; existing != nil {
 			return existing, nil
@@ -281,11 +383,11 @@ func (u *UserService) resolveUserExistence(ctx context.Context, user *v1.User, p
 
 	checkCtx, span := trace.StartSpan(ctx, "user-service", "check_user_exist")
 	start := time.Now()
-	existing, err := u.checkUserExist(checkCtx, user.Name, true)
+	existing, err = u.checkUserExist(checkCtx, user.Name, true)
 	duration := time.Since(start)
 
-	status := "success"
-	codeStr := strconv.Itoa(code.ErrSuccess)
+	status = "success"
+	codeStr = strconv.Itoa(code.ErrSuccess)
 	if err != nil {
 		status = "error"
 		if c := errors.GetCode(err); c != 0 {
@@ -315,7 +417,16 @@ func (u *UserService) resolveUserExistence(ctx context.Context, user *v1.User, p
 // param existing: 已存在的用户实体。
 //
 // returns: 冲突时返回 ErrUserAlreadyExist，其他情况返回 nil。
-func (u *UserService) handleUserExisting(user *v1.User, existing *v1.User) error {
+func (u *UserService) handleUserExisting(ctx context.Context, user *v1.User, existing *v1.User) error {
+	ctx, span := trace.StartSpan(ctx, "user-service", "handle_user_existing")
+	defer func() {
+		trace.EndSpan(span, "success", strconv.Itoa(code.ErrSuccess), map[string]interface{}{
+			"username":       userNameSafe(user),
+			"existing_user":  userNameSafe(existing),
+			"existing_nil":   existing == nil,
+			"prevent_marker": existing != nil && existing.Name == RATE_LIMIT_PREVENTION,
+		})
+	}()
 	if existing == nil {
 		return nil
 	}
@@ -364,7 +475,7 @@ func (u *UserService) markUserPendingForCreate(ctx context.Context, user *v1.Use
 		"redis_refresh_ms": refreshDuration.Milliseconds(),
 	})
 	u.recordUserCreateStep(ctx, "mark_pending_create", "redis", user.Name, duration, err)
-
+	//处理标记错误和降级逻辑
 	if err != nil {
 		trace.AddRequestTag(ctx, "pending_marker_error", err.Error())
 		if shouldDegradeForError(err) {
@@ -394,6 +505,16 @@ func (u *UserService) markUserPendingForCreate(ctx context.Context, user *v1.Use
 // param user: 当前待创建的用户。
 // param pending: 占位结果元信息。
 func (u *UserService) afterUserPending(ctx context.Context, user *v1.User, pending createpipeline.PendingResult) {
+	ctx, span := trace.StartSpan(ctx, "user-service", "after_user_pending")
+	defer func() {
+		trace.EndSpan(span, "success", strconv.Itoa(code.ErrSuccess), map[string]interface{}{
+			"username":        userNameSafe(user),
+			"pending_created": pending.Created,
+			"pending_refresh": pending.Refreshed,
+			"pending_ttl_ms":  pending.TTL.Milliseconds(),
+			"pending_backend": pending.Backend,
+		})
+	}()
 	trace.AddRequestTag(ctx, "pending_marker_new", pending.Created)
 	if pending.Refreshed {
 		trace.AddRequestTag(ctx, "pending_marker_refreshed", true)
@@ -460,7 +581,10 @@ func (u *UserService) sendUserCreateMessage(ctx context.Context, user *v1.User) 
 	}
 
 	trace.EndSpan(span, status, codeStr, map[string]interface{}{
-		"username": user.Name,
+		"username":     user.Name,
+		"topic":        userOperationTopic,
+		"operation":    userOperationCreate,
+		"account_type": userctx.AccountType(ctx),
 	})
 
 	if errKafka != nil {
@@ -468,6 +592,18 @@ func (u *UserService) sendUserCreateMessage(ctx context.Context, user *v1.User) 
 	}
 
 	return nil
+}
+
+func safeQueueTicket(ticket *operation.QueueTicket) map[string]interface{} {
+	if ticket == nil {
+		return map[string]interface{}{}
+	}
+	return map[string]interface{}{
+		"ticket_id":         ticket.TicketID,
+		"operation_id":      ticket.OperationID,
+		"queue_position":    ticket.QueuePosition,
+		"estimated_wait_ms": ticket.EstimatedWait.Milliseconds(),
+	}
 }
 
 // deriveUserAccountType 从用户实体中推导账户类型标签。
@@ -495,4 +631,11 @@ func deriveUserAccountType(user *v1.User) string {
 		return "inactive"
 	}
 	return "standard"
+}
+
+func userNameSafe(user *v1.User) string {
+	if user == nil {
+		return ""
+	}
+	return strings.TrimSpace(user.Name)
 }

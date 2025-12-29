@@ -44,11 +44,11 @@ type PendingResult struct {
 type PipelineConfig[T any] struct {
 	Name              string
 	Begin             func(ctx context.Context, entity T) (context.Context, func(error))
-	Normalize         func(entity T)
+	Normalize         func(ctx context.Context, entity T)
 	BeforeUnique      func(ctx context.Context, entity T) error
 	EnsureUnique      func(ctx context.Context, entity T) (PreflightResult[T], error)
 	ResolveExistence  func(ctx context.Context, entity T, preflight PreflightResult[T]) (T, error)
-	HandleExisting    func(entity T, existing T) error
+	HandleExisting    func(ctx context.Context, entity T, existing T) error
 	MarkPending       func(ctx context.Context, entity T) (PendingResult, error)
 	AfterPending      func(ctx context.Context, entity T, pending PendingResult)
 	SendCreateMessage func(ctx context.Context, entity T) error
@@ -98,7 +98,10 @@ func (p *Pipeline[T]) Execute(ctx context.Context, entity T) (err error) {
 		ctx, end = p.cfg.Begin(ctx, entity)
 	}
 	if end != nil {
-		defer end(err)
+		// 使用闭包捕获具名返回值 err，确保 end 看到的是最终错误结果。
+		defer func() {
+			end(err)
+		}()
 	}
 
 	defer func() {
@@ -108,7 +111,7 @@ func (p *Pipeline[T]) Execute(ctx context.Context, entity T) (err error) {
 	}()
 
 	if p.cfg.Normalize != nil {
-		p.cfg.Normalize(entity)
+		p.cfg.Normalize(ctx, entity)
 	}
 
 	//密码判断和联系人预热
@@ -133,7 +136,7 @@ func (p *Pipeline[T]) Execute(ctx context.Context, entity T) (err error) {
 	}
 
 	if p.cfg.HandleExisting != nil {
-		if err = p.cfg.HandleExisting(entity, existing); err != nil {
+		if err = p.cfg.HandleExisting(ctx, entity, existing); err != nil {
 			return err
 		}
 	}

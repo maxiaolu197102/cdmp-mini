@@ -17,6 +17,7 @@ import (
 	createproducer "github.com/maxiaolu1981/cretem/cdmp-mini/internal/common/producer/create"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/code"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/metrics"
+	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/middleware/common"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/options"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/ratelimiter"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/server/producer"
@@ -185,6 +186,13 @@ func (p *UserProducer) emitProducerDeliveryTrace(meta *producerMetadata, msg *sa
 	}
 
 	spanOperation := fmt.Sprintf("broker_ack_%s", operationLabel)
+	nowTs := meta.enqueueFinish
+	if nowTs.IsZero() {
+		nowTs = meta.ackAt
+	}
+	if nowTs.IsZero() {
+		nowTs = time.Now()
+	}
 	_, ctx := trace.NewDetached(trace.Options{
 		TraceID:         traceID,
 		Service:         "iam-apiserver",
@@ -193,13 +201,16 @@ func (p *UserProducer) emitProducerDeliveryTrace(meta *producerMetadata, msg *sa
 		Phase:           trace.PhaseAsync,
 		Method:          "KAFKA",
 		Path:            meta.topic,
-		Now:             time.Now(),
+		Now:             nowTs,
 		DisableLogging:  true,
 		ForceLogOnError: true,
 	})
 
 	trace.AddRequestTag(ctx, "topic", meta.topic)
 	trace.AddRequestTag(ctx, "operation", operationLabel)
+	if channel := resolveChannelFromTopic(meta.topic); channel != "" {
+		trace.AddRequestTag(ctx, "channel", channel)
+	}
 	trace.AddRequestTag(ctx, "delivery_latency_ms", float64(total.Milliseconds()))
 	trace.AddRequestTag(ctx, "enqueue_wait_ms", float64(enqueueWait.Milliseconds()))
 	trace.AddRequestTag(ctx, "broker_ack_ms", float64(brokerAck.Milliseconds()))
@@ -221,12 +232,20 @@ func (p *UserProducer) emitProducerDeliveryTrace(meta *producerMetadata, msg *sa
 	}
 
 	spanCtx, span := trace.StartSpanWithParent(ctx, "kafka-producer", "broker_ack", meta.parentSpanID)
+	if span != nil {
+		if !meta.enqueueFinish.IsZero() {
+			span.StartTime = meta.enqueueFinish
+		} else if span.StartTime.IsZero() {
+			span.StartTime = nowTs
+		}
+	}
 	if sendErr == nil {
 		trace.ExpectAsync(ctx, time.Now().Add(5*time.Second))
 	}
 	details := map[string]interface{}{
 		"topic":             meta.topic,
 		"operation":         operationLabel,
+		"channel":           resolveChannelFromTopic(meta.topic),
 		"latency_ms":        float64(total) / float64(time.Millisecond),
 		"enqueue_wait_ms":   float64(enqueueWait) / float64(time.Millisecond),
 		"broker_ack_ms":     float64(brokerAck) / float64(time.Millisecond),
@@ -242,6 +261,11 @@ func (p *UserProducer) emitProducerDeliveryTrace(meta *producerMetadata, msg *sa
 		}
 		if msg.Offset >= 0 {
 			details["offset"] = msg.Offset
+		}
+		if msg.Key != nil {
+			if encodedKey, err := msg.Key.Encode(); err == nil {
+				details["message_key"] = string(encodedKey)
+			}
 		}
 	}
 
@@ -259,7 +283,7 @@ func (p *UserProducer) emitProducerDeliveryTrace(meta *producerMetadata, msg *sa
 		}
 	}
 
-	trace.EndSpan(span, status, codeStr, details)
+	trace.EndSpanAt(span, meta.ackAt, status, codeStr, details)
 	trace.RecordOutcome(spanCtx, codeStr, message, status, 0)
 	trace.Complete(spanCtx)
 }
@@ -279,17 +303,41 @@ func injectTraceHeader(ctx context.Context, msg *sarama.ProducerMessage) {
 	if msg == nil {
 		return
 	}
-	traceID := trace.TraceIDFromContext(ctx)
-	if traceID == "" {
-		return
+	traceID := strings.TrimSpace(trace.TraceIDFromContext(ctx))
+	requestID := strings.TrimSpace(common.GetRequestID(ctx))
+
+	if traceID == "" || traceID == "unknown" {
+		traceID = ""
 	}
-	for i := range msg.Headers {
-		if string(msg.Headers[i].Key) == HeaderTraceID {
-			msg.Headers[i].Value = []byte(traceID)
-			return
+	if traceID == "" {
+		if requestID != "" && requestID != "unknown" {
+			traceID = requestID
 		}
 	}
-	msg.Headers = append(msg.Headers, sarama.RecordHeader{Key: []byte(HeaderTraceID), Value: []byte(traceID)})
+	if traceID == "" {
+		traceID = fmt.Sprintf("generated-%d", time.Now().UnixNano())
+		trace.AddRequestTag(ctx, "trace_id_generated", true)
+	}
+	if requestID == "" || requestID == "unknown" {
+		requestID = traceID
+	}
+
+	setOrUpdate := func(key, val string) {
+		val = strings.TrimSpace(val)
+		if val == "" {
+			return
+		}
+		for i := range msg.Headers {
+			if string(msg.Headers[i].Key) == key {
+				msg.Headers[i].Value = []byte(val)
+				return
+			}
+		}
+		msg.Headers = append(msg.Headers, sarama.RecordHeader{Key: []byte(key), Value: []byte(val)})
+	}
+
+	setOrUpdate(HeaderTraceID, traceID)
+	setOrUpdate(HeaderRequestID, requestID)
 }
 
 func (p *UserProducer) getEnqueueTimeout() time.Duration {
@@ -365,6 +413,8 @@ func (p *UserProducer) enqueueOrFallback(ctx context.Context, msg *sarama.Produc
 			if idx > 0 {
 				log.Infof("Enqueued %s after extended wait %s (attempt %d)", detail, actualTimeout, attemptsTried)
 			}
+			trace.AddRequestTag(ctx, "retry_attempt", attemptsTried)
+			trace.AddRequestTag(ctx, "max_retry", len(timeouts))
 			return nil
 		}
 
@@ -385,14 +435,18 @@ func (p *UserProducer) enqueueOrFallback(ctx context.Context, msg *sarama.Produc
 	}
 
 	trace.AddRequestTag(ctx, "async_forward_to", "fallback_storage")
+	trace.AddRequestTag(ctx, "retry_attempt", attemptsTried)
+	trace.AddRequestTag(ctx, "max_retry", len(timeouts))
 	if err == errProducerEnqueueTimeout {
 		log.Errorf("Failed to enqueue %s within %s after %d attempts. Triggering fallback.", detail, lastTimeout, attemptsTried)
 		p.writeToFallbackFile(msg)
+		trace.AddRequestTag(ctx, "dlq_produced", true)
 		return errors.WithCode(code.ErrKafkaFailed, "producer enqueue timeout after %s, message written to fallback", lastTimeout)
 	}
 
 	log.Errorf("Failed to enqueue %s after %d attempts: %v. Triggering fallback.", detail, attemptsTried, err)
 	p.writeToFallbackFile(msg)
+	trace.AddRequestTag(ctx, "dlq_produced", true)
 	return errors.WithCode(code.ErrKafkaFailed, "producer enqueue failed (%v), message written to fallback", err)
 }
 
@@ -633,6 +687,7 @@ func (p *UserProducer) initCreatePipeline() {
 			if meta != nil {
 				if span, ok := ctx.Value(producerSpanKey{}).(*trace.Span); ok && span != nil {
 					meta.parentSpanID = span.ID
+					msg.Headers = p.updateOrAddHeader(msg.Headers, HeaderParentSpanID, span.ID)
 				}
 				meta.markEnqueued()
 			}
@@ -663,6 +718,9 @@ func (p *UserProducer) SendDeleteMessage(ctx context.Context, username string) e
 	if spanCtx != nil {
 		ctx = spanCtx
 	}
+	if span != nil {
+		ctx = context.WithValue(ctx, producerSpanKey{}, span)
+	}
 	trace.AddRequestTag(ctx, "username", username)
 	log.Debugf("[Producer] SendDeleteMessage: username=%s", username)
 	deleteData := map[string]interface{}{
@@ -692,6 +750,7 @@ func (p *UserProducer) SendDeleteMessage(ctx context.Context, username string) e
 	if meta != nil {
 		if span != nil {
 			meta.parentSpanID = span.ID
+			msg.Headers = p.updateOrAddHeader(msg.Headers, HeaderParentSpanID, span.ID)
 		}
 		meta.markEnqueued()
 	}
@@ -789,6 +848,9 @@ func (p *UserProducer) sendUserMessage(ctx context.Context, user *v1.User, opera
 	if spanCtx != nil {
 		ctx = spanCtx
 	}
+	if span != nil {
+		ctx = context.WithValue(ctx, producerSpanKey{}, span)
+	}
 
 	topic := UserOperationTopic
 	trace.AddRequestTag(ctx, "topic", topic)
@@ -855,6 +917,7 @@ func (p *UserProducer) sendUserMessage(ctx context.Context, user *v1.User, opera
 	if meta != nil {
 		if span != nil {
 			meta.parentSpanID = span.ID
+			msg.Headers = p.updateOrAddHeader(msg.Headers, HeaderParentSpanID, span.ID)
 		}
 		meta.markEnqueued()
 	}
@@ -892,8 +955,16 @@ func (p *UserProducer) sendToRetryTopic(ctx context.Context, msg kafka.Message, 
 			break
 		}
 	}
+	retryAttempt := currCount + 1
+	maxRetry := 0
+	if p.kafkaOptions != nil {
+		maxRetry = p.kafkaOptions.MaxRetries
+	}
+	trace.AddRequestTag(ctx, "retry_attempt", retryAttempt)
+	trace.AddRequestTag(ctx, "max_retry", maxRetry)
+	trace.AddRequestTag(ctx, "dlq_produced", false)
 	headers = p.updateOrAddHeader(headers, HeaderChannel, ChannelRetry)
-	headers = p.updateOrAddHeader(headers, HeaderRetryCount, strconv.Itoa(currCount+1))
+	headers = p.updateOrAddHeader(headers, HeaderRetryCount, strconv.Itoa(retryAttempt))
 	saramaMsg.Headers = headers
 	traceID := trace.TraceIDFromContext(ctx)
 	if traceID == "" {
@@ -926,6 +997,21 @@ func (p *UserProducer) sendToRetryTopic(ctx context.Context, msg kafka.Message, 
 // It needs to accept a kafka-go message and convert it to a sarama message.
 func (p *UserProducer) SendToDeadLetterTopic(ctx context.Context, msg kafka.Message, errorInfo string) error {
 	log.Errorf("[Producer] Forwarding to dead-letter topic: key=%s, error=%s", string(msg.Key), errorInfo)
+	retryAttempt := 0
+	for _, h := range msg.Headers {
+		if strings.EqualFold(string(h.Key), HeaderRetryCount) {
+			if v, err := strconv.Atoi(string(h.Value)); err == nil {
+				retryAttempt = v
+			}
+		}
+	}
+	maxRetry := 0
+	if p.kafkaOptions != nil {
+		maxRetry = p.kafkaOptions.MaxRetries
+	}
+	trace.AddRequestTag(ctx, "retry_attempt", retryAttempt)
+	trace.AddRequestTag(ctx, "max_retry", maxRetry)
+	trace.AddRequestTag(ctx, "dlq_produced", true)
 
 	// Convert kafka.Message to sarama.ProducerMessage
 	saramaMsg := &sarama.ProducerMessage{

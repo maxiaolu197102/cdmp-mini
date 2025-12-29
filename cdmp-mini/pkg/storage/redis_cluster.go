@@ -237,8 +237,13 @@ func NewRedisClusterPool(isCache bool, config *options.RedisOptions) redis.Unive
 			minIdleConns = 32
 		}
 	}
+	maxActiveConns := config.MaxActive
+	if maxActiveConns > 0 && minIdleConns > 0 && maxActiveConns < minIdleConns {
+		log.Warnw("redis max_active lower than min_idle; adjusting to avoid pool exhaustion", "max_active", maxActiveConns, "min_idle", minIdleConns)
+		maxActiveConns = minIdleConns
+	}
 
-	log.Infow("redis pool sizing resolved", "pool_size", poolSize, "min_idle", minIdleConns, "wait", config.Wait, "max_retries", config.MaxRetries)
+	log.Infow("redis pool sizing resolved", "pool_size", poolSize, "min_idle", minIdleConns, "wait", config.Wait, "max_retries", config.MaxRetries, "max_active", maxActiveConns)
 
 	maxIdleConns := 0
 	if config.MaxIdle > 0 {
@@ -252,6 +257,18 @@ func NewRedisClusterPool(isCache bool, config *options.RedisOptions) redis.Unive
 	timeout := 5 * time.Second
 	if config.Timeout > 0 {
 		timeout = time.Duration(config.Timeout) * time.Second
+	}
+
+	minRetryBackoff := 100 * time.Millisecond
+	maxRetryBackoff := 3 * time.Second
+	if config.MaxRetryDelay > 0 {
+		maxRetryBackoff = config.MaxRetryDelay
+		if maxRetryBackoff < minRetryBackoff {
+			minRetryBackoff = maxRetryBackoff / 2
+			if minRetryBackoff <= 0 {
+				minRetryBackoff = 50 * time.Millisecond
+			}
+		}
 	}
 
 	var tlsConfig *tls.Config
@@ -275,13 +292,16 @@ func NewRedisClusterPool(isCache bool, config *options.RedisOptions) redis.Unive
 		DialTimeout:     timeout,
 		ReadTimeout:     timeout,
 		WriteTimeout:    timeout,
+		PoolTimeout:     timeout * 2,
 		ConnMaxLifetime: config.MaxConnLifetime,
 		ConnMaxIdleTime: connMaxIdle,
 		PoolSize:        poolSize,
 		MinIdleConns:    minIdleConns,
 		MaxIdleConns:    maxIdleConns,
-		MaxActiveConns:  config.MaxActive,
-		PoolTimeout:     timeout,
+		MaxActiveConns:  maxActiveConns,
+		MaxRetries:      config.MaxRetries,
+		MinRetryBackoff: minRetryBackoff,
+		MaxRetryBackoff: maxRetryBackoff,
 		TLSConfig:       tlsConfig,
 	}
 
@@ -299,7 +319,8 @@ func NewRedisClusterPool(isCache bool, config *options.RedisOptions) redis.Unive
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	if err := client.Ping(ctx).Err(); err != nil {
-		log.Errorf("新创建的Redis客户端验证失败: %v", err)
+		stats := client.PoolStats()
+		log.Errorw("新创建的Redis客户端验证失败", "err", err, "addrs", opts.Addrs, "dial_timeout", timeout, "pool_size", poolSize, "min_idle", minIdleConns, "max_active", maxActiveConns, "max_idle", maxIdleConns, "pool_stats", stats)
 		_ = client.Close()
 		return nil
 	}
@@ -440,7 +461,7 @@ func (r *RedisCluster) GetClient() redis.UniversalClient {
 		log.Warnf("RedisCluster.GetClient() 获取客户端为空，IsCache=%v", r.IsCache)
 		return nil
 	}
-	//log.Debugf("RedisCluster.GetClient() 获取客户端成功，类型=%T，IsCache=%v", client, r.IsCache)
+	log.Debugf("RedisCluster.GetClient() 获取客户端成功，类型=%T，IsCache=%v", client, r.IsCache)
 	return client
 }
 
@@ -453,6 +474,7 @@ func (r *RedisCluster) withConn(ctx context.Context, fn func(redis.Cmdable) erro
 		return ErrRedisIsDown
 	}
 
+	var err error
 	if connCapable, ok := client.(interface {
 		Conn(context.Context) *redis.Conn
 	}); ok {
@@ -461,10 +483,27 @@ func (r *RedisCluster) withConn(ctx context.Context, fn func(redis.Cmdable) erro
 			return ErrRedisIsDown
 		}
 		defer conn.Close()
-		return fn(conn)
+		err = fn(conn)
+	} else {
+		err = fn(client)
 	}
 
-	return fn(client)
+	logPoolTimeoutStats(client, err)
+	return err
+}
+
+func logPoolTimeoutStats(client redis.UniversalClient, err error) {
+	if err == nil || client == nil {
+		return
+	}
+	if !(errors.Is(err, redis.ErrPoolTimeout) || strings.Contains(strings.ToLower(err.Error()), "connection pool exhausted")) {
+		return
+	}
+	if stats := client.PoolStats(); stats != nil {
+		log.Warnw("redis connection pool exhausted", "err", err.Error(), "hits", stats.Hits, "misses", stats.Misses, "timeouts", stats.Timeouts, "idle_conns", stats.IdleConns, "total_conns", stats.TotalConns, "stale_conns", stats.StaleConns)
+		return
+	}
+	log.Warnw("redis connection pool exhausted", "err", err.Error())
 }
 
 func (r *RedisCluster) hashKey(in string) string {

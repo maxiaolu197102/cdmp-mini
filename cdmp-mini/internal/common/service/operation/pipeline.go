@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maxiaolu1981/cretem/cdmp-mini/internal/pkg/trace"
 	"github.com/maxiaolu1981/cretem/cdmp-mini/pkg/log"
 	"github.com/maxiaolu1981/cretem/nexuscore/component-base/util/idutil"
 )
@@ -82,6 +83,7 @@ func (p *Pipeline) Submit(ctx context.Context, env *OperationEnvelope) (*QueueTi
 	if env.Headers == nil {
 		env.Headers = make(map[string]string)
 	}
+	markStateStoreWrite(ctx)
 
 	stateStart := time.Now()
 	if err := p.state.Upsert(ctx, env, StateQueued); err != nil {
@@ -103,7 +105,7 @@ func (p *Pipeline) Submit(ctx context.Context, env *OperationEnvelope) (*QueueTi
 
 // ProcessOnce consumes a single operation from the queue and drives it through
 // execute/compensate paths. Callers typically run this inside worker goroutines.
-func (p *Pipeline) ProcessOnce(ctx context.Context) error {
+func (p *Pipeline) ProcessOnce(ctx context.Context) (err error) {
 	item, err := p.queue.Dequeue(ctx)
 	if err != nil {
 		return err
@@ -111,6 +113,60 @@ func (p *Pipeline) ProcessOnce(ctx context.Context) error {
 	if item == nil || item.Envelope == nil {
 		return fmt.Errorf("dequeue returned empty item")
 	}
+
+	workerID := WorkerIDFromContext(ctx)
+	opts := trace.Options{
+		TraceID:   item.Envelope.TraceID,
+		Service:   "operation-pipeline",
+		Component: "operation-worker",
+		Operation: string(item.Envelope.Kind),
+		Phase:     trace.PhaseAsync,
+		RequestID: item.Envelope.Headers["requestID"],
+		Path:      item.Envelope.Resource,
+	}
+	if startedCtx, _ := trace.Start(ctx, opts); startedCtx != nil {
+		ctx = startedCtx
+	}
+	defer func() {
+		status := "success"
+		codeStr := "0"
+		message := "operation processed"
+		if err != nil {
+			status = "error"
+			codeStr = err.Error()
+			message = err.Error()
+		}
+		trace.RecordOutcome(ctx, codeStr, message, status, 0)
+		trace.Complete(ctx)
+	}()
+
+	workerCtx, span := trace.StartSpan(ctx, "operation-pipeline", "operation_worker")
+	if workerCtx != nil {
+		ctx = workerCtx
+		trace.AddRequestTag(ctx, "operation_id", item.Envelope.ID)
+		trace.AddRequestTag(ctx, "worker_id", workerID)
+		trace.AddRequestTag(ctx, "attempt", item.Attempts+1)
+		trace.AddRequestTag(ctx, "operation_kind", string(item.Envelope.Kind))
+		trace.AddRequestTag(ctx, "operation_resource", item.Envelope.Resource)
+	}
+	defer func() {
+		if span != nil {
+			status := "success"
+			codeStr := "0"
+			if err != nil {
+				status = "error"
+				codeStr = err.Error()
+			}
+			trace.EndSpan(span, status, codeStr, map[string]interface{}{
+				"operation_id":       item.Envelope.ID,
+				"worker_id":          workerID,
+				"attempt":            item.Attempts + 1,
+				"operation_kind":     string(item.Envelope.Kind),
+				"operation_resource": item.Envelope.Resource,
+			})
+		}
+	}()
+
 	switch operationPhase(item.Envelope) {
 	case phaseCompensate:
 		return p.processCompensation(ctx, item)
@@ -148,6 +204,7 @@ func (p *Pipeline) processExecution(ctx context.Context, item *QueueItem) error 
 	res.Attempt = attempt
 
 	if res.Error == nil && res.State == StateCompleted {
+		markStateStoreWrite(ctx)
 		if err := p.state.Advance(ctx, env.ID, StateExecuting, StateCompleted); err != nil {
 			log.Warnw("advance completed failed", "operation", env.ID, "error", err)
 		}
@@ -179,6 +236,7 @@ func (p *Pipeline) processCompensation(ctx context.Context, item *QueueItem) err
 	res.Attempt = attempt
 
 	if res.Error == nil && res.State == StateCompensated {
+		markStateStoreWrite(ctx)
 		if err := p.state.Advance(ctx, env.ID, StateCompensating, StateCompensated); err != nil {
 			log.Warnw("advance compensated failed", "operation", env.ID, "error", err)
 		}
@@ -195,6 +253,7 @@ func (p *Pipeline) processCompensation(ctx context.Context, item *QueueItem) err
 	}
 
 	if res.Fatal || attempt >= p.opts.maxAttempts {
+		markStateStoreWrite(ctx)
 		if err := p.state.Advance(ctx, env.ID, StateCompensating, StateFailed); err != nil && !errors.Is(err, ErrStateConflict) {
 			log.Warnw("mark compensation failed", "operation", env.ID, "error", err)
 		}
@@ -256,6 +315,7 @@ func (p *Pipeline) handleExecutionResult(ctx context.Context, item *QueueItem, r
 
 	// Fatal errors do not requeue.
 	if res.Fatal || res.Attempt >= p.opts.maxAttempts {
+		markStateStoreWrite(ctx)
 		if err := p.state.Advance(ctx, res.OperationID, StateExecuting, StateFailed); err != nil {
 			log.Warnw("mark failed state", "operation", res.OperationID, "error", err)
 		}
@@ -283,6 +343,7 @@ func (p *Pipeline) handleExecutionResult(ctx context.Context, item *QueueItem, r
 		delay = 0
 	}
 
+	markStateStoreWrite(ctx)
 	if err := p.state.Advance(ctx, res.OperationID, StateFailed, StateQueued); err != nil && !errors.Is(err, ErrStateConflict) {
 		log.Warnw("return to queued state", "operation", res.OperationID, "error", err)
 	}
@@ -306,6 +367,7 @@ func (p *Pipeline) handleFailure(ctx context.Context, item *QueueItem, attempt i
 	if reason == "" {
 		reason = "unknown error"
 	}
+	markStateStoreWrite(ctx)
 	if recordErr := p.state.RecordFailure(ctx, item.Envelope.ID, attempt, reason); recordErr != nil {
 		log.Warnw("record failure", "operation", item.Envelope.ID, "error", recordErr)
 	}
@@ -313,8 +375,10 @@ func (p *Pipeline) handleFailure(ctx context.Context, item *QueueItem, attempt i
 }
 
 func (p *Pipeline) advanceToExecuting(ctx context.Context, operationID string) error {
+	markStateStoreWrite(ctx)
 	if err := p.state.Advance(ctx, operationID, StateQueued, StateExecuting); err != nil {
 		if errors.Is(err, ErrStateConflict) {
+			markStateStoreWrite(ctx)
 			return p.state.Advance(ctx, operationID, StateFailed, StateExecuting)
 		}
 		return err
@@ -374,6 +438,10 @@ func defaultRetryBackoff(custom func(int) time.Duration) func(int) time.Duration
 		}
 		return delay
 	}
+}
+
+func markStateStoreWrite(ctx context.Context) {
+	trace.AddRequestTag(ctx, "request_state_store_write", true)
 }
 
 func min(a, b int) int {

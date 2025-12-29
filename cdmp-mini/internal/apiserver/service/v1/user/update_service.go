@@ -92,6 +92,13 @@ func (u *UserService) Update(ctx context.Context, user *v1.User, opts metav1.Upd
 		env.Headers[pendingBackendHeader] = pendingBackend
 	}
 
+	// 队列进入降级态时，直接拒绝入队，依赖调用方按幂等语义重试，避免在服务端隐式切换到不可靠队列实现。
+	if u.isRedisDegradeActive() {
+		log.Errorw("用户更新操作队列处于降级状态，拒绝入队", "operation", operationID)
+		err = errors.WithCode(code.ErrServerBusy, "更新队列暂不可用，请稍后重试")
+		return err
+	}
+
 	ticket, submitErr := u.operationPipeline.Submit(ctx, env)
 	if submitErr != nil {
 		log.Errorw("提交用户更新操作失败", "operation", operationID, "error", submitErr)

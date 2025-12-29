@@ -33,6 +33,8 @@ var (
 	ProducerInFlightCurrent prometheus.Gauge
 	// 写限流触发计数
 	WriteLimiterTotal *prometheus.CounterVec
+	// 写限流总请求计数（含成功/失败）
+	WriteLimiterRequestsTotal *prometheus.CounterVec
 	// initialization moved to init()
 	// ProducerDeliveryLatency 记录生产者消息从入队到Broker确认的耗时
 	ProducerDeliveryLatency *prometheus.HistogramVec
@@ -502,6 +504,14 @@ func init() {
 			Help: "Total number of requests blocked by write rate limiter",
 		},
 		[]string{"path", "reason"},
+	)
+
+	WriteLimiterRequestsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "write_rate_limiter_requests_total",
+			Help: "Total number of requests passed through write rate limiter by outcome, auth type and biz key",
+		},
+		[]string{"path", "outcome", "auth_type", "biz_key"},
 	)
 
 	ProducerDeliveryLatency = prometheus.NewHistogramVec(
@@ -1665,6 +1675,7 @@ func init() {
 		// 新增指标
 		ProducerInFlightCurrent,
 		WriteLimiterTotal,
+		WriteLimiterRequestsTotal,
 		ProducerDeliveryLatency,
 		ProducerEnqueueWaitLatency,
 		ProducerBrokerAckLatency,

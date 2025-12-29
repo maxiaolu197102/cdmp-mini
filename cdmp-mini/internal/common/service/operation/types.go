@@ -1,6 +1,7 @@
 package operation
 
 import (
+	"context"
 	"errors"
 	"time"
 )
@@ -86,6 +87,23 @@ type QueueItem struct {
 	Envelope    *OperationEnvelope
 	Attempts    int
 	AvailableAt time.Time
+}
+
+type workerIDKey struct{}
+
+// ContextWithWorkerID annotates context with the worker identifier for tracing/logging.
+func ContextWithWorkerID(ctx context.Context, id int) context.Context {
+	return context.WithValue(ctx, workerIDKey{}, id)
+}
+
+// WorkerIDFromContext extracts worker identifier if present.
+func WorkerIDFromContext(ctx context.Context) int {
+	if v := ctx.Value(workerIDKey{}); v != nil {
+		if id, ok := v.(int); ok {
+			return id
+		}
+	}
+	return 0
 }
 
 // ErrQueueEmpty indicates that no items are currently ready for processing.

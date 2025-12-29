@@ -112,6 +112,13 @@ func (u *UserService) Delete(ctx context.Context, username string, force bool, o
 		return err
 	}
 
+	// 队列进入降级态时，直接拒绝入队，交由调用方重试，避免在服务端隐式切换到不可靠队列实现。
+	if u.isRedisDegradeActive() {
+		log.Errorw("用户删除操作队列处于降级状态，拒绝入队", "operation", opID)
+		err = errors.WithCode(code.ErrServerBusy, "删除队列暂不可用，请稍后重试")
+		return err
+	}
+
 	ticket, submitErr := u.operationPipeline.Submit(ctx, env)
 	if submitErr != nil {
 		log.Errorw("提交用户删除操作失败", "operation", opID, "error", submitErr)

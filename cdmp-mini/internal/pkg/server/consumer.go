@@ -147,7 +147,6 @@ func (c *pendingMarkerCache) Get(key string) (markerCacheEntry, bool) {
 	entry, ok := c.entries[key]
 	c.mu.RUnlock()
 	if !ok {
-		return markerCacheEntry{}, false
 	}
 	now := time.Now()
 	if now.After(entry.cacheExpiry) || (entry.hasTTL && now.After(entry.expireAt)) {
@@ -609,6 +608,27 @@ func (c *UserConsumer) StartConsuming(ctx context.Context, workerCount int, read
 				processStart := time.Now()
 
 				msgCtx, msgSpan := c.startAsyncTraceContext(ctx, job.msg, operation, workerID)
+				parentSpanID := c.getHeaderValue(job.msg.Headers, HeaderParentSpanID)
+				pollCtx, pollSpan := trace.StartSpanWithParent(msgCtx, "kafka-consumer", "consumer_poll", parentSpanID)
+				pollDetails := map[string]interface{}{
+					"partition":  job.msg.Partition,
+					"offset":     job.msg.Offset,
+					"reader_idx": job.readerIdx,
+					"worker_id":  workerID,
+					"operation":  operation,
+				}
+				if elapsedHeader := c.getHeaderValue(job.msg.Headers, "fetch_elapsed_ms"); elapsedHeader != "" {
+					pollDetails["fetch_elapsed_ms"] = elapsedHeader
+				}
+				if lagHeader := c.getHeaderValue(job.msg.Headers, HeaderConsumerLag); lagHeader != "" {
+					pollDetails["lag"] = lagHeader
+				}
+				if ageHeader := c.getHeaderValue(job.msg.Headers, HeaderConsumerRecordAge); ageHeader != "" {
+					pollDetails["record_age_ms"] = ageHeader
+				}
+				msgCtx = pollCtx
+				trace.EndSpan(pollSpan, "success", strconv.Itoa(code.ErrSuccess), pollDetails)
+
 				err := c.processMessageWithRetry(msgCtx, job.msg, 3)
 
 				businessCode := strconv.Itoa(code.ErrSuccess)
@@ -1150,9 +1170,11 @@ func (c *UserConsumer) runFetchLoop(ctx context.Context, readerIdx int, reader *
 		}
 
 		var (
-			msg      kafka.Message
-			fetchErr error
+			msg          kafka.Message
+			fetchErr     error
+			fetchElapsed time.Duration
 		)
+		fetchStart := time.Now()
 		for retry := 0; retry < c.opts.MaxRetries; retry++ {
 			attemptCtx, attemptSpan := trace.StartSpan(loopCtx, "kafka-consumer", "fetch_attempt")
 			retryNum := retry + 1
@@ -1161,6 +1183,7 @@ func (c *UserConsumer) runFetchLoop(ctx context.Context, readerIdx int, reader *
 			trace.AddRequestTag(attemptCtx, "lag", stats.Lag)
 			msg, fetchErr = reader.FetchMessage(attemptCtx)
 			if fetchErr == nil {
+				fetchElapsed = time.Since(fetchStart)
 				details := map[string]any{
 					"attempt":   retryNum,
 					"partition": msg.Partition,
@@ -1205,6 +1228,10 @@ func (c *UserConsumer) runFetchLoop(ctx context.Context, readerIdx int, reader *
 				return
 			}
 			continue
+		}
+
+		if fetchElapsed > 0 {
+			msg.Headers = setOrReplaceHeader(msg.Headers, "fetch_elapsed_ms", strconv.FormatInt(fetchElapsed.Milliseconds(), 10))
 		}
 
 		postStats := reader.Stats()
@@ -1299,7 +1326,38 @@ func (c *UserConsumer) commitWithRetry(ctx context.Context, msg kafka.Message, w
 		reader = c.readers[0]
 	}
 
-	spanCtx, span := trace.StartSpan(ctx, "kafka-consumer", "commit_offset")
+	traceID, traceSource := c.getTraceIDFromHeaders(msg.Headers)
+	if traceID == "" {
+		if ctxTrace := trace.TraceIDFromContext(ctx); ctxTrace != "" {
+			traceID = ctxTrace
+			traceSource = "context"
+		}
+	}
+	if traceID == "" {
+		traceID = fmt.Sprintf("generated-%d", time.Now().UnixNano())
+		traceSource = "generated"
+	}
+	parentSpanID := c.getHeaderValue(msg.Headers, HeaderParentSpanID)
+	_, commitCtx := trace.NewDetached(trace.Options{
+		TraceID:        traceID,
+		Service:        "iam-apiserver",
+		Component:      "kafka-consumer",
+		Operation:      "consumer_commit",
+		Phase:          trace.PhaseAsync,
+		RequestID:      traceID,
+		Path:           msg.Topic,
+		Method:         "KAFKA",
+		Now:            time.Now(),
+		LogSampleRate:  1,
+		DisableLogging: false,
+	})
+	if traceSource != "" {
+		trace.AddRequestTag(commitCtx, "trace_id_source", traceSource)
+	}
+	if parentSpanID != "" {
+		trace.AddRequestTag(commitCtx, "parent_span_id", parentSpanID)
+	}
+	spanCtx, span := trace.StartSpanWithParent(commitCtx, "kafka-consumer", "consumer_commit", parentSpanID)
 	trace.AddRequestTag(spanCtx, "reader_idx", readerIdx)
 	trace.AddRequestTag(spanCtx, "partition", msg.Partition)
 	trace.AddRequestTag(spanCtx, "offset", msg.Offset)
@@ -1523,7 +1581,22 @@ func (c *UserConsumer) processCreateMessageWithPending(ctx context.Context, msg 
 	clearCtx, clearSpan := trace.StartSpan(ctx, "kafka-consumer", "clear_pending_marker")
 	trace.AddRequestTag(clearCtx, "username", user.Name)
 	log.Infow("pending marker clear invoked", "username", user.Name, "message_offset", msg.Offset, "partition", msg.Partition)
-	clearRedisDuration, clearErr := c.clearPendingCreateMarker(clearCtx, user.Name)
+	deleteStatus := "success"
+	deleteCode := strconv.Itoa(code.ErrSuccess)
+	deleteCtx, deleteSpan := trace.StartSpan(clearCtx, "kafka-consumer", "pending_marker_delete")
+	clearRedisDuration, clearErr := c.clearPendingCreateMarker(deleteCtx, user.Name)
+	if clearErr != nil {
+		deleteStatus = "error"
+		if c := errors.GetCode(clearErr); c != 0 {
+			deleteCode = strconv.Itoa(c)
+		} else {
+			deleteCode = strconv.Itoa(code.ErrUnknown)
+		}
+	}
+	trace.EndSpan(deleteSpan, deleteStatus, deleteCode, map[string]interface{}{
+		"username":    user.Name,
+		"duration_ms": clearRedisDuration.Milliseconds(),
+	})
 	clearDuration := time.Since(clearStart)
 	clearStatus := "success"
 	clearCode := strconv.Itoa(code.ErrSuccess)
@@ -1956,11 +2029,16 @@ targetLoop:
 	return nil
 }
 
-func (c *UserConsumer) createUserInDB(ctx context.Context, user *v1.User, markerDegraded bool) (bool, error) {
+func (c *UserConsumer) createUserInDB(ctx context.Context, user *v1.User, markerDegraded bool) (created bool, retErr error) {
 	user.Email = usercache.NormalizeEmail(user.Email)
 	user.Phone = usercache.NormalizePhone(user.Phone)
 
 	totalStart := time.Now()
+
+	spanCtx, dbSpan := trace.StartSpan(ctx, "mysql", "consumer_db_insert")
+	if spanCtx != nil {
+		ctx = spanCtx
+	}
 
 	now := time.Now()
 	user.CreatedAt = now
@@ -1975,7 +2053,16 @@ func (c *UserConsumer) createUserInDB(ctx context.Context, user *v1.User, marker
 	trace.AddRequestTag(ctx, "create_prepare_ms", prepareDuration.Milliseconds())
 	if err != nil {
 		trace.AddRequestTag(ctx, "create_prepare_error", err.Error())
-		return false, fmt.Errorf("获取数据库连接失败: %w", err)
+		retErr = fmt.Errorf("获取数据库连接失败: %w", err)
+		if dbSpan != nil {
+			trace.EndSpan(dbSpan, "error", strconv.Itoa(code.ErrUnknown), map[string]interface{}{
+				"username":        user.Name,
+				"marker_degraded": markerDegraded,
+				"prepare_ms":      prepareDuration.Milliseconds(),
+				"error":           retErr.Error(),
+			})
+		}
+		return false, retErr
 	}
 
 	var phoneValue interface{}
@@ -2018,9 +2105,31 @@ func (c *UserConsumer) createUserInDB(ctx context.Context, user *v1.User, marker
 				trace.AddRequestTag(ctx, "create_degraded_conflict", true)
 			}
 			metrics.BusinessSuccess.WithLabelValues("consumer", "create_user_db", "duplicate_skip").Inc()
+			if dbSpan != nil {
+				trace.EndSpan(dbSpan, "success", strconv.Itoa(code.ErrSuccess), map[string]interface{}{
+					"username":        user.Name,
+					"marker_degraded": markerDegraded,
+					"prepare_ms":      prepareDuration.Milliseconds(),
+					"db_ms":           createDuration.Milliseconds(),
+					"total_ms":        totalDuration.Milliseconds(),
+					"created":         false,
+					"duplicate_skip":  true,
+				})
+			}
 			return false, nil
 		}
-		return false, fmt.Errorf("数据创建失败: %w", err)
+		retErr = fmt.Errorf("数据创建失败: %w", err)
+		if dbSpan != nil {
+			trace.EndSpan(dbSpan, "error", strconv.Itoa(code.ErrUnknown), map[string]interface{}{
+				"username":        user.Name,
+				"marker_degraded": markerDegraded,
+				"prepare_ms":      prepareDuration.Milliseconds(),
+				"db_ms":           createDuration.Milliseconds(),
+				"total_ms":        totalDuration.Milliseconds(),
+				"error":           retErr.Error(),
+			})
+		}
+		return false, retErr
 	}
 
 	if insertedID, idErr := res.LastInsertId(); idErr == nil && insertedID > 0 {
@@ -2035,6 +2144,16 @@ func (c *UserConsumer) createUserInDB(ctx context.Context, user *v1.User, marker
 		"total_duration", totalDuration,
 		"marker_degraded", markerDegraded,
 		"version", user.ObjectMeta.Version,
+	}
+	if dbSpan != nil {
+		trace.EndSpan(dbSpan, "success", strconv.Itoa(code.ErrSuccess), map[string]interface{}{
+			"username":        user.Name,
+			"marker_degraded": markerDegraded,
+			"prepare_ms":      prepareDuration.Milliseconds(),
+			"db_ms":           createDuration.Milliseconds(),
+			"total_ms":        totalDuration.Milliseconds(),
+			"created":         true,
+		})
 	}
 	if fetchLag, ok := trace.GetRequestTag(ctx, "kafka_fetch_lag"); ok {
 		logFields = append(logFields, "kafka_fetch_lag", fetchLag)
@@ -2060,7 +2179,8 @@ func (c *UserConsumer) createUserInDB(ctx context.Context, user *v1.User, marker
 		log.Warnw("用户插入耗时超过阈值", slowFields...)
 	}
 
-	return true, nil
+	created = true
+	return created, nil
 }
 
 // loadUserSnapshot 查询数据库中的用户信息，用于判定重复消息或刷新缓存。
@@ -3122,6 +3242,7 @@ func (c *UserConsumer) processMessageWithRetry(ctx context.Context, msg kafka.Me
 	if len(msg.Key) > 0 {
 		trace.AddRequestTag(retryCtx, "message_key", string(msg.Key))
 	}
+	trace.AddRequestTag(retryCtx, "consumer_retry", true)
 
 	status := "success"
 	statusCode := strconv.Itoa(code.ErrSuccess)
@@ -3300,13 +3421,20 @@ func (c *UserConsumer) getOperationFromHeaders(headers []kafka.Header) string {
 	return OperationCreate
 }
 
-func (c *UserConsumer) getTraceIDFromHeaders(headers []kafka.Header) string {
+func (c *UserConsumer) getTraceIDFromHeaders(headers []kafka.Header) (string, string) {
 	for _, header := range headers {
-		if header.Key == HeaderTraceID {
-			return string(header.Value)
+		val := strings.TrimSpace(string(header.Value))
+		if val == "" {
+			continue
+		}
+		switch header.Key {
+		case HeaderTraceID:
+			return val, HeaderTraceID
+		case HeaderRequestID:
+			return val, HeaderRequestID
 		}
 	}
-	return ""
+	return "", ""
 }
 
 func (c *UserConsumer) getHeaderValue(headers []kafka.Header, key string) string {
@@ -3361,29 +3489,45 @@ func (c *UserConsumer) applyLagTagsFromMessage(ctx context.Context, msg kafka.Me
 }
 
 func (c *UserConsumer) startAsyncTraceContext(parentCtx context.Context, msg kafka.Message, operation string, workerID int) (context.Context, *trace.Span) {
-	traceID := c.getTraceIDFromHeaders(msg.Headers)
+	traceID, traceSource := c.getTraceIDFromHeaders(msg.Headers)
 	if traceID == "" {
-		traceID = trace.TraceIDFromContext(parentCtx)
+		if ctxTrace := trace.TraceIDFromContext(parentCtx); ctxTrace != "" {
+			traceID = ctxTrace
+			traceSource = "context"
+		}
 	}
 	if traceID == "" {
 		traceID = fmt.Sprintf("generated-%d", time.Now().UnixNano())
+		traceSource = "generated"
 	}
+	parentSpanID := c.getHeaderValue(msg.Headers, HeaderParentSpanID)
 	opName := operation
 	if strings.TrimSpace(opName) == "" {
 		opName = "unknown"
 	}
 	_, asyncCtx := trace.NewDetached(trace.Options{
-		TraceID:         traceID,
-		Service:         "iam-apiserver",
-		Component:       "user-consumer",
-		Operation:       fmt.Sprintf("%s_async", opName),
-		RequestID:       traceID,
-		Path:            c.topic,
-		Method:          "KAFKA",
-		Now:             time.Now(),
-		DisableLogging:  true,
+		TraceID:   traceID,
+		Service:   "iam-apiserver",
+		Component: "user-consumer",
+		Operation: fmt.Sprintf("%s_async", opName),
+		Phase:     trace.PhaseAsync,
+		RequestID: traceID,
+		Path:      c.topic,
+		Method:    "KAFKA",
+		Now:       time.Now(),
+		// Ensure async spans always emit so they can be merged with the HTTP phase.
+		LogSampleRate:   1,
+		DisableLogging:  false,
 		ForceLogOnError: true,
 	})
+
+	trace.AddRequestTag(asyncCtx, "trace_id", traceID)
+	if traceSource != "" {
+		trace.AddRequestTag(asyncCtx, "trace_id_source", traceSource)
+	}
+	if parentSpanID != "" {
+		trace.AddRequestTag(asyncCtx, "parent_span_id", parentSpanID)
+	}
 
 	trace.AddRequestTag(asyncCtx, "topic", c.topic)
 	trace.AddRequestTag(asyncCtx, "group", c.groupID)
@@ -3420,8 +3564,43 @@ func (c *UserConsumer) startAsyncTraceContext(parentCtx context.Context, msg kaf
 	}
 
 	spanName := fmt.Sprintf("process_%s", opName)
-	spanCtx, span := trace.StartSpan(asyncCtx, "kafka-consumer", spanName)
+	spanCtx, span := trace.StartSpanWithParent(asyncCtx, "kafka-consumer", spanName, parentSpanID)
 	return spanCtx, span
+}
+
+// finalizeAsyncMessageTrace closes span, records outcome, and completes the async trace for a message.
+func (c *UserConsumer) finalizeAsyncMessageTrace(ctx context.Context, span *trace.Span, op string, msg kafka.Message, workerID int, err error) {
+	status := "success"
+	businessCode := strconv.Itoa(code.ErrSuccess)
+	message := "message processed"
+
+	if err != nil {
+		status = "error"
+		if c := errors.GetCode(err); c != 0 {
+			businessCode = strconv.Itoa(c)
+		} else {
+			businessCode = strconv.Itoa(code.ErrUnknown)
+		}
+		message = err.Error()
+	}
+
+	spanDetails := map[string]interface{}{
+		"topic":     c.topic,
+		"partition": msg.Partition,
+		"offset":    msg.Offset,
+		"operation": op,
+		"worker_id": workerID,
+	}
+	if len(msg.Key) > 0 {
+		spanDetails["message_key"] = string(msg.Key)
+	}
+	if err != nil {
+		spanDetails["error"] = err.Error()
+	}
+
+	trace.EndSpan(span, status, businessCode, spanDetails)
+	trace.RecordOutcome(ctx, businessCode, message, status, 0)
+	trace.Complete(ctx)
 }
 
 func shouldRetry(err error) bool {
@@ -3643,14 +3822,29 @@ func (c *UserConsumer) setUserCache(ctx context.Context, user *v1.User, previous
 		}
 		if hasPrimaryItem {
 			primaryStart := time.Now()
-			primaryErr = c.redis.SetKey(writeCtx, primaryItem.Key, primaryItem.Value, primaryItem.TTL)
+			primaryStatus := "success"
+			primaryCode := strconv.Itoa(code.ErrSuccess)
+			primaryCtx, primarySpan := trace.StartSpan(writeCtx, "kafka-consumer", "cache_write_primary")
+			primaryErr = c.redis.SetKey(primaryCtx, primaryItem.Key, primaryItem.Value, primaryItem.TTL)
 			primaryDuration = time.Since(primaryStart)
+			if primaryErr != nil {
+				primaryStatus = "error"
+				primaryCode = strconv.Itoa(code.ErrUnknown)
+			}
+			trace.EndSpan(primarySpan, primaryStatus, primaryCode, map[string]interface{}{
+				"key":         primaryItem.Key,
+				"ttl_ms":      primaryItem.TTL.Milliseconds(),
+				"duration_ms": primaryDuration.Milliseconds(),
+			})
 			metrics.RecordRedisOperation("user_cache_primary_set", primaryDuration.Seconds(), primaryErr)
 		}
 		if len(contactItems) > 0 {
 			contactStart := time.Now()
+			contactStatus := "success"
+			contactCode := strconv.Itoa(code.ErrSuccess)
+			contactCtx, contactSpan := trace.StartSpan(writeCtx, "kafka-consumer", "cache_write_contacts")
 			contactAttempts = len(contactItems)
-			g, gctx := errgroup.WithContext(writeCtx)
+			g, gctx := errgroup.WithContext(contactCtx)
 			var (
 				mu             sync.Mutex
 				encounteredErr error
@@ -3696,16 +3890,39 @@ func (c *UserConsumer) setUserCache(ctx context.Context, user *v1.User, previous
 			if contactErr != nil {
 				trace.AddRequestTag(ctx, "cache_contact_write_error", contactErr.Error())
 			}
+			if contactErr != nil {
+				contactStatus = "degraded"
+				contactCode = strconv.Itoa(code.ErrUnknown)
+			}
+			trace.EndSpan(contactSpan, contactStatus, contactCode, map[string]interface{}{
+				"username":      user.Name,
+				"items":         len(contactItems),
+				"duration_ms":   contactDuration.Milliseconds(),
+				"attempts":      contactAttempts,
+				"error_present": contactErr != nil,
+			})
 		}
 		if len(auxItems) > 0 {
 			auxStart := time.Now()
+			auxStatus := "success"
+			auxCode := strconv.Itoa(code.ErrSuccess)
+			auxCtx, auxSpan := trace.StartSpan(writeCtx, "kafka-consumer", "cache_write_aux")
 			if len(auxItems) == 1 {
 				item := auxItems[0]
-				auxErr = c.redis.SetKey(writeCtx, item.Key, item.Value, item.TTL)
+				auxErr = c.redis.SetKey(auxCtx, item.Key, item.Value, item.TTL)
 			} else {
-				auxErr = c.redis.BatchSet(writeCtx, auxItems)
+				auxErr = c.redis.BatchSet(auxCtx, auxItems)
 			}
 			auxDuration = time.Since(auxStart)
+			if auxErr != nil {
+				auxStatus = "error"
+				auxCode = strconv.Itoa(code.ErrUnknown)
+			}
+			trace.EndSpan(auxSpan, auxStatus, auxCode, map[string]interface{}{
+				"username":    user.Name,
+				"items":       len(auxItems),
+				"duration_ms": auxDuration.Milliseconds(),
+			})
 			metrics.RecordRedisOperation("user_cache_aux_batch_set", auxDuration.Seconds(), auxErr)
 		}
 		writeDuration = time.Since(writeStart)
@@ -4188,6 +4405,16 @@ func (c *UserConsumer) batchCreateToDB(ctx context.Context, msgs []kafka.Message
 	trace.AddRequestTag(batchCtx, "topic", c.topic)
 	ctx = batchCtx
 
+	// 为批量中的每条消息创建独立的异步 trace，确保可与 HTTP 链路合并。
+	workerID := -1
+	messageTraces := make([]struct {
+		ctx  context.Context
+		span *trace.Span
+	}, len(msgs))
+	for i := range msgs {
+		messageTraces[i].ctx, messageTraces[i].span = c.startAsyncTraceContext(ctx, msgs[i], OperationCreate, workerID)
+	}
+
 	status := "success"
 	statusCode := strconv.Itoa(code.ErrSuccess)
 	successful := 0
@@ -4251,15 +4478,23 @@ func (c *UserConsumer) batchCreateToDB(ctx context.Context, msgs []kafka.Message
 		errMu.Unlock()
 	}
 
-	processOne := func(msg kafka.Message) {
-		outcome := c.createPipeline.Process(ctx, msg)
+	processOne := func(idx int, msg kafka.Message) {
+		msgCtx := messageTraces[idx].ctx
+		if msgCtx == nil {
+			msgCtx = ctx
+		}
+		msgSpan := messageTraces[idx].span
+		processStart := time.Now()
+
+		outcome := c.createPipeline.Process(msgCtx, msg)
 		if outcome.Err != nil {
 			recordErr(outcome.Err)
-			return
-		}
-		if outcome.Created {
+		} else if outcome.Created {
 			successCounter.Add(1)
 		}
+
+		c.recordConsumerMetrics(OperationCreate, string(msg.Key), msg, processStart, outcome.Err, workerID)
+		c.finalizeAsyncMessageTrace(msgCtx, msgSpan, OperationCreate, msg, workerID, outcome.Err)
 	}
 
 	if parallelism <= 1 || len(msgs) <= 1 {
@@ -4268,7 +4503,7 @@ func (c *UserConsumer) batchCreateToDB(ctx context.Context, msgs []kafka.Message
 				recordErr(ctx.Err())
 				break
 			}
-			processOne(msgs[i])
+			processOne(i, msgs[i])
 		}
 	} else {
 		sem := make(chan struct{}, parallelism)
@@ -4281,6 +4516,7 @@ func (c *UserConsumer) batchCreateToDB(ctx context.Context, msgs []kafka.Message
 			msg := msgs[i]
 			wg.Add(1)
 			sem <- struct{}{}
+			idx := i
 			go func(m kafka.Message) {
 				defer wg.Done()
 				defer func() { <-sem }()
@@ -4288,7 +4524,7 @@ func (c *UserConsumer) batchCreateToDB(ctx context.Context, msgs []kafka.Message
 					recordErr(ctx.Err())
 					return
 				}
-				processOne(m)
+				processOne(idx, m)
 			}(msg)
 		}
 		wg.Wait()
