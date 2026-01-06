@@ -40,18 +40,19 @@
 %%{init: {'themeVariables': {'lineColor': '#1E63B5', 'flowchartLinkColor': '#1E63B5', 'lineWidth': 3, 'fontSize': '22px'}}}%%
 flowchart TD
     Start([进入 WriteRateLimiter])
-    BuildID["构造标识 identifier\\nToken(SHA1前缀)/IP + 路径"]
-    BizNode["解析 BizID / bizLimit\\n按路由解析 bizKey\\n读取 bizLimit 及 Redis 覆盖"]
     OverrideKey["读取全局动态覆盖\\nratelimit:write:global_limit"]
-    CalcGlobal["计算有效阈值\\nlimit / bizLimit / effectiveGlobal"]
-    CheckDisabled{"limit≤0 且 effectiveGlobal≤0?"}
+    CalcGlobal["计算全局阈值\\nlimit / effectiveGlobal"]
+    BizNode["计算业务阈值\\n解析 BizID / bizLimit / Redis覆盖"]
+    CheckDisabled{"limit≤0 且 effectiveGlobal≤0\\n且 bizLimit≤0?"}
     PassDisabled([限流关闭\\n直接放行 c.Next])
-    LocalIDCheck{"localRateCheck(identifier, limit) 通过?"}
-    LocalIDBlock([429 本地标识限流拒绝])
-    LocalBizCheck{"有 bizLimit?\\n且 localRateCheck(bizIdentifier, bizLimit) 通过?"}
-    LocalBizBlock([429 Biz 级本地限流拒绝])
-    LocalGlobalCheck{"需要全局限流?\\n且 localRateCheck(globalLocalID, effectiveGlobal) 通过?"}
+    BuildID["构造标识 identifier\\nToken(SHA1前缀)/IP + 路径"]
+    CalcWindow["计算窗口 ID\\nwindowIDForTime"]
+    LocalGlobalCheck{"需要全局限流?\\n且 localRateCheck(globalLocalID, effectiveGlobal, window) 通过?"}
     LocalGlobalBlock([429 全局本地限流拒绝])
+    LocalBizCheck{"有 bizLimit?\\n且 localRateCheck(bizIdentifier, bizLimit, window) 通过?"}
+    LocalBizBlock([429 Biz 级本地限流拒绝])
+    LocalIDCheck{"localRateCheck(identifier, limit, window) 通过?"}
+    LocalIDBlock([429 本地标识限流拒绝])
     RedisClientCheck{"Redis client 存在?"}
     RedisDegradeCheck{"strictLocalRateCheck(identifier, limit) 通过?"}
     DegradeBlock([429 Redis 降级本地限流拒绝])
@@ -67,15 +68,15 @@ flowchart TD
     classDef default font-size:22px;
     linkStyle default stroke:#1E63B5,stroke-width:3px
 
-    Start --> BuildID --> BizNode --> OverrideKey --> CalcGlobal --> CheckDisabled
+    Start --> OverrideKey --> CalcGlobal --> BizNode --> CheckDisabled
     CheckDisabled -- 是 --> PassDisabled --> Next
-    CheckDisabled -- 否 --> LocalIDCheck
-    LocalIDCheck -- 否 --> LocalIDBlock
-    LocalIDCheck -- 是 --> LocalBizCheck
-    LocalBizCheck -- 否 --> LocalBizBlock
-    LocalBizCheck -- 是 --> LocalGlobalCheck
+    CheckDisabled -- 否 --> BuildID --> CalcWindow --> LocalGlobalCheck
     LocalGlobalCheck -- 否 --> LocalGlobalBlock
-    LocalGlobalCheck -- 是 --> RedisClientCheck
+    LocalGlobalCheck -- 是 --> LocalBizCheck
+    LocalBizCheck -- 否 --> LocalBizBlock
+    LocalBizCheck -- 是 --> LocalIDCheck
+    LocalIDCheck -- 否 --> LocalIDBlock
+    LocalIDCheck -- 是 --> RedisClientCheck
     RedisClientCheck -- 否 --> RedisDegradeCheck
     RedisClientCheck -- 是 --> RedisPipeline --> RedisErr
     RedisErr -- 是 --> RedisDegradeCheck
@@ -88,7 +89,7 @@ flowchart TD
 
 要点：
 
-- 第一层是本地桶 `localRateCheck`，对「标识 + 路径」、Biz 维度以及「路径级全局」做快速预筛，避免 Redis 异常时所有流量都打到后端；
+- 第一层是本地桶 `localRateCheck`，对「路径级全局」、Biz 维度以及「标识 + 路径」做快速预筛（顺序：Global -> Biz -> Identifier），避免 Redis 异常时所有流量都打到后端；
 - 第二层使用 Redis `INCR + EXPIRE` 固定窗口计数，通过 `Pipelined` 一次性对全局 / Biz / 标识三个 key 进行计数与过期设置，**已经不再使用 Lua 脚本**；
 - 当 Redis client 为空或 pipeline 出错/超时时，回退到 `strictLocalRateCheck`，若仍超限则以 429 拒绝，否则作为 `allowed_degraded_local` 放行（在指标中可区分降级放行）；
 - 对于真正由 Redis 计数判定的超限，会携带 `scope`（global/biz/identifier）和经 `TTL` 估算的 `retry_after`，方便客户端或排障时理解是哪一层在挡流量；
@@ -136,11 +137,11 @@ flowchart TD
         - 若读取失败或值不合法，则回退为配置中的原始 `limit`。
 
 - Biz 维度基础阈值覆盖（bizLimit 覆盖）
-    - Key 约定：`ratelimit:write:biz_limit:<bizKey>`；
+    - Key 约定：`ratelimit:write:biz_limit:{<bizKey>}`；
     - 语义：
         - 写入的是「某个 BizKey 对应的业务级写限流阈值覆盖值」，同样不是计数桶；
         - 中间件先通过 `bizid.ResolveBizByRoute` 解析出 biz，再通过 `bizid.GetBizLimit(biz.Key)` 读到配置中的 `bizLimit`；
-        - 随后在同一个短超时上下文里，从 Redis 读取 `ratelimit:write:biz_limit:<bizKey>`：
+        - 随后在同一个短超时上下文里，从 Redis 读取 `ratelimit:write:biz_limit:{<bizKey>}`：
             - 若存在有效正整数 `bLimit`，则覆盖本次请求的 `bizLimit`；
             - Biz 级本地/Redis 限流都会基于覆盖后的 `bizLimit` 执行；
             - 若读取失败或值不合法，则继续使用配置中的原始 `bizLimit`。
@@ -189,7 +190,7 @@ flowchart TD
     - 覆盖前值与来源：
         - spanDetails：
             - `biz_limit_before_override`：覆盖前的配置值；
-            - `biz_limit_override_key`：当前生效覆盖值来自的 Redis key（`ratelimit:write:biz_limit:<bizKey>` 加前缀）；
+            - `biz_limit_override_key`：当前生效覆盖值来自的 Redis key（`ratelimit:write:biz_limit:{<bizKey>}` 加前缀）；
         - RequestContext.Extra：`write_biz_limit_override_key`。
 
 > 观测侧使用示例：
@@ -828,56 +829,81 @@ flowchart TD
 %%{init: {'themeVariables': {'lineColor': '#1E63B5', 'flowchartLinkColor': '#1E63B5', 'lineWidth': 3, 'fontSize': '22px'}}}%%
 flowchart TD
     Start([进入 WriteRateLimiter])
-    OverrideKey["读取全局动态覆盖\nratelimit:write:global_limit"]
-    CalcGlobal["计算有效阈值\nlimit / effectiveGlobal"]
-    CheckDisabled{"limit≤0 且 effectiveGlobal≤0?"}
+    ResolveBiz["解析 BizID (Method+Path)\n获取 bizKey & 内存 bizLimit"]
+    RedisOverride["Redis Pipeline 读取覆盖\nratelimit:write:global_limit (覆盖 limit)\nratelimit:write:biz_limit:{<bizKey>}"]
+    ApplyOverride["应用覆盖值\n更新 limit / bizLimit"]
+    CalcGlobal["计算全局阈值\nlimit / effectiveGlobal"]
+    CheckDisabled{"limit≤0 且 effectiveGlobal≤0\n且 bizLimit≤0?"}
     PassDisabled([限流关闭\n直接放行 c.Next])
-    CalcWindow["计算窗口 ID\nwindowIDForTime"]
-    BuildID["构造标识 identifier\nToken(SHA1前缀)/IP + 路径"]
-    BizNode["获取 Biz 动态覆盖值\n1. Method+Path 解析 BizID\n2. 内存读取基础 bizLimit\n3. Redis 读取覆盖值"]
-    LocalIDCheck{"localRateCheck(identifier, limit, window) 通过?"}
-    LocalIDBlock([429 本地标识限流拒绝])
-    LocalBizCheck{"有 bizLimit?\n且 localRateCheck(bizIdentifier, bizLimit, window) 通过?"}
-    LocalBizBlock([429 Biz 级本地限流拒绝])
-    LocalGlobalCheck{"需要全局限流?\n且 localRateCheck(globalLocalID, effectiveGlobal, window) 通过?"}
+    
+    BuildID["构造标识与 Key\nidentifier = write:[token|IP]:[path]\nbizIdentifier = write:{[bizKey]}:[token|IP]\nglobalIdentifier = write:global:{[path]}"]
+    
+    CalcWindow["计算窗口 ID\nwid = unixSec / windowSec"]
+    
+    LocalGlobalCheck{"需要全局限流?\nlocalRateCheck(globalIdentifier...)"}
     LocalGlobalBlock([429 全局本地限流拒绝])
+    
+    LocalBizCheck{"有 bizLimit?\nlocalRateCheck(bizIdentifier...)"}
+    LocalBizBlock([429 Biz 级本地限流拒绝])
+    
+    LocalIDCheck{"localRateCheck(identifier...)"}
+    LocalIDBlock([429 本地标识限流拒绝])
+    
     RedisClientCheck{"Redis client 存在?"}
-    RedisDegradeCheck{"strictLocalRateCheck(identifier, limit) 通过?"}
+    RedisDegradeCheck{"strictLocalRateCheck(identifier...)"}
     DegradeBlock([429 Redis 降级本地限流拒绝])
     DegradeAllow([降级放行\noutcome=allowed_degraded_local])
-    RedisPipeline["Redis Pipelined\nINCR + EXPIRE\n(globalKey, bizKey, idKey)"]
+    
+    RedisPipeline["Redis Pipelined INCR + EXPIRE\nglobalKey = ratelimit:globalIdentifier:{wid}\n(ratelimit:write:global:{[path]}:{wid})\n\nbizKey = ratelimit:bizIdentifier:{wid}\n(ratelimit:write:{[bizKey]}:[token|IP]:{wid})\n\nidKey = ratelimit:identifier:{wid}\n(ratelimit:write:[token|IP]:[path]:{wid})"]
+    
     RedisErr{"pipeline 出错/超时?"}
     ParseCounters["解析计数\ncurrentGlobal / currentBiz / currentID"]
-    LimitedCheck{"是否超过\n全局/Biz/标识阈值?"}
-    LimitedBlock([429 Redis 限流拒绝\n携带 scope/retry_after])
+    
+    CheckGlobal{"effectiveGlobal > 0\n且 currentGlobal > effectiveGlobal?"}
+    BlockGlobal([429 Global 限流拒绝\nscope=global])
+    
+    CheckBiz{"bizLimit > 0\n且 currentBiz > bizLimit?"}
+    BlockBiz([429 Biz 限流拒绝\nscope=biz])
+    
+    CheckID{"limit > 0\n且 currentID > limit?"}
+    BlockID([429 Identifier 限流拒绝\nscope=identifier])
+    
     Allowed([通过限流\noutcome=allowed])
     Next([c.Next 进入后续中间件/业务])
 
     classDef default font-size:22px;
     linkStyle default stroke:#1E63B5,stroke-width:3px
 
-    Start --> OverrideKey --> CalcGlobal --> CheckDisabled
+    Start --> ResolveBiz --> RedisOverride --> ApplyOverride --> CalcGlobal --> CheckDisabled
     CheckDisabled -- 是 --> PassDisabled --> Next
-    CheckDisabled -- 否 --> CalcWindow --> BuildID --> BizNode --> LocalIDCheck
-    LocalIDCheck -- 否 --> LocalIDBlock
-    LocalIDCheck -- 是 --> LocalBizCheck
-    LocalBizCheck -- 否 --> LocalBizBlock
-    LocalBizCheck -- 是 --> LocalGlobalCheck
+    CheckDisabled -- 否 --> BuildID --> CalcWindow --> LocalGlobalCheck
     LocalGlobalCheck -- 否 --> LocalGlobalBlock
-    LocalGlobalCheck -- 是 --> RedisClientCheck
+    LocalGlobalCheck -- 是 --> LocalBizCheck
+    LocalBizCheck -- 否 --> LocalBizBlock
+    LocalBizCheck -- 是 --> LocalIDCheck
+    LocalIDCheck -- 否 --> LocalIDBlock
+    LocalIDCheck -- 是 --> RedisClientCheck
     RedisClientCheck -- 否 --> RedisDegradeCheck
     RedisClientCheck -- 是 --> RedisPipeline --> RedisErr
     RedisErr -- 是 --> RedisDegradeCheck
-    RedisErr -- 否 --> ParseCounters --> LimitedCheck
+    RedisErr -- 否 --> ParseCounters --> CheckGlobal
+    
+    CheckGlobal -- 是 --> BlockGlobal
+    CheckGlobal -- 否 --> CheckBiz
+    
+    CheckBiz -- 是 --> BlockBiz
+    CheckBiz -- 否 --> CheckID
+    
+    CheckID -- 是 --> BlockID
+    CheckID -- 否 --> Allowed --> Next
+    
     RedisDegradeCheck -- 否 --> DegradeBlock
     RedisDegradeCheck -- 是 --> DegradeAllow --> Next
-    LimitedCheck -- 是 --> LimitedBlock
-    LimitedCheck -- 否 --> Allowed --> Next
 ```
 
 要点：
 
-- 第一层是本地桶 `localRateCheck`，对「标识 + 路径」、Biz 维度以及「路径级全局」做快速预筛，避免 Redis 异常时所有流量都打到后端；
+- 第一层是本地桶 `localRateCheck`，对「路径级全局」、Biz 维度以及「标识 + 路径」做快速预筛（顺序：Global -> Biz -> Identifier），避免 Redis 异常时所有流量都打到后端；
 - 第二层使用 Redis `INCR + EXPIRE` 固定窗口计数，通过 `Pipelined` 一次性对全局 / Biz / 标识三个 key 进行计数与过期设置，已经不再使用 Lua 脚本；
 - 当 Redis client 为空或 pipeline 出错/超时时，回退到 `strictLocalRateCheck`，若仍超限则以 429 拒绝，否则作为 `allowed_degraded_local` 放行（在指标中可区分降级放行）；
 - 对于真正由 Redis 计数判定的超限，会携带 `scope`（global/biz/identifier）和经 `TTL` 估算的 `retry_after`，方便客户端或排障时理解是哪一层在挡流量；
@@ -904,16 +930,17 @@ sequenceDiagram
 
     Client->>Gin: HTTP POST /users
     Gin->>WL: 进入 WriteRateLimiter
-    WL->>Redis: GET ratelimit:write:global_limit (覆盖 per-identifier 基础 limit)
-    Redis-->>WL: 覆盖值 / 不存在
+    Note right of WL: 基础配置(limit/global)由闭包注入<br/>BizLimit 由内存读取
+    WL->>WL: 解析 BizID
+    WL->>Redis: Pipeline GET global_limit & biz_limit
+    Redis-->>WL: 返回覆盖值 / 不存在
     WL->>WL: 解析 Authorization / IP，构造 identifier
-    WL->>WL: 解析 BizID，读取 bizLimit 及 Redis 覆盖
-    WL->>WL: localRateCheck(identifier)
-    WL->>WL: localRateCheck(bizIdentifier) (如需 Biz 限流)
     WL->>WL: localRateCheck(globalLocalID) (如需全局限流)
+    WL->>WL: localRateCheck(bizIdentifier) (如需 Biz 限流)
+    WL->>WL: localRateCheck(identifier)
     WL->>Redis: Pipeline INCR+EXPIRE\n(globalKey, bizKey, idKey)
     Redis-->>WL: [currentGlobal, currentBiz, currentID]
-    WL->>WL: 依次校验 Global/Biz/ID 阈值
+    WL->>WL: 依次校验 Global/Biz/ID 阈值 (current > limit?)
     WL-->>Gin: c.Next() 放行
     Gin->>Lag: 进入 LagProtect
     Lag-->>Gin: 背压评估通过，放行
@@ -959,6 +986,11 @@ flowchart LR
         CReq[写请求: /users POST]
     end
 
+    subgraph ConfigCenter[Config Center]
+        BaseConfig[基础配置 limit/globalLimit]
+        BizConfig[业务配置 bizLimit]
+    end
+
     subgraph Service
         WLNode[WriteRateLimiter]
         LocalCounter[本地计数器\\nlocalRateCheck/strictLocalRateCheck]
@@ -968,13 +1000,15 @@ flowchart LR
 
     subgraph RedisCluster[Redis Cluster]
         GKey[(globalKey\\nratelimit:write:global:<path>:<windowID>)]
-        BizKey[(bizKey\\nratelimit:writebiz:<bizKey>:<idPart>:<windowID>)]
-        IDKey[(idKey\\nratelimit:write:<identifier>:<windowID>)]
+        BizKey[(bizKey\\nratelimit:write:{<bizKey>}:<token|IP>:<windowID>)]
+        IDKey[(idKey\\nratelimit:write:<token|IP>:<path>:<windowID>)]
         GlobalOverride[(global_limit 覆盖键)]
         BizOverride[(biz_limit 覆盖键)]
     end
 
     CReq --> WLNode
+    BaseConfig --> WLNode
+    BizConfig --> WLNode
     WLNode --> LocalCounter
     WLNode --> GlobalOverride
     WLNode --> BizOverride
@@ -1072,7 +1106,7 @@ flowchart LR
 | 关注点/层次                       | Lab 实验代码（limiter-lab）                                                                                                                                                      | 生产实现（write_limiter.go 片段）                                                                                                                                                                          |
 | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 标识粒度本地限流（identifier）    | `FixedWindowLimiter.Allow` + `HTTPMiddleware` 中对单个 key 的窗口计数；`TestHTTPMiddleware_FixedWindow_TooManyRequests`                                                          | `localRateCheck(identifier, limit, window)`：使用 `identifier = "write:" + idPart + ":" + c.FullPath()` 作为 key，在本地内存里做固定窗口计数，如果超限直接返回 429（`block_local`）。                      |
-| 路径级本地全局限流（global）      | 在 lab 中可以再创建一个 `FixedWindowLimiter` 作为全局 limiter，在 `NewHTTPMiddleware` 的 `globalLimiter` 分支中按 path 维度做额外一次 `Allow`                                    | `if effectiveGlobal > 0 { globalLocalID := "write:global:" + c.FullPath(); if !localRateCheck(globalLocalID, effectiveGlobal, window) { ... } }`：以 `write:global:<path>` 为 key 做路径级本地窗口限流。   |
+| 路径级本地全局限流（global）      | 在 lab 中可以再创建一个 `FixedWindowLimiter` 作为全局 limiter，在 `NewHTTPMiddleware` 的 `globalLimiter` 分支中按 path 维度做额外一次 `Allow`                                    | `if effectiveGlobal > 0 { globalIdentifier := "write:global:" + c.FullPath(); if !localRateCheck(globalIdentifier, effectiveGlobal, window) { ... } }`：以 `write:global:<path>` 为 key 做路径级本地窗口限流。   |
 | 标识粒度 Redis 计数（identifier） | `EvalWriteLimiterScript(store, globalKey, idKey, globalLimit, idLimit, window)` 中 `idLimit > 0` 分支，返回 `{limited, retryAfter, scope="identifier"}`                          | `pipe.Incr(ctx, rateLimitKey)`：使用 Pipeline 批量执行 INCR，随后解析结果 `currentID > limit`，若超限则返回 429 并设置 `scope="identifier"`。                                                              |
 | 路径级 Redis 全局计数（global）   | 同一脚本中的 `globalLimit > 0` 分支；测试 `TestEvalWriteLimiterScript_GlobalLimit` 验证「全局优先生效」                                                                          | `pipe.Incr(ctx, globalPathKey)`：Pipeline 中优先检查全局计数 `currentGlobal > effectiveGlobal`，若超限则优先返回 `scope="global"` 及全局兜底文案。                                                         |
 | Redis 返回值解析与行为            | Lab 中由 `EvalWriteLimiterScript` 直接返回 `(limited bool, retryAfter int64, scope string)`，中间件 `RedisScriptMiddleware` 根据结果决定 429 / 放行                              | `client.Pipelined(...)` 执行后，依次检查 Global/Biz/ID 的计数结果；任一维度超限即 `AbortWithStatusJSON(429, ...)`，否则 `c.Next()`。                                                                       |

@@ -50,43 +50,83 @@ func WriteRateLimiter(redisCluster *storage.RedisCluster, limit int, globalLimit
 		trace.AddRequestTag(spanCtx, "write_limit_limit_config", limit)
 		trace.AddRequestTag(spanCtx, "write_limit_global_limit", globalLimit)
 
+		// 解析业务维度（BizID）：提前解析以便与全局配置并行获取
+		bizKeyLabel := ""
+		var bizIdentifier string // 后续结合 idPart 构造
+		bizLimit := 0
+		if biz := bizid.ResolveBizByRoute(c.Request.Method, c.FullPath()); biz != nil && !biz.Deprecated {
+			bizKeyLabel = biz.Key
+			spanDetails["biz_key"] = biz.Key
+			spanDetails["biz_name"] = biz.Name
+			trace.AddRequestTag(spanCtx, "write_biz_key", biz.Key)
+			if l := bizid.GetBizLimit(biz.Key); l > 0 {
+				bizLimit = l
+				spanDetails["biz_limit_config"] = bizLimit
+				trace.AddRequestTag(spanCtx, "write_biz_limit_config", bizLimit)
+			}
+		}
+
 		// 尝试读取写限流的“基础阈值覆盖”（override），短超时：
-		// - Redis key ratelimit:write:global_limit 存的是「per-identifier 写限流 limit 的全局覆盖值」，而不是计数桶；
-		// - 读取到有效数值后，会直接覆盖本次请求的 limit，后续本地/Redis 判定都基于新的 limit；
-		// - 使用请求上下文作为父 ctx，确保请求被取消时该调用也能及时结束。
+		// 使用 Pipeline 并行获取全局覆盖和业务覆盖，减少 RTT
 		ctxg, cancelg := context.WithTimeout(c.Request.Context(), 150*time.Millisecond)
 		defer cancelg()
+
+		var globalOverrideCmd *redis.StringCmd
+		var bizOverrideCmd *redis.StringCmd
+		var bizOverrideKey string
 		globalOverrideKey := buildRedisKey(redisCluster, "ratelimit:write:global_limit")
+
 		if redisCluster != nil && redisCluster.GetClient() != nil {
-			if val, err := redisCluster.GetClient().Get(ctxg, globalOverrideKey).Result(); err == nil {
+			pipe := redisCluster.GetClient().Pipeline()
+			globalOverrideCmd = pipe.Get(ctxg, globalOverrideKey)
+			// 仅当业务限流开启时才尝试获取业务覆盖
+			if bizLimit > 0 {
+				// 使用 Redis hash tag 保证相同 bizKey 的覆盖值落在同一 slot，便于 pipeline/事务
+				bizOverrideKey = buildRedisKey(redisCluster, fmt.Sprintf("ratelimit:write:biz_limit:{%s}", bizKeyLabel))
+				bizOverrideCmd = pipe.Get(ctxg, bizOverrideKey)
+			}
+			_, _ = pipe.Exec(ctxg)
+		}
+
+		// 处理全局覆盖结果
+		if globalOverrideCmd != nil && globalOverrideCmd.Err() == nil {
+			if val := globalOverrideCmd.Val(); val != "" {
 				if gLimit, perr := parseInt(val); perr == nil && gLimit > 0 {
-					// 记录覆盖前后的 limit，确保 span 与 RequestContext.Extra 中看到的都是“生效后的”值
 					spanDetails["limit_before_override"] = limit
 					limit = gLimit
 					spanDetails["limit"] = limit
-					// 记录覆盖 key，便于排查
 					spanDetails["limit_override_key"] = globalOverrideKey
-					// 记录生效的 limit 和 override key
 					trace.AddRequestTag(spanCtx, "write_limit_limit_effective", limit)
 					trace.AddRequestTag(spanCtx, "write_limit_override_key", globalOverrideKey)
 				}
 			}
 		}
+
+		// 处理业务覆盖结果
+		if bizOverrideCmd != nil && bizOverrideCmd.Err() == nil {
+			if val := bizOverrideCmd.Val(); val != "" {
+				if bLimit, perr := parseInt(val); perr == nil && bLimit > 0 {
+					spanDetails["biz_limit_before_override"] = bizLimit
+					bizLimit = bLimit
+					spanDetails["biz_limit"] = bizLimit
+					spanDetails["biz_limit_override_key"] = bizOverrideKey
+					trace.AddRequestTag(spanCtx, "write_biz_limit_effective", bizLimit)
+					trace.AddRequestTag(spanCtx, "write_biz_limit_override_key", bizOverrideKey)
+				}
+			}
+		}
+
 		// 计算全局限流阈值
 		effectiveGlobal := globalLimit
 		if effectiveGlobal <= 0 && globalFactor > 0 {
 			effectiveGlobal = int(float64(limit) * globalFactor)
 		}
-		if limit <= 0 && effectiveGlobal <= 0 {
+
+		if limit <= 0 && effectiveGlobal <= 0 && bizLimit <= 0 {
 			spanDetails["decision"] = "pass_disabled"
 			c.Next()
 			return
 		}
-
-		// 计算当前时间所在的窗口编号，用于与 Redis 对齐固定窗口：
-		// windowID = floor(unixSeconds / windowSeconds)。
-		now := time.Now()
-		wid := windowIDForTime(now, window)
 
 		// 标识使用 API 路径 + 优先使用 Authorization token（若存在）作为粒度，否则使用客户端 IP
 		idPart := c.ClientIP()
@@ -102,72 +142,59 @@ func WriteRateLimiter(redisCluster *storage.RedisCluster, limit int, globalLimit
 			}
 		}
 		identifier := "write:" + idPart + ":" + c.FullPath()
+		// 提前构造全局标识，避免重复构造字符串，并统一用于本地和Redis
+		// 加上 {} 使用 Hash Tag，确保同一 Path 的不同窗口计数 Key 落在同一 Slot
+		globalIdentifier := "write:global:{" + c.FullPath() + "}"
+
 		authType := "anonymous"
 		if auth := c.GetHeader("Authorization"); strings.TrimSpace(auth) != "" {
 			authType = "authenticated"
 		}
 
-		// 解析业务维度（BizID）：通过路由信息解析出当前请求所属的业务，用于后续业务级限流/统计。
-		// 业务级限流的阈值通过 bizid.SetBizLimit 在进程内配置或后续由表/配置装载；当 bizLimit<=0 时跳过业务级限流。
-		bizKeyLabel := ""
-		var bizIdentifier string
-		bizLimit := 0
-		if biz := bizid.ResolveBizByRoute(c.Request.Method, c.FullPath()); biz != nil && !biz.Deprecated {
-			bizKeyLabel = biz.Key
-			spanDetails["biz_key"] = biz.Key
-			spanDetails["biz_name"] = biz.Name
-			trace.AddRequestTag(spanCtx, "write_biz_key", biz.Key)
-			if l := bizid.GetBizLimit(biz.Key); l > 0 {
-				bizLimit = l
-				bizIdentifier = "writebiz:" + biz.Key + ":" + idPart
-				// 记录 Biz 维度的基础配置阈值
-				spanDetails["biz_limit_config"] = bizLimit
-				trace.AddRequestTag(spanCtx, "write_biz_limit_config", bizLimit)
-				// Biz 维度同样支持通过 Redis 进行阈值覆盖，key 形如：ratelimit:write:biz_limit:<bizKey>
-				if redisCluster != nil && redisCluster.GetClient() != nil {
-					bizOverrideKey := buildRedisKey(redisCluster, fmt.Sprintf("ratelimit:write:biz_limit:%s", biz.Key))
-					if val, err := redisCluster.GetClient().Get(ctxg, bizOverrideKey).Result(); err == nil {
-						if bLimit, perr := parseInt(val); perr == nil && bLimit > 0 {
-							spanDetails["biz_limit_before_override"] = bizLimit
-							bizLimit = bLimit
-							spanDetails["biz_limit"] = bizLimit
-							spanDetails["biz_limit_override_key"] = bizOverrideKey
-							trace.AddRequestTag(spanCtx, "write_biz_limit_effective", bizLimit)
-							trace.AddRequestTag(spanCtx, "write_biz_limit_override_key", bizOverrideKey)
-						}
-					}
-				}
-			}
+		// 如果启用了业务限流，构造业务级标识
+		// 统一使用 write: 前缀，保持 Redis Key 格式一致性：ratelimit:write:{bizKey}:{token/ip}:{wid}
+		// 注意：这里加上 {} 是为了让 Redis Key 自动继承 Hash Tag，虽然本地 Map 不需要 {}，但为了统一标识符定义，保持一致。
+		if bizLimit > 0 && bizKeyLabel != "" {
+			bizIdentifier = "write:{" + bizKeyLabel + "}:" + idPart
 		}
+
+		// 计算当前时间所在的窗口编号，用于与 Redis 对齐固定窗口：
+		// windowID = floor(unixSeconds / windowSeconds)。
+		now := time.Now()
+		wid := windowIDForTime(now, window)
 		// Redis 计数 key 采用 windowID 分桶：同一窗口内使用相同的 key，不再依赖 TTL 的精确过期时间表达窗口边界。
-		idKeyBase := "ratelimit:write:" + identifier
-		globalKeyBase := "ratelimit:write:global:" + c.FullPath()
+		// 统一 Key 格式：ratelimit:write:...
+		// identifier 自带 write: 前缀，所以这里只加 ratelimit:
+		idKeyBase := "ratelimit:" + identifier
+		globalKeyBase := "ratelimit:" + globalIdentifier
 		rateLimitKey := buildRedisKey(redisCluster, fmt.Sprintf("%s:%d", idKeyBase, wid))
 		globalPathKey := buildRedisKey(redisCluster, fmt.Sprintf("%s:%d", globalKeyBase, wid))
 		// 业务级 Redis 计数 key：按 BizID + token/IP + 窗口分桶，实现跨多条路径的业务级分布式限流。
 		bizRedisKey := rateLimitKey
 		if bizIdentifier != "" {
+			// bizIdentifier 自带 write: 前缀
 			bizKeyBase := "ratelimit:" + bizIdentifier
 			bizRedisKey = buildRedisKey(redisCluster, fmt.Sprintf("%s:%d", bizKeyBase, wid))
 		}
 
-		// 本地快速检查（复用 localRateCheck 保持一致策略）
-		if !localRateCheck(identifier, limit, window) {
-			status = "error"
-			spanCode = "429_local_rate"
-			spanDetails["decision"] = "block_local"
-			spanDetails["identifier"] = identifier
-			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
-				"code":    codepkg.ErrRateLimitExceeded,
-				"message": "写操作过于频繁，请稍后再试（本地限流）",
-				"data":    nil,
-			})
-			// 记录本地限流事件
-			metrics.WriteLimiterTotal.WithLabelValues(c.FullPath(), "local_rate").Inc()
-			// 记录本地限流请求
-			metrics.WriteLimiterRequestsTotal.WithLabelValues(c.FullPath(), "blocked_local_rate", authType, bizKeyLabel).Inc()
-			return
+		// 本地快速检查：按照 全局 -> 业务 -> 标识 的顺序进行，与 Redis 逻辑保持一致
+		if effectiveGlobal > 0 {
+			if !localRateCheck(globalIdentifier, effectiveGlobal, window) {
+				status = "error"
+				spanCode = "429_local_global"
+				spanDetails["decision"] = "block_local_global"
+				spanDetails["identifier"] = globalIdentifier
+				c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
+					"code":    codepkg.ErrRateLimitExceeded,
+					"message": "[写限流]写操作过于频繁，请稍后再试（全局本地限流）",
+					"data":    nil,
+				})
+				metrics.WriteLimiterTotal.WithLabelValues(c.FullPath(), "local_global").Inc()
+				metrics.WriteLimiterRequestsTotal.WithLabelValues(c.FullPath(), "blocked_local_global", authType, bizKeyLabel).Inc()
+				return
+			}
 		}
+
 		// 业务级本地限流：当为某个 BizID 配置了 bizLimit 时，对同一 token/IP 在该业务下的总写入进行统一限流。
 		if bizIdentifier != "" && bizLimit > 0 {
 			if !localRateCheck(bizIdentifier, bizLimit, window) {
@@ -185,22 +212,23 @@ func WriteRateLimiter(redisCluster *storage.RedisCluster, limit int, globalLimit
 				return
 			}
 		}
-		if effectiveGlobal > 0 {
-			globalLocalID := "write:global:" + c.FullPath()
-			if !localRateCheck(globalLocalID, effectiveGlobal, window) {
-				status = "error"
-				spanCode = "429_local_global"
-				spanDetails["decision"] = "block_local_global"
-				spanDetails["identifier"] = globalLocalID
-				c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
-					"code":    codepkg.ErrRateLimitExceeded,
-					"message": "[写限流]写操作过于频繁，请稍后再试（全局本地限流）",
-					"data":    nil,
-				})
-				metrics.WriteLimiterTotal.WithLabelValues(c.FullPath(), "local_global").Inc()
-				metrics.WriteLimiterRequestsTotal.WithLabelValues(c.FullPath(), "blocked_local_global", authType, bizKeyLabel).Inc()
-				return
-			}
+
+		// 标识级本地限流（复用 localRateCheck 保持一致策略）
+		if !localRateCheck(identifier, limit, window) {
+			status = "error"
+			spanCode = "429_local_rate"
+			spanDetails["decision"] = "block_local"
+			spanDetails["identifier"] = identifier
+			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
+				"code":    codepkg.ErrRateLimitExceeded,
+				"message": "写操作过于频繁，请稍后再试（本地限流）",
+				"data":    nil,
+			})
+			// 记录本地限流事件
+			metrics.WriteLimiterTotal.WithLabelValues(c.FullPath(), "local_rate").Inc()
+			// 记录本地限流请求
+			metrics.WriteLimiterRequestsTotal.WithLabelValues(c.FullPath(), "blocked_local_rate", authType, bizKeyLabel).Inc()
+			return
 		}
 
 		// Redis 限流，短超时；继承请求 ctx，避免请求结束后仍然占用资源
